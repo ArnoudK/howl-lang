@@ -135,6 +135,8 @@ pub const TokenKinds = enum {
     Colon, // :
     ColonColon, // ::
     ColonEquals, // :=
+    Semicolon, // ;
+    Question, // ?
     At, // @
 
     MinusGreaterThan, // ->

@@ -9,13 +9,13 @@ To create a standard type you can use the `struct` keyword.
 
 Example:
 
-```ts
-const myType2 = struct {
+```rust
+myType2 :: struct {
     name : str,
     job : str
 }
 
-const myType = struct {
+myType :: struct {
     field: f32,
     field2: str,
     field3: myType2,
@@ -29,11 +29,11 @@ Struct can also be used as the `return` of a function
 Example:
 
 ```rust
-pub fn createLinkedListType(T: Type) : Type {
+createLinkedListType :: (T: Type) : Type {
     return struct {
         next : ?Self,
         value: T
-        pub fn init(val: T) Self {
+        init :: (val: T) Self {
             return .Self {
                 next: None,
                 value: T
@@ -68,34 +68,34 @@ Howl includes a comprehensive set of primitive types:
 | :--------------- | :---------------------------------------------------- | :---------------------------------- |
 | `comptime_int`   | Compile-time integer with extended precision          | `const COUNT: comptime_int = 1000`  |
 | `comptime_float` | Compile-time floating point with extended precision   | `const PI: comptime_float = 3.1415` |
-| `usize`          | Platform-specific sized unsigned integer (32/64 bits) | `fn size_of(slice: []u8) usize {}`  |
+| `usize`          | Platform-specific sized unsigned integer (32/64 bits) | `size_of :: fn(slice: []u8) usize {}`  |
 | `isize`          | Platform-specific sized signed integer (32/64 bits)   | `let diff: isize = end - start`     |
 | `?T`             | Optional type - either a value of type `T` or `None`  | `let maybe: ?i32 = None`            |
-| `E!T`            | Error union - either a value of type `T` or an error  | `fn read() !str {}`                 |
+| `E!T`            | Error union - either a value of type `T` or an error  | `read :: fn() !str {}`                 |
 
 ### Generic-like behavior
 
 Howl uses compile-time parameters to achieve generic-like behavior without explicit generic syntax:
 
 ```rust
-const std = @import("std")
+std :: @import("std")
 
 // A generic-like container type
-const Container = struct {
+Container :: struct {
     // Create a specialized container for any type
-    pub fn of(comptime T: type) type {
+    of :: (comptime T: type) type {
         return struct {
             data: ?T,
 
-            pub fn init() Self {
+            init :: () Self {
                 return .{.data = None}
             }
 
-            pub fn set(self: *Self, value: T) void {
+            set :: (self: *Self, value: T) void {
                 self.data = value
             }
 
-            pub fn get(self: Self) ?T {
+            get :: (self: Self) ?T {
                 return self.data
             }
         }
@@ -103,20 +103,20 @@ const Container = struct {
 }
 
 // Usage example
-fn example_container() void {
+example_container :: fn() void {
     // Create specialized container types
-    const IntContainer = Container.of(i32)
-    const StrContainer = Container.of(str)
+    IntContainer :: Container.of(i32)
+    StrContainer :: Container.of(str)
 
     // Create and use instances
-    var int_box = IntContainer.init()
+    int_box := IntContainer.init()
     int_box.set(42)
 
-    var str_box = StrContainer.init()
+    str_box := StrContainer.init()
     str_box.set("Hello")
 
     // Generic function that works with any Container
-    fn printContainer(container: anytype) void {
+    printContainer :: fn(container: anytype) void {
         match container.get() {
         | Some => |val| std.debug.print("Container value: {any}\n", .{ val }) // works because print can infer the type of val
         | None => std.debug.print("Empty Container: :(", .{});

@@ -1,15 +1,17 @@
-const Lexer = @import("lexer.zig").Lexer;
 const std = @import("std");
 const testing = std.testing;
-const TokenKinds = @import("tokenkinds.zig").TokenKinds;
-const LexerToken = @import("lextoken.zig").LexerToken;
+
+const lib = @import("../root.zig");
+const Lexer = lib.Lexing.Lexer;
+const TokenKinds = lib.Token.TokenKinds;
+const LexerToken = lib.LexToken.LexerToken;
 
 const testSrc1 =
-    \\ const std = @import("std")
-    \\ pub fn main () !void {
-    \\     std.debug.print("Hello, World!\n", .{})
-    \\     var x: i32 = 5
-    \\     x += 0b1010
+    \\std :: @import("std")
+    \\pub main :: fn() !void {
+    \\   std.debug.print("Hello, World!\n", .{})
+    \\   x: i32 = 5
+    \\   x += 0b1010
     \\   x += 0o12
     \\   x += 0x10
     \\   x += 10_000

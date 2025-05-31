@@ -17,11 +17,6 @@ pub const LexerFile = struct {
     // and to provide better error messages.
     hasErrorTokens: bool = false,
 
-    c: u8 = 0,
-    c_next: u8 = 0,
-    c_next_next: u8 = 0,
-    c_next_next_next: u8 = 0,
-
     // LexerFile owns the memory of name and contents
     pub fn init(
         name: []const u8,
@@ -109,428 +104,464 @@ pub const LexerFile = struct {
         return self.contents[start..end];
     }
 
-    fn moveNext(self: *LexerFile) void {
-        self.index += 1;
-        self.c = self.c_next;
-        self.c_next = self.c_next_next;
-        self.c_next_next = self.c_next_next_next;
-        self.c_next_next_next = if (self.index + 3 < self.contents.len) self.contents[self.index + 3] else 0;
+    fn peek(self: *const LexerFile, offset: usize) u8 {
+        const pos = self.index + offset;
+        return if (pos < self.contents.len) self.contents[pos] else 0;
+    }
+
+    fn advance(self: *LexerFile) void {
+        if (self.index < self.contents.len) {
+            self.index += 1;
+        }
+    }
+
+    fn advanceBy(self: *LexerFile, count: usize) void {
+        self.index = @min(self.index + count, self.contents.len);
+    }
+
+    fn currentChar(self: *const LexerFile) u8 {
+        return if (self.index < self.contents.len) self.contents[self.index] else 0;
     }
 
     pub fn lex(self: *LexerFile, lexer: Lexer) void {
-        const len = self.contents.len;
-        if (self.index >= len) {
-            return;
-        }
-        self.c = self.contents[self.index];
-        self.c_next = if (self.index + 1 < len) self.contents[self.index + 1] else 0;
-        self.c_next_next = if (self.index + 2 < len) self.contents[self.index + 2] else 0;
-        self.c_next_next_next = if (self.index + 3 < len) self.contents[self.index + 3] else 0;
-
-        while (self.index < self.contents.len) : (self.moveNext()) {
+        while (self.index < self.contents.len) {
             const start_pos = self.index;
+            const current = self.currentChar();
 
-            switch (self.c) {
-                // Whitespace
-                ' ', '\t' => {
-                    while (self.index + 1 < len and (self.c_next == ' ' or self.c_next == '\t')) {
-                        self.moveNext();
-                    }
-                    self.tokens.append(LexerToken.init(.Whitespace, self.index, null)) catch unreachable;
-                },
-                '\n' => {
-                    self.tokens.append(LexerToken.init(.Newline, self.index, null)) catch unreachable;
-                },
-                '\r' => {},
+            // Skip whitespace (but don't create tokens for it)
+            if (std.ascii.isWhitespace(current)) {
+                if (current == '\n') {
+                    self.tokens.append(LexerToken.init(.Newline, start_pos, null)) catch unreachable;
+                }
+                self.advance();
+                continue;
+            }
 
+            switch (current) {
                 // Comments
                 '/' => {
-                    if (self.c_next == '/') {
-                        // Line comment
-                        self.moveNext(); // Skip the second '/'
-                        const comment_start = self.index + 1;
-                        // Consume until end of line
-                        while (self.index + 1 < len and self.contents[self.index + 1] != '\n') {
-                            self.index += 1;
-                        }
-                        const comment_value = self.getLiteral(comment_start, self.index + 1);
-                        self.tokens.append(LexerToken.init(.LineComment, start_pos, comment_value)) catch unreachable;
-                    } else if (self.c_next == '*') {
-                        // Block comment
-                        self.moveNext(); // Skip the '*'
-                        const comment_start = self.index + 1;
-                        var nesting: usize = 1;
-
-                        while (nesting > 0 and self.index + 2 < len) {
-                            self.moveNext();
-                            if (self.contents[self.index] == '/' and self.contents[self.index + 1] == '*') {
-                                nesting += 1;
-                                self.moveNext();
-                            } else if (self.contents[self.index] == '*' and self.contents[self.index + 1] == '/') {
-                                nesting -= 1;
-                                self.moveNext();
-                            }
-                        }
-
-                        if (nesting == 0) {
-                            const comment_value = self.getLiteral(comment_start, self.index - 1);
-                            self.tokens.append(LexerToken.init(.BlockComment, start_pos, comment_value)) catch unreachable;
-                        } else {
-                            // Unterminated block comment
-                            self.hasErrorTokens = true;
-                            self.tokens.append(LexerToken.init(.ErrorToken, start_pos, "Unterminated block comment")) catch unreachable;
-                        }
+                    if (self.peek(1) == '/') {
+                        self.lexLineComment(start_pos);
+                    } else if (self.peek(1) == '*') {
+                        self.lexBlockComment(start_pos);
+                    } else if (self.peek(1) == '=') {
+                        self.advanceBy(2);
+                        self.tokens.append(LexerToken.init(.SlashEquals, start_pos, null)) catch unreachable;
                     } else {
-                        self.tokens.append(LexerToken.init(.Slash, self.index, null)) catch unreachable;
+                        self.advance();
+                        self.tokens.append(LexerToken.init(.Slash, start_pos, null)) catch unreachable;
                     }
                 },
 
                 // Numbers
                 '0'...'9' => {
-                    const number_start = self.index;
-                    var is_float = false;
-
-                    // Handle hex, binary, octal prefixes
-                    if (self.c == '0' and self.index + 1 < len) {
-                        const next = self.contents[self.index + 1];
-                        if (next == 'x' or next == 'X' or next == 'b' or next == 'B' or next == 'o' or next == 'O') {
-                            // Skip the prefix
-                            self.moveNext();
-                            // Consume all valid digits for this base
-                            while (self.index + 1 < len) {
-                                const peek = self.contents[self.index + 1];
-                                if (isDigit(peek) or peek == '_' or
-                                    ((self.c == 'x' or self.c == 'X') and
-                                        ((peek >= 'a' and peek <= 'f') or (peek >= 'A' and peek <= 'F'))))
-                                {
-                                    self.moveNext();
-                                } else {
-                                    break;
-                                }
-                            }
-                        }
-                    } else {
-                        // Regular decimal number
-                        // Consume digits and underscores
-                        while (self.index + 1 < len) {
-                            const peek = self.contents[self.index + 1];
-                            if (isDigit(peek) or peek == '_') {
-                                self.moveNext();
-                            } else if (peek == '.' and self.index + 2 < len and isDigit(self.contents[self.index + 2])) {
-                                // Handle decimal point for floating point numbers
-                                is_float = true;
-                                self.moveNext();
-
-                                // Consume fractional part
-                                while (self.index + 1 < len) {
-                                    const frac_peek = self.contents[self.index + 1];
-                                    if (isDigit(frac_peek) or frac_peek == '_') {
-                                        self.moveNext();
-                                    } else {
-                                        break;
-                                    }
-                                }
-                            } else if ((peek == 'e' or peek == 'E')) {
-                                // Handle scientific notation (for both integers and floats)
-                                is_float = true; // e-notation always produces a float
-                                self.moveNext();
-
-                                // Handle optional sign
-                                var has_sign = false;
-                                if (self.index + 1 < len and (self.contents[self.index + 1] == '+' or self.contents[self.index + 1] == '-')) {
-                                    self.moveNext();
-                                    has_sign = true;
-                                }
-
-                                // Ensure there's at least one digit after e/E and optional sign
-                                if (self.index + 1 < len and isDigit(self.contents[self.index + 1])) {
-                                    // Consume exponent digits
-                                    while (self.index + 1 < len) {
-                                        const exp_peek = self.contents[self.index + 1];
-                                        if (isDigit(exp_peek) or exp_peek == '_') {
-                                            self.moveNext();
-                                        } else {
-                                            break;
-                                        }
-                                    }
-                                } else {
-                                    // Invalid e-notation (no digits after e/E or sign)
-                                    self.hasErrorTokens = true;
-                                    const error_msg = if (has_sign)
-                                        "Invalid scientific notation: missing digits after sign"
-                                    else
-                                        "Invalid scientific notation: missing digits after 'e'";
-                                    self.tokens.append(LexerToken.init(.ErrorToken, number_start, error_msg)) catch unreachable;
-                                    return;
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-
-                    const number_value = self.getLiteral(number_start, self.index + 1);
-                    const token_kind = if (is_float) TokenKinds.FloatLiteral else TokenKinds.NumberLiteral;
-                    self.tokens.append(LexerToken.init(token_kind, number_start, number_value)) catch unreachable;
+                    self.lexNumber(start_pos);
                 },
 
                 // Identifiers and Keywords
                 'a'...'z', 'A'...'Z', '_' => {
-                    const id_start = self.index;
-
-                    // Consume until not identifier char
-                    while (self.index + 1 < len and isIdentifierChar(self.contents[self.index + 1])) {
-                        self.moveNext();
-                    }
-
-                    const id_value = self.getLiteral(id_start, self.index + 1);
-                    const maybeKeyword = lexer.keyWordMap.get(id_value); // check if keyword or identifier
-                    if (maybeKeyword) |keyword| {
-                        self.tokens.append(LexerToken.init(keyword, id_start, null)) catch unreachable;
-                    } else {
-                        self.tokens.append(LexerToken.init(TokenKinds.Identifier, start_pos, id_value)) catch unreachable;
-                    }
+                    self.lexIdentifier(start_pos, lexer);
                 },
 
                 // String literals
                 '"' => {
-                    const string_start = self.index + 1;
-                    var string_terminated = false;
-
-                    while (self.index + 1 < len) {
-                        self.moveNext();
-
-                        if (self.c == '\\' and self.c_next == '"') {
-                            // Skip escaped quote
-                            self.moveNext();
-                        } else if (self.c == '"') {
-                            string_terminated = true;
-                            break;
-                        }
-                    }
-
-                    if (string_terminated) {
-                        const string_value = self.getLiteral(string_start, self.index);
-                        self.tokens.append(LexerToken.init(.StringLiteral, start_pos, string_value)) catch unreachable;
-                    } else {
-                        // Unterminated string
-                        self.hasErrorTokens = true;
-                        self.tokens.append(LexerToken.init(.ErrorToken, start_pos, "Unterminated string!")) catch unreachable;
-                    }
+                    self.lexString(start_pos);
                 },
 
                 // Character literals
                 '\'' => {
-                    const char_start = self.index + 1;
-                    var char_terminated = false;
-
-                    if (self.index + 1 < len) {
-                        self.moveNext();
-                        if (self.c == '\\' and self.index + 1 < len) {
-                            // Escape sequence
-                            self.moveNext();
-                        }
-
-                        if (self.index + 1 < len and self.contents[self.index + 1] == '\'') {
-                            self.index += 1;
-                            char_terminated = true;
-                        }
-                    }
-
-                    if (char_terminated) {
-                        const char_value = self.getLiteral(char_start, self.index);
-                        self.tokens.append(LexerToken.init(.CharLiteral, start_pos, char_value)) catch unreachable;
-                    } else {
-                        // Invalid character literal
-                        self.hasErrorTokens = true;
-                        self.tokens.append(LexerToken.init(.ErrorToken, start_pos, "Unterminated char literal")) catch unreachable;
-                    }
+                    self.lexChar(start_pos);
                 },
 
-                // Operators and punctuation
-                '+' => {
-                    if (self.c_next == '=') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.PlusEquals, start_pos, null)) catch unreachable;
-                    } else {
-                        self.tokens.append(LexerToken.init(.Plus, start_pos, null)) catch unreachable;
-                    }
-                },
-                '-' => {
-                    if (self.c_next == '=') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.MinusEquals, start_pos, null)) catch unreachable;
-                    } else if (self.c_next == '>') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.MinusGreaterThan, start_pos, null)) catch unreachable;
-                    } else {
-                        self.tokens.append(LexerToken.init(.Minus, start_pos, null)) catch unreachable;
-                    }
-                },
-                '*' => {
-                    if (self.c_next == '=') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.AsteriskEquals, start_pos, null)) catch unreachable;
-                    } else {
-                        self.tokens.append(LexerToken.init(.Asterisk, start_pos, null)) catch unreachable;
-                    }
-                },
-                '%' => {
-                    if (self.c_next == '=') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.PercentEquals, start_pos, null)) catch unreachable;
-                    } else {
-                        self.tokens.append(LexerToken.init(.Percent, start_pos, null)) catch unreachable;
-                    }
-                },
-                '=' => {
-                    if (self.c_next == '=') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.DoubleEquals, start_pos, null)) catch unreachable;
-                    } else if (self.c_next == '>') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.EqualsGreaterThan, start_pos, null)) catch unreachable;
-                    } else {
-                        self.tokens.append(LexerToken.init(.Equals, start_pos, null)) catch unreachable;
-                    }
-                },
-                '&' => {
-                    self.tokens.append(LexerToken.init(.Ampersand, start_pos, null)) catch unreachable;
-                },
-                '|' => {
-                    if (self.c_next == '>') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.PipeGreaterThan, start_pos, null)) catch unreachable;
-                    } else {
-                        self.tokens.append(LexerToken.init(.Pipe, start_pos, null)) catch unreachable;
-                    }
-                },
-                '^' => {
-                    self.tokens.append(LexerToken.init(.Caret, start_pos, null)) catch unreachable;
-                },
-                '!' => {
-                    if (self.c_next == '=') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.ExclamationEquals, start_pos, null)) catch unreachable;
-                    } else {
-                        self.tokens.append(LexerToken.init(.Exclamation, start_pos, null)) catch unreachable;
-                    }
-                },
-                '<' => {
-                    if (self.c_next == '=') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.LessThanEquals, start_pos, null)) catch unreachable;
-                    } else if (self.c_next == '<') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.DoubleLessThan, start_pos, null)) catch unreachable;
-                    } else {
-                        self.tokens.append(LexerToken.init(.LessThan, start_pos, null)) catch unreachable;
-                    }
-                },
-                '>' => {
-                    if (self.c_next == '=') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.GreaterThanEquals, start_pos, null)) catch unreachable;
-                    } else if (self.c_next == '>') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.DoubleGreaterThan, start_pos, null)) catch unreachable;
-                    } else {
-                        self.tokens.append(LexerToken.init(.GreaterThan, start_pos, null)) catch unreachable;
-                    }
-                },
-                '[' => {
-                    self.tokens.append(LexerToken.init(.BracketOpen, start_pos, null)) catch unreachable;
-                },
-                ']' => {
-                    self.tokens.append(LexerToken.init(.BracketClose, start_pos, null)) catch unreachable;
-                },
-                '(' => {
-                    self.tokens.append(LexerToken.init(.ParenOpen, start_pos, null)) catch unreachable;
-                },
-                ')' => {
-                    self.tokens.append(LexerToken.init(.ParenClose, start_pos, null)) catch unreachable;
-                },
-                '{' => {
-                    self.tokens.append(LexerToken.init(.CurlyOpen, start_pos, null)) catch unreachable;
-                },
-                '}' => {
-                    self.tokens.append(LexerToken.init(.CurlyClose, start_pos, null)) catch unreachable;
-                },
-                ',' => {
-                    self.tokens.append(LexerToken.init(.Comma, start_pos, null)) catch unreachable;
-                },
+                // Two-character operators
+                '+' => self.lexOperator(start_pos, .Plus, '=', .PlusEquals),
+                '-' => self.lexOperatorTwoOptions(start_pos, .Minus, '=', .MinusEquals, '>', .MinusGreaterThan),
+                '*' => self.lexOperator(start_pos, .Asterisk, '=', .AsteriskEquals),
+                '%' => self.lexOperator(start_pos, .Percent, '=', .PercentEquals),
+                '=' => self.lexOperatorTwoOptions(start_pos, .Equals, '=', .DoubleEquals, '>', .EqualsGreaterThan),
+                '!' => self.lexOperator(start_pos, .Exclamation, '=', .ExclamationEquals),
+                '<' => self.lexOperatorTwoOptions(start_pos, .LessThan, '=', .LessThanEquals, '<', .DoubleLessThan),
+                '>' => self.lexOperatorTwoOptions(start_pos, .GreaterThan, '=', .GreaterThanEquals, '>', .DoubleGreaterThan),
+                '|' => self.lexOperator(start_pos, .Pipe, '>', .PipeGreaterThan),
+                ':' => self.lexOperatorTwoOptions(start_pos, .Colon, ':', .ColonColon, '=', .ColonEquals),
+
+                // Dot operators (special case for ranges)
                 '.' => {
-                    if (self.c_next == '.') {
-                        if (self.c_next_next == '.') {
-                            self.moveNext();
-                            self.moveNext();
+                    if (self.peek(1) == '.') {
+                        if (self.peek(2) == '.') {
+                            self.advanceBy(3);
                             self.tokens.append(LexerToken.init(.DotDotDot, start_pos, null)) catch unreachable;
-                        } else if (self.c_next_next == '=') {
-                            self.moveNext();
-                            self.moveNext();
+                        } else if (self.peek(2) == '=') {
+                            self.advanceBy(3);
                             self.tokens.append(LexerToken.init(.DotDotEquals, start_pos, null)) catch unreachable;
-                        } else if (self.c_next_next == '<') {
-                            self.moveNext();
-                            self.moveNext();
+                        } else if (self.peek(2) == '<') {
+                            self.advanceBy(3);
                             self.tokens.append(LexerToken.init(.DotDotLessThan, start_pos, null)) catch unreachable;
                         } else {
-                            self.moveNext();
+                            self.advanceBy(2);
                             self.tokens.append(LexerToken.init(.DotDot, start_pos, null)) catch unreachable;
                         }
                     } else {
+                        self.advance();
                         self.tokens.append(LexerToken.init(.Dot, start_pos, null)) catch unreachable;
                     }
                 },
-                '$' => {
-                    self.tokens.append(LexerToken.init(.Dollar, start_pos, null)) catch unreachable;
-                },
-                '#' => {
-                    self.tokens.append(LexerToken.init(.Hash, start_pos, null)) catch unreachable;
-                },
-                '~' => {
-                    self.tokens.append(LexerToken.init(.Tilde, start_pos, null)) catch unreachable;
-                },
-                ':' => {
-                    if (self.c_next == ':') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.ColonColon, start_pos, null)) catch unreachable;
-                    } else if (self.c_next == '=') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.ColonEquals, start_pos, null)) catch unreachable;
-                    } else {
-                        self.tokens.append(LexerToken.init(.Colon, start_pos, null)) catch unreachable;
-                    }
-                },
+
+                // Single-character operators
+                '&' => self.lexSingleChar(start_pos, .Ampersand),
+                '^' => self.lexSingleChar(start_pos, .Caret),
+                '[' => self.lexSingleChar(start_pos, .BracketOpen),
+                ']' => self.lexSingleChar(start_pos, .BracketClose),
+                '(' => self.lexSingleChar(start_pos, .ParenOpen),
+                ')' => self.lexSingleChar(start_pos, .ParenClose),
+                '{' => self.lexSingleChar(start_pos, .CurlyOpen),
+                '}' => self.lexSingleChar(start_pos, .CurlyClose),
+                ',' => self.lexSingleChar(start_pos, .Comma),
+                '$' => self.lexSingleChar(start_pos, .Dollar),
+                '#' => self.lexSingleChar(start_pos, .Hash),
+                '~' => self.lexSingleChar(start_pos, .Tilde),
+                ';' => self.lexSingleChar(start_pos, .Semicolon),
+                '?' => self.lexSingleChar(start_pos, .Question),
+
+                // Builtin functions
                 '@' => {
-                    // Handle builtin function identifiers
-                    if (self.c_next == '{') {
-                        self.moveNext();
-                        self.tokens.append(LexerToken.init(.At, start_pos, null)) catch unreachable;
-                        continue;
-                    }
-
-                    const id_start = self.index + 1;
-
-                    // Consume until not identifier char
-                    while (self.index + 1 < len and isIdentifierChar(self.contents[self.index + 1])) {
-                        self.moveNext();
-                    }
-
-                    const id_value = self.getLiteral(id_start, self.index + 1);
-                    // Here you would map builtin function names to their corresponding TokenKinds
-                    // For now, just using .Import as a placeholder
-                    self.tokens.append(LexerToken.init(.Import, start_pos, id_value)) catch unreachable;
+                    self.lexBuiltin(start_pos);
                 },
 
                 // Handle any other characters
                 else => {
-                    self.tokens.append(LexerToken.init(.ErrorToken, start_pos, "Wat")) catch unreachable;
+                    const error_msg = std.fmt.allocPrint(self.allocator, "Unexpected character: '{c}' (ASCII {d})", .{ current, current }) catch "Unexpected character";
+
+                    self.hasErrorTokens = true;
+                    self.tokens.append(LexerToken.init(.ErrorToken, start_pos, error_msg)) catch unreachable;
+                    self.advance();
                 },
             }
         }
 
         // Add EOF token
         self.tokens.append(LexerToken.init(.EOF, self.index, null)) catch unreachable;
+    }
+
+    fn lexSingleChar(self: *LexerFile, start_pos: usize, kind: TokenKinds) void {
+        self.advance();
+        self.tokens.append(LexerToken.init(kind, start_pos, null)) catch unreachable;
+    }
+
+    fn lexOperator(self: *LexerFile, start_pos: usize, single_kind: TokenKinds, next_char: u8, double_kind: TokenKinds) void {
+        if (self.peek(1) == next_char) {
+            self.advanceBy(2);
+            self.tokens.append(LexerToken.init(double_kind, start_pos, null)) catch unreachable;
+        } else {
+            self.advance();
+            self.tokens.append(LexerToken.init(single_kind, start_pos, null)) catch unreachable;
+        }
+    }
+
+    fn lexOperatorTwoOptions(self: *LexerFile, start_pos: usize, single_kind: TokenKinds, next_char1: u8, double_kind1: TokenKinds, next_char2: u8, double_kind2: TokenKinds) void {
+        const next = self.peek(1);
+        if (next == next_char1) {
+            self.advanceBy(2);
+            self.tokens.append(LexerToken.init(double_kind1, start_pos, null)) catch unreachable;
+        } else if (next == next_char2) {
+            self.advanceBy(2);
+            self.tokens.append(LexerToken.init(double_kind2, start_pos, null)) catch unreachable;
+        } else {
+            self.advance();
+            self.tokens.append(LexerToken.init(single_kind, start_pos, null)) catch unreachable;
+        }
+    }
+
+    fn lexLineComment(self: *LexerFile, start_pos: usize) void {
+        self.advanceBy(2); // Skip '//'
+        const comment_start = self.index;
+
+        // Consume until end of line
+        while (self.index < self.contents.len and self.currentChar() != '\n') {
+            self.advance();
+        }
+
+        const comment_value = self.getLiteral(comment_start, self.index);
+        self.tokens.append(LexerToken.init(.LineComment, start_pos, comment_value)) catch unreachable;
+    }
+
+    fn lexBlockComment(self: *LexerFile, start_pos: usize) void {
+        self.advanceBy(2); // Skip '/*'
+        const comment_start = self.index;
+        var nesting: usize = 1;
+
+        while (nesting > 0 and self.index < self.contents.len) {
+            if (self.currentChar() == '/' and self.peek(1) == '*') {
+                nesting += 1;
+                self.advanceBy(2);
+            } else if (self.currentChar() == '*' and self.peek(1) == '/') {
+                nesting -= 1;
+                if (nesting > 0) self.advanceBy(2);
+            } else {
+                self.advance();
+            }
+        }
+
+        if (nesting == 0) {
+            const comment_value = self.getLiteral(comment_start, self.index);
+            self.advanceBy(2); // Skip final '*/'
+            self.tokens.append(LexerToken.init(.BlockComment, start_pos, comment_value)) catch unreachable;
+        } else {
+            // Unterminated block comment
+            self.hasErrorTokens = true;
+            self.tokens.append(LexerToken.init(.ErrorToken, start_pos, "Unterminated block comment")) catch unreachable;
+        }
+    }
+
+    fn lexNumber(self: *LexerFile, start_pos: usize) void {
+        // Handle special number prefixes
+        if (self.currentChar() == '0' and self.index + 1 < self.contents.len) {
+            const next = self.peek(1);
+            if (next == 'x' or next == 'X') {
+                self.lexHexNumber(start_pos);
+                return;
+            } else if (next == 'b' or next == 'B') {
+                self.lexBinaryNumber(start_pos);
+                return;
+            } else if (next == 'o' or next == 'O') {
+                self.lexOctalNumber(start_pos);
+                return;
+            }
+        }
+
+        // Regular decimal number
+        self.lexDecimalNumber(start_pos);
+    }
+
+    fn lexHexNumber(self: *LexerFile, start_pos: usize) void {
+        self.advanceBy(2); // Skip '0x'
+
+        while (self.index < self.contents.len) {
+            const c = self.currentChar();
+            if (isDigit(c) or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F') or c == '_') {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        const number_value = self.getLiteral(start_pos, self.index);
+        self.tokens.append(LexerToken.init(.NumberLiteral, start_pos, number_value)) catch unreachable;
+    }
+
+    fn lexBinaryNumber(self: *LexerFile, start_pos: usize) void {
+        self.advanceBy(2); // Skip '0b'
+
+        while (self.index < self.contents.len) {
+            const c = self.currentChar();
+            if (c == '0' or c == '1' or c == '_') {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        const number_value = self.getLiteral(start_pos, self.index);
+        self.tokens.append(LexerToken.init(.NumberLiteral, start_pos, number_value)) catch unreachable;
+    }
+
+    fn lexOctalNumber(self: *LexerFile, start_pos: usize) void {
+        self.advanceBy(2); // Skip '0o'
+
+        while (self.index < self.contents.len) {
+            const c = self.currentChar();
+            if ((c >= '0' and c <= '7') or c == '_') {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        const number_value = self.getLiteral(start_pos, self.index);
+        self.tokens.append(LexerToken.init(.NumberLiteral, start_pos, number_value)) catch unreachable;
+    }
+
+    fn lexDecimalNumber(self: *LexerFile, start_pos: usize) void {
+        var is_float = false;
+
+        // Consume integer part
+        while (self.index < self.contents.len) {
+            const c = self.currentChar();
+            if (isDigit(c) or c == '_') {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        // Check for decimal point
+        if (self.currentChar() == '.' and self.index + 1 < self.contents.len and isDigit(self.peek(1))) {
+            is_float = true;
+            self.advance(); // Skip '.'
+
+            // Consume fractional part
+            while (self.index < self.contents.len) {
+                const c = self.currentChar();
+                if (isDigit(c) or c == '_') {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Check for scientific notation
+        const c = self.currentChar();
+        if (c == 'e' or c == 'E') {
+            is_float = true;
+            self.advance();
+
+            // Handle optional sign
+            if (self.currentChar() == '+' or self.currentChar() == '-') {
+                self.advance();
+            }
+
+            // Ensure there's at least one digit
+            if (!isDigit(self.currentChar())) {
+                self.hasErrorTokens = true;
+                self.tokens.append(LexerToken.init(.ErrorToken, start_pos, "Invalid scientific notation: missing exponent digits")) catch unreachable;
+                return;
+            }
+
+            // Consume exponent digits
+            while (self.index < self.contents.len) {
+                const exp_c = self.currentChar();
+                if (isDigit(exp_c) or exp_c == '_') {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        const number_value = self.getLiteral(start_pos, self.index);
+        const token_kind = if (is_float) TokenKinds.FloatLiteral else TokenKinds.NumberLiteral;
+        self.tokens.append(LexerToken.init(token_kind, start_pos, number_value)) catch unreachable;
+    }
+
+    fn lexIdentifier(self: *LexerFile, start_pos: usize, lexer: Lexer) void {
+        // Consume until not identifier char
+        while (self.index < self.contents.len and isIdentifierChar(self.currentChar())) {
+            self.advance();
+        }
+
+        const id_value = self.getLiteral(start_pos, self.index);
+        const maybeKeyword = lexer.keyWordMap.get(id_value);
+
+        if (maybeKeyword) |keyword| {
+            self.tokens.append(LexerToken.init(keyword, start_pos, null)) catch unreachable;
+        } else {
+            self.tokens.append(LexerToken.init(TokenKinds.Identifier, start_pos, id_value)) catch unreachable;
+        }
+    }
+
+    fn lexString(self: *LexerFile, start_pos: usize) void {
+        self.advance(); // Skip opening quote
+        const string_start = self.index;
+        var string_terminated = false;
+
+        while (self.index < self.contents.len) {
+            const c = self.currentChar();
+
+            if (c == '\\') {
+                // Skip escape sequence (simplified - could be enhanced)
+                self.advance();
+                if (self.index < self.contents.len) {
+                    self.advance();
+                }
+            } else if (c == '"') {
+                string_terminated = true;
+                break;
+            } else if (c == '\n') {
+                // Multiline strings not allowed (adjust if needed for your language)
+                break;
+            } else {
+                self.advance();
+            }
+        }
+
+        if (string_terminated) {
+            const string_value = self.getLiteral(string_start, self.index);
+            self.advance(); // Skip closing quote
+            self.tokens.append(LexerToken.init(.StringLiteral, start_pos, string_value)) catch unreachable;
+        } else {
+            self.hasErrorTokens = true;
+            self.tokens.append(LexerToken.init(.ErrorToken, start_pos, "Unterminated string literal")) catch unreachable;
+        }
+    }
+
+    fn lexChar(self: *LexerFile, start_pos: usize) void {
+        self.advance(); // Skip opening quote
+        const char_start = self.index;
+        var char_terminated = false;
+        var char_count: usize = 0;
+
+        while (self.index < self.contents.len) {
+            const c = self.currentChar();
+
+            if (c == '\\') {
+                // Escape sequence
+                self.advance();
+                if (self.index < self.contents.len) {
+                    self.advance();
+                    char_count += 1;
+                }
+            } else if (c == '\'') {
+                char_terminated = true;
+                break;
+            } else if (c == '\n') {
+                break;
+            } else {
+                self.advance();
+                char_count += 1;
+            }
+        }
+
+        if (char_terminated and char_count == 1) {
+            const char_value = self.getLiteral(char_start, self.index);
+            self.advance(); // Skip closing quote
+            self.tokens.append(LexerToken.init(.CharLiteral, start_pos, char_value)) catch unreachable;
+        } else if (!char_terminated) {
+            self.hasErrorTokens = true;
+            self.tokens.append(LexerToken.init(.ErrorToken, start_pos, "Unterminated character literal")) catch unreachable;
+        } else {
+            self.hasErrorTokens = true;
+            self.tokens.append(LexerToken.init(.ErrorToken, start_pos, "Invalid character literal: must contain exactly one character")) catch unreachable;
+        }
+    }
+
+    fn lexBuiltin(self: *LexerFile, start_pos: usize) void {
+        self.advance(); // Skip '@'
+
+        // Handle @{} syntax
+        if (self.currentChar() == '{') {
+            self.tokens.append(LexerToken.init(.At, start_pos, null)) catch unreachable;
+            return;
+        }
+
+        const id_start = self.index;
+
+        // Consume identifier characters
+        while (self.index < self.contents.len and isIdentifierChar(self.currentChar())) {
+            self.advance();
+        }
+
+        if (id_start == self.index) {
+            // No identifier after @
+            self.hasErrorTokens = true;
+            self.tokens.append(LexerToken.init(.ErrorToken, start_pos, "Expected identifier after '@'")) catch unreachable;
+            return;
+        }
+
+        const id_value = self.getLiteral(id_start, self.index);
+        // Map builtin function names to appropriate tokens
+        // For now using .Import as placeholder - extend this mapping as needed
+        self.tokens.append(LexerToken.init(.Import, start_pos, id_value)) catch unreachable;
     }
 };
 
@@ -539,6 +570,7 @@ pub const Lexer = struct {
     files: ArrayListLexerFiles,
     allocator: std.mem.Allocator,
     keyWordMap: std.StringHashMap(TokenKinds),
+
     pub fn init(allocator: std.mem.Allocator) Lexer {
         return Lexer{
             .files = ArrayListLexerFiles.init(allocator),
@@ -554,6 +586,8 @@ pub const Lexer = struct {
         self.keyWordMap.deinit();
     }
 
+    /// Add a file to the lexer
+    /// The file name and contents are owned by the lexer
     pub fn addFile(self: *Lexer, name: []const u8, contents: []const u8) void {
         const file = LexerFile.init(name, contents, self.allocator);
         self.files.append(file) catch unreachable;
@@ -634,6 +668,7 @@ pub const Lexer = struct {
         try map.put("Some", .Some);
         try map.put("noreturn", .NoReturn);
         try map.put("AnyType", .AnyType);
+        try map.put("Type", .Type);
         try map.put("AnyError", .AnyError);
         try map.put("void", .Void);
         try map.put("bOr", .bOr);

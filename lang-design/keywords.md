@@ -28,6 +28,7 @@ Reserved identifiers in the Howl programming language.
 | `Self`           | Type of nearest enclosing scope that's not a function                      |
 | `None`           | Null/void value                                                            |
 | `Some`           | Non-null value (used in match statements)                                  |
+| `Type`           | A type                                                                     |
 | `AnyType`        | Generic type placeholder                                                   |
 | `AnyError`       | Any error type (used in match statements)                                  |
 | `i8`             | 8-bit signed integer                                                       |

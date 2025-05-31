@@ -37,9 +37,9 @@ For operations that need to prevent overflow/underflow:
 
 ```rust
 // These will return an error if the result would overflow/underflow
-let sum = try @add_s(x, y)
-let diff = try @sub_s(a, b)
-let product = try @mul_s(c, d)
+sum :: try @add_s(x, y)
+diff :: try @sub_s(a, b)
+product :: try @mul_s(c, d)
 ```
 
 ## Bitwise Operators
@@ -75,27 +75,27 @@ Operators are evaluated in the following order of precedence (from highest to lo
 
 ```rust
 // Arithmetic
-let sum = 5 + 3 * 2       // 11, not 16 (multiplication has higher precedence)
-let grouped = (5 + 3) * 2 // 16 (grouping changes precedence)
+sum :: 5 + 3 * 2       // 11, not 16 (multiplication has higher precedence)
+grouped :: (5 + 3) * 2 // 16 (grouping changes precedence)
 
 // Logical operators
-let combined = a < 5 and b > 10 // AND has higher precedence than comparison
-let with_grouping = a < (5 and b) > 10 // Changes meaning with grouping
+combined :: a < 5 and b > 10 // AND has higher precedence than comparison
+with_grouping :: a < (5 and b) > 10 // Changes meaning with grouping
 
 // Assignment
-var x = 10
+x := 10
 x += 5 // Same as x = x + 5
 
 // Bit manipulation
-let flags1 = 0b0101
-let flags2 = 0b1100
-let combined_flags = flags1 bOr flags2  // 0b1101
-let common_flags = flags1 bAnd flags2   // 0b0100
-let toggled_flags = flags1 bXor flags2  // 0b1001
-let inverted_flags = bNot flags1        // Inverts all bits
+flags1 :: 0b0101
+flags2 :: 0b1100
+combined_flags :: flags1 bOr flags2  // 0b1101
+common_flags :: flags1 bAnd flags2   // 0b0100
+toggled_flags :: flags1 bXor flags2  // 0b1001
+inverted_flags :: bNot flags1        // Inverts all bits
 
 // Pipe operator
-let processed = value |> process |> format
+processed :: value |> process |> format
 // Equivalent to: format(process(value))
 ```
 
@@ -105,7 +105,7 @@ Howl doesn't support custom operators, but you can achieve similar effects using
 
 ```rust
 // Instead of a custom operator, use a descriptive function name
-fn combine(a: Vector, b: Vector) Vector {
+combine :: fn (a: Vector, b: Vector) Vector {
     return .{
         .x = a.x + b.x,
         .y = a.y + b.y,
@@ -113,8 +113,8 @@ fn combine(a: Vector, b: Vector) Vector {
 }
 
 // Usage
-let result = combine(vec1, vec2)
+result :: combine(vec1, vec2)
 
 // For a more functional style, use the pipe operator
-let result = vec1 |> (fn(v) combine(v, vec2))
+result :: vec1 |> (fn(v) combine(v, vec2))
 ```

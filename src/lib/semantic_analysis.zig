@@ -1,5 +1,5 @@
 const std = @import("std");
-const Ast = @import("ast.zig");
+const Ast = @import("ast_simple.zig");
 
 const SemanticError = error{
     InvalidIntegerSuffix,

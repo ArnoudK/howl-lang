@@ -23,12 +23,12 @@ The following examples demonstrate Howl's clean and expressive syntax.
 
 ```rust
 // Import the standard library
-const std = @import("std")
+std :: @import("std")
 
 // Main function with error handling capability
-pub fn main() !void {
-    // Constants are declared with 'const'
-    const hello = "Hello World!"
+main :: () !void {
+    // Constants are declared with '::'
+    hello :: "Hello World!"
 
     // Print to debug output with formatting
     std.debug.print("{s}!!", .{hello})
@@ -42,7 +42,7 @@ Pattern matching provides elegant solutions for complex branching logic:
 
 ```rust
 // Convert numeric values to descriptive strings based on ranges
-pub fn quantity_string(a: u64) !str {
+quantity_string :: (a: u64) !str {
     // Match expressions evaluate conditions in order and return the first match
     return match a {
     | < 5 => "low"      // For values 0-4
@@ -52,7 +52,7 @@ pub fn quantity_string(a: u64) !str {
     }
 }
 
-pub fn branchingLogic(a: bool) void {
+branchingLogic :: (a: bool) void {
 
     match a {
     | true => func1()

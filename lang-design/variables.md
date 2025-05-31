@@ -1,33 +1,40 @@
 # Variable Declarations
 
-Howl offers several declaration keywords to express intent about mutability and compile-time evaluation.
+Howl uses a simplified declaration syntax with two main operators and compile-time support.
 
-## Declaration Keywords
+## Declaration Syntax
 
-| Keyword | Description                                             | Use Case                                                     |
-| :------ | :------------------------------------------------------ | :----------------------------------------------------------- |
-| `let`   | Non-reassignable variable declaration with mutable contents | For most variables where reassignment isn't needed           |
-| `var`   | Mutable variable declaration (reassignable)             | For variables that need to be reassigned                     |
-| `const` | Immutable compile-time known value (not reassignable)   | For truly immutable values known at compile time             |
-| `comp`  | Compile-time variable that remains mutable              | For values calculated at compile time that need modification |
+| Syntax | Description                                      | Use Case                                                 |
+| :----- | :----------------------------------------------- | :------------------------------------------------------- |
+| `::`   | Immutable declaration (cannot be reassigned)     | For constants, functions, types, and immutable variables |
+| `:=`   | Mutable variable declaration (can be reassigned) | For variables that need to be reassigned                 |
+| `comp` | Compile-time prefix for functions and variables  | For values calculated at compile time                    |
 
 ## Examples
 
 ```rust
-// Non-reassignable variable (contents may be modified)
-let user = #Person{.name = "Alice", .age = 30}
+// Immutable variable (contents may be modified, but cannot reassign)
+user :: Person{.name = "Alice", .age = 30}
 user.age = 31 // OK: changing a field
-// user = Person{.name = "Bob", .age = 25} // Error: can't reassign 'let'
+// user = Person{.name = "Bob", .age = 25} // Error: can't reassign '::'
 
-// Compile-time constant (nothing can be modified)
-const PI = 3.14159
-// PI = 3 // Error: can't modify 'const'
-
-// Compile-time mutable
-comp fibonacci = [_]u32{0, 1, 1, 2, 3, 5, 8, 13}
-fibonacci[7] = 21 // OK: can modify compile-time value
+// Constants (immutable values)
+PI :: 3.14159
+MAX_SIZE : i32 : 1000  // with explicit type
 
 // Mutable variable
-var counter = 0
-counter = 1 // OK: can reassign 'var'
+counter := 0
+counter = 1 // OK: can reassign ':='
+// Mutable with type
+large_int : i28 = 10e25
+large_int += 1
+
+// Compile-time values
+comp BUILD_FLAGS :: ["debug", "verbose"]
+comp fibonacci := [_]u32{0, 1, 1, 2, 3, 5, 8, 13}
+fibonacci[7] = 21 // OK: can modify compile-time value
+
+// Type inference works with both operators
+name := "Alice"  // mutable string
+config :: load_config()  // immutable result
 ```

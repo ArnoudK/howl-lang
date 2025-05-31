@@ -14,7 +14,6 @@ pub fn build(b: *std.Build) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
-    const clap = b.dependency("clap", .{});
 
     // This creates a "module", which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
@@ -66,8 +65,6 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
-    exe.root_module.addImport("clap", clap.module("clap"));
-
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).
@@ -102,11 +99,17 @@ pub fn build(b: *std.Build) void {
         .root_module = lib_mod,
     });
 
+    // Add the howl_lang_lib import to the library tests so they can import the lib
+    lib_unit_tests.root_module.addImport("howl_lang_lib", lib_mod);
+
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
     const exe_unit_tests = b.addTest(.{
         .root_module = exe_mod,
     });
+
+    // Add the howl_lang_lib import to the executable tests so they can import the lib
+    exe_unit_tests.root_module.addImport("howl_lang_lib", lib_mod);
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 

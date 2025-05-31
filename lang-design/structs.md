@@ -5,22 +5,22 @@ Howl provides robust structural types without traditional inheritance, focusing 
 ## Structure Definition
 
 ```rust
-const Person = struct {
+Person :: struct {
     // Fields
     name: str,
     age: u32,
+}
 
-    // Method with implicitly bound 'self' parameter
-    fn greet(self: Self) void {
-        std.debug.print("Hello, my name is {s}", .{self.name})
-    }
+// Method with implicitly bound 'self' parameter
+greet :: fn(self: Person) void {
+    std.debug.print("Hello, my name is {s}", .{self.name})
+}
 
-    // Constructor (returns Self type)
-    fn init(name: str, age: u32) $Self {
-        return $Self{
-            .name = name,
-            .age = age,
-        }
+// Constructor (returns Person type)
+init :: fn(name: str, age: u32) Person {
+    return Person{
+        .name = name,
+        .age = age,
     }
 }
 ```
@@ -29,10 +29,14 @@ const Person = struct {
 
 ```rust
 // Create an instance using the constructor
-let alice = Person.init("Alice", 30)
+alice :: Person.init("Alice", 30)
 
-// Or directly using field initialization (stack-allocated)
-let bob = .Person{.name = "Bob", .age = 25}
+// Or directly using field initialization
+bob :: Person{.name = "Bob", .age = 25}
+
+// Mutable instance
+charlie := Person{.name = "Charlie", .age = 28}
+charlie.age = 29  // OK: can modify fields of mutable variable
 
 // Call methods
 alice.greet() // Prints: Hello, my name is Alice
@@ -43,24 +47,24 @@ alice.greet() // Prints: Hello, my name is Alice
 Howl uses compile-time parameters to achieve generic-like behavior without explicit generic syntax:
 
 ```rust
-const std = @import("std")
+std :: @import("std")
 
 // A generic-like container type
-const Container = struct {
+Container :: struct {
     // Create a specialized container for any type
-    pub fn of(comptime T: type) type {
+    pub of :: fn(comptime T: AnyType) Type {
         return struct {
             data: ?T,
 
-            pub fn init() Self {
+            pub init :: fn() Self {
                 return .{.data = None}
             }
 
-            pub fn set(self: *Self, value: T) void {
+            pub set :: fn(self: *Self, value: T) void {
                 self.data = value
             }
 
-            pub fn get(self: Self) ?T {
+            pub get :: fn(self: Self) ?T {
                 return self.data
             }
         }
@@ -68,20 +72,20 @@ const Container = struct {
 }
 
 // Usage example
-fn example_container() void {
+example_container :: fn() void {
     // Create specialized container types
-    const IntContainer = Container.of(i32)
-    const StrContainer = Container.of(str)
+    IntContainer :: Container.of(i32)
+    StrContainer :: Container.of(str)
 
     // Create and use instances
-    var int_box = IntContainer.init()
+    int_box := IntContainer.init()
     int_box.set(42)
 
-    var str_box = StrContainer.init()
+    str_box := StrContainer.init()
     str_box.set("Hello")
 
     // Generic function that works with any Container
-    fn printContainer(container: anytype) void {
+    printContainer :: fn(container: AnyType) void {
         match container.get() {
         | Some => |val| std.debug.print("Container value: {any}\n", .{val })
         | None => std.debug.print("Empty Container: :(", .{});
@@ -90,5 +94,6 @@ fn example_container() void {
 
     printContainer(int_box) // Works with IntContainer
     printContainer(str_box) // Works with StrContainer
+
 }
 ```

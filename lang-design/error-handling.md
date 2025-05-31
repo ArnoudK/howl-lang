@@ -7,22 +7,22 @@ Howl provides several ergonomic error handling mechanisms:
 Handles errors inline and can provide fallback values:
 
 ```rust
-const std = @import("std")
-const print_d = std.debug.print
-fn catch_example() void {
+std :: @import("std")
+print_d :: std.debug.print
+catch_example :: fn() void {
     // Simple error handling
     throwingFunction() catch |e| {
         print_d("Error occurred: {e}", .{e})
         }
 
     // Providing a fallback value
-    let val: str = throwingFunction2() catch |e| {
+     str :: throwingFunction2() catch |e| {
         std.debug.print("Failed with error: {e}", .{e})
         return "fallback"
     }
 
     // or match the error
-    let val: str = throwingFunction() catch |e| {
+    str :: throwingFunction() catch |e| {
         return match e {
         | .error2 =>{ return "Error 2"}
         | .error3 =>{ return "Error 3"}
@@ -31,15 +31,15 @@ fn catch_example() void {
 
 
     // Abbreviated form for common cases
-    let result = getValue() catch "default"
+    result :: getValue() catch "default"
 
     // else where
-    const ValueError = error {
+    ValueError :: error {
         MySpecificError,
         OtherError1,
         OtherError2,
     }
-    pub fn valueErrorOrNull() ValueError!?Value
+    valueErrorOrNull :: () ValueError!?Value
 
     // Use match to handle errors
     match valueErrorOrNull() {
@@ -56,12 +56,12 @@ fn catch_example() void {
 Shorthand for propagating errors to the caller:
 
 ```rust
-fn try_example() !void {
+try_example :: fn() !void {
     // If this function fails, propagate its error to our caller
     try throwingFunction()
 
     // Capture successful return value, propagate error on failure
-    let result = try getValueFunction()
+    result :: try getValueFunction()
     std.debug.print("Got: {any}", .{result})
 }
 ```
@@ -71,12 +71,12 @@ fn try_example() !void {
 Ensures cleanup code runs when leaving scope, regardless of how the scope is exited:
 
 ```rust
-fn defer_example() !void {
-    var resource = try acquireResource()
+defer_example :: fn() !void {
+    resource := try acquireResource()
     defer releaseResource(resource)
 
     // Multiple defers execute in reverse order (LIFO)
-    var resource2 = try acquireAnotherResource()
+    resource2 := try acquireAnotherResource()
     defer releaseAnotherResource(resource2) // This runs first
 
     // Work with resources...
@@ -88,10 +88,10 @@ fn defer_example() !void {
 Like `defer`, but only executes if the scope is exited with an error:
 
 ```rust
-const File = std.File
-fn create_file(path: str) !void {
-    const file_option : File.OptionFlags = .create
-    let file = try File.open(path, file_option)
+File :: std.File
+create_file :: fn(path: str) !void {
+    file_option : File.OptionFlags :: .create
+    file :: try File.open(path, file_option)
     errdefer File.deleteFile(path) // Only runs if an error occurs later
     defer file.close()
 
@@ -107,17 +107,17 @@ Provides a fallback value for `None` values in optional types:
 
 ```rust
 // If getTOrNull() returns None, use the default value instead
-let myValue: T = getTOrNull() orelse T.default()
+myValue : T : getTOrNull() orelse T.default()
 
 // Can be chained with other error handling
-let result = (try getValue()) orelse default_value
+result :: (try getValue()) orelse default_value
 ```
 
 ## Defining Error Sets
 
 ```rust
 // Define a custom error set
-const FileError = error {
+FileError :: error {
     NotFound,
     AccessDenied,
     DiskFull,
@@ -125,7 +125,7 @@ const FileError = error {
 }
 
 // Function that returns a specific error set
-fn readConfig(path: str) FileError!Config {
+readConfig :: fn(path: str) FileError!Config {
     if (!fileExists(path)) {
         return FileError.NotFound
     }
@@ -137,8 +137,8 @@ fn readConfig(path: str) FileError!Config {
 }
 
 // Using the function
-fn loadSettings() !void {
-    const config = readConfig("settings.conf") catch |err| {
+loadSettings :: fn() !void {
+    config :: readConfig("settings.conf") catch |err| {
         match err {
         | FileError.NotFound => {
             std.debug.print("Config file not found, using defaults", .{})

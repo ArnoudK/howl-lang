@@ -8,10 +8,10 @@ Create a vector type using `@Vector`:
 
 ```rust
 // Create a vector type of 4 f32 values
-const Vec4f32 = @Vector(4, f32)
+Vec4f32 :: @Vector(4, f32)
 
 // Create a vector type of 8 u8 values
-const Vec8u8 = @Vector(8, u8)
+Vec8u8 :: @Vector(8, u8)
 ```
 
 ## Vector Operations
@@ -43,26 +43,26 @@ Vector arithmetic operations apply to each element separately:
 ### Basic Vector Operations
 
 ```rust
-const std = @import("std")
-const Vec4f32 = @Vector(4, f32)
+std :: @import("std")
+Vec4f32 :: @Vector(4, f32)
 
-fn vector_basics() void {
+vector_basics :: fn() void {
     // Initialize vectors
-    let v1 = Vec4f32{1.0, 2.0, 3.0, 4.0}
-    let v2 = Vec4f32{5.0, 6.0, 7.0, 8.0}
+    v1 :: Vec4f32{1.0, 2.0, 3.0, 4.0}
+    v2 :: Vec4f32{5.0, 6.0, 7.0, 8.0}
     
     // Element-wise operations
-    let sum = v1 + v2        // [6.0, 8.0, 10.0, 12.0]
-    let product = v1 * v2    // [5.0, 12.0, 21.0, 32.0]
+    sum :: v1 + v2        // [6.0, 8.0, 10.0, 12.0]
+    product :: v1 * v2    // [5.0, 12.0, 21.0, 32.0]
     
     // Element access (via array indexing)
-    let first = v1[0]        // 1.0
+    first :: v1[0]        // 1.0
     
     // Conditionals return boolean vectors
-    let greater = v2 > v1    // [true, true, true, true]
+    greater :: v2 > v1    // [true, true, true, true]
     
     // Check if any element meets a condition
-    let any_greater_than_6 = @reduce(.Or, v2 > Vec4f32{6.0, 6.0, 6.0, 6.0})
+    any_greater_than_6 :: @reduce(.Or, v2 > Vec4f32{6.0, 6.0, 6.0, 6.0})
     // any_greater_than_6 = true
 }
 ```
@@ -70,14 +70,14 @@ fn vector_basics() void {
 ### Computing Dot Product
 
 ```rust
-const Vec4f32 = @Vector(4, f32)
+Vec4f32 :: @Vector(4, f32)
 
-fn dotProduct(a: Vec4f32, b: Vec4f32) f32 {
+dotProduct :: fn(a: Vec4f32, b: Vec4f32) f32 {
     // Element-wise multiplication
-    let multiplied = a * b // [a[0]*b[0], a[1]*b[1], a[2]*b[2], a[3]*b[3]]
+    multiplied :: a * b // [a[0]*b[0], a[1]*b[1], a[2]*b[2], a[3]*b[3]]
     
     // Sum all elements
-    var sum: f32 = 0
+    sum : f32 = 0
     for (0..4) |i| {
         sum += multiplied[i]
     }
@@ -88,34 +88,34 @@ fn dotProduct(a: Vec4f32, b: Vec4f32) f32 {
     return sum
 }
 
-fn example() void {
-    let vec1 = Vec4f32{1.0, 2.0, 3.0, 4.0}
-    let vec2 = Vec4f32{5.0, 6.0, 7.0, 8.0}
+example :: fn() void {
+    vec1 :: Vec4f32{1.0, 2.0, 3.0, 4.0}
+    vec2 :: Vec4f32{5.0, 6.0, 7.0, 8.0}
 
-    let result = dotProduct(vec1, vec2) // 70.0
+    result :: dotProduct(vec1, vec2) // 70.0
 }
 ```
 
 ### Image Processing Example
 
 ```rust
-const Vec4u8 = @Vector(4, u8)
+Vec4u8 :: @Vector(4, u8)
 
-fn applyBrightness(pixel: Vec4u8, brightness: i8) Vec4u8 {
+applyBrightness :: fn(pixel: Vec4u8, brightness: i8) Vec4u8 {
     // Convert to signed for safe arithmetic
-    const pixel_i8 = @bitCast(@Vector(4, i8), pixel)
+    pixel_i8 :: @bitCast(@Vector(4, i8), pixel)
     
     // Create vector filled with brightness value
-    const brightness_vec = @splat(4, brightness)
+    brightness_vec :: @splat(4, brightness)
     
     // Add brightness and clamp to valid u8 range
-    const result_i8 = @min(@max(pixel_i8 + brightness_vec, 0), 255)
+    result_i8 :: @min(@max(pixel_i8 + brightness_vec, 0), 255)
     
     // Convert back to unsigned
     return @bitCast(Vec4u8, result_i8)
 }
 
-fn processImageSIMD(image: []Vec4u8, brightness: i8) void {
+processImageSIMD :: fn(image: []Vec4u8, brightness: i8) void {
     for (image) |*pixel| {
         pixel.* = applyBrightness(pixel.*, brightness)
     }
@@ -134,8 +134,8 @@ fn processImageSIMD(image: []Vec4u8, brightness: i8) void {
 
 ```rust
 // Choose vector size based on target architecture
-const std = @import("std")
-const optimal_vector_size = if (std.Target.current.cpu.arch == .x86_64) 
+std :: @import("std")
+optimal_vector_size :: if (std.Target.current.cpu.arch == .x86_64) 
                               32 // AVX-256 (32 bytes)
                            else if (std.Target.current.cpu.arch == .arm)
                               16 // NEON (16 bytes)
@@ -143,5 +143,5 @@ const optimal_vector_size = if (std.Target.current.cpu.arch == .x86_64)
                               16;
 
 // Create a float vector with the optimal size
-const OptimalFloatVec = @Vector(optimal_vector_size / @sizeOf(f32), f32);
+OptimalFloatVec :: @Vector(optimal_vector_size / @sizeOf(f32), f32);
 ```

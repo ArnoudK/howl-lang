@@ -1,146 +1,104 @@
 # Memory Management
 
-Howl provides flexible memory management with distinct allocation strategies, giving developers explicit control over memory while maintaining safety.
+Howl provides flexible memory management with distinct allocation strategies for safety and performance.
 
-## Allocation Strategies Overview
+## Allocation Strategies
 
-| Strategy                      | Syntax     | Lifetime                   | Use Case                             |
-| :---------------------------- | :--------- | :------------------------- | :----------------------------------- |
-| Automatic                     | `.` prefix | Compiler decides           | You don't care                       |
-| Garbage Collection            | `$` prefix | Managed by GC              | Complex data structures, shared data |
-| Stack Allocation              | `~` prefix | Automatic at scope exit    | Small, temporary values              |
-| Scoped Manual Heap Allocation | `#` prefix | Deterministic at scope end | Resource management, large objects   |
+| Strategy      | Syntax                     | Lifetime               | Use Case                       | Performance |
+| :------------ | :------------------------- | :--------------------- | :----------------------------- | :---------- |
+| **Automatic** | `.` prefix                 | Compiler decides       | Default choice                 | Variable    |
+| **Stack**     | `~` prefix                 | Scope exit             | Small, temporary values        | Excellent   |
+| **GC**        | `$` prefix                 | Managed by GC          | Shared data, complex ownership | Good        |
+| **Manual**    | `#` prefix                 | Scope exit             | Function-based allocation      | Good        |
+| **RefCount**  | `&` prefix                 | Last reference dropped | Shared ownership, no cycles    | Good        |
+| **Atomic RC** | `` ` `` prefix             | Thread-safe ref count  | Multithreaded shared ownership | Fair        |
+| **Arena**     | `.init(.arena{my_arena})`  | Until arena freed      | Batch allocations              | Excellent   |
+|           | `my_arena.create(AnyType)` |                        |
 
-## Automatic
-
-You use the automatic `.` prefix for standard allocations.
-
-## Garbage-Collected Heap Allocation
-
-Use the `$` prefix for objects that should be managed by the garbage collector. This is ideal for data with complex ownership patterns or unknown lifetimes.
+## Basic Usage
 
 ```rust
-// Create a heap-allocated Person using garbage collection
-let person = $Person{.name = "Alice", .age = 30}
+// Automatic (recommended default)
+user :: .User{.name = "Alice", .age = 30}
 
-// Strings are heap-allocated by default
-let message = "Hello, world!"
+// Stack for small, local data
+point :: ~Point{.x = 10, .y = 20}
 
-// Explicitly heap-allocate a mutable string builder
-let builder = str.init$()
-builder.append("Dynamic content")
+// GC for shared/dynamic data
+cache :: $HashMap(str, Data).init()
+
+// Manual with scope cleanup
+file :: #File.open("data.txt")
+
+// Reference counting
+config :: &Config{.timeout = 30}
+
+// Thread-safe reference counting
+shared :: `SharedState.init()
+
+// Arena for batch operations
+arena :: std.heap.ArenaAllocator.init()
+defer arena.deinit()
+nodes :: ArrayList(Node).init(.arena{arena})
 ```
 
-### Assignment Between Memory Regions
+## Decision Guide
 
-When assigning values between different memory regions, these rules apply:
+**Choose by use case:**
+
+- **Automatic (`.`)**: Default, let compiler optimize
+- **Stack (`~`)**: Small data, known size, local scope
+- **GC (`$`)**: Shared data, complex ownership, collections
+- **Manual (`#`)**: Function-based allocation with scope cleanup
+- **RefCount (`&`)**: Shared ownership without cycles (single-threaded)
+- **Atomic RC (`` ` ``)**: Shared ownership (multithreaded)
+- **Arena (`.init(.arena{arena})`)**: Many allocations, batch cleanup
+
+## Advanced Specification
+
+### Explicit Strategy Selection
 
 ```rust
-// When a stack-allocated value is assigned to a GC object field,
-// the value is copied to the heap - not referenced
-let point = .Point{.x = 10, .y = 20}  // Stack-allocated
-let game = $Game{.player_position = point}  // Value is copied to heap
-
-// Modifying the original doesn't affect the copy
-point.x = 15  // The game.player_position.x is still 10
-
-// Complex objects with heap-allocated fields maintain those references
-let user = .User{.name = "Alice"}  // .name is already heap-allocated
-let registry = $Registry{.current_user = user}  // name reference is preserved
-
-// Manual allocations (#) assigned to GC objects ($) remain independently managed
-let file = #File.open("data.txt", .{.read = true})
-let processor = $Processor{.data_source = file}  // file still has deterministic cleanup
-// file is freed at scope end even though referenced by processor
+list :: ArrayList(i32).init(.gc)         // GC allocation
+map :: HashMap(str, Data).init(.rc)      // Reference counted
+buffer :: Buffer.init(.manual, 1024)     // Manual allocation
+arena_list :: ArrayList(Node).init(.arena{my_arena})  // Arena allocation
 ```
 
-## Stack Allocation
-
-Use the `.` prefix for efficient stack allocation of temporary values with well-defined lifetimes.
+### Custom Type Support
 
 ```rust
-// Create a stack-allocated Point structure
-let point = .Point{.x = 10, .y = 20}
-
-// Arrays use stack allocation by default
-let numbers = [5]i32{1, 2, 3, 4, 5}
-
-// Anonymous struct literals also use stack allocation
-let config = .{.width = 800, .height = 600}
-```
-
-## Scoped Manual Heap Allocation
-
-Use the `#` prefix for resources that need deterministic cleanup regardless of garbage collection timing.
-
-```rust
-fn process_file(path: str) !void {
-    // File is heap-allocated but automatically freed at end of scope
-    let file = #File.open(path, .{.read = true}) catch |err| {
-        std.debug.print("Failed to open file: {e}\n", .{err})
-        return err
+MyStruct :: struct {
+    init :: (strategy: @MemStrat, size: usize) !MyStruct {
+        allocator :: switch (strategy) {
+            .gc => std.heap.gc_allocator,
+            .manual => std.heap.c_allocator,
+            .arena => |a| a.allocator,
+            else => @compileError("Unsupported strategy"),
+        };
+        // ...
     }
+};
 
-    defer file.close() // Optional but recommended for clarity
+main :: () !void {
+  myArena :: std.heap.arena()
+  defer myArena.free()
+  s :: MyStruct.init(.arena{myArena})
+}
 
-    // Process file contents...
-} // File is automatically freed here
 ```
 
-## Memory Management Decision Guide
+## Best Practices
 
-- **Use stack allocation** (`~` prefix) when:
+```rust
+// ✅ Good patterns
+config :: .Config{.timeout = 30}           // Let compiler decide
+temp :: ~Point{.x = 1, .y = 2}            // Stack for temp data
+shared :: $HashMap.init()                  // GC for shared structures
+file :: #File.open("data.txt")             // Manual with scope cleanup
 
-  - The object has a simple lifetime limited to the current scope
-  - The object is small and frequently accessed
-  - You need the best performance for local operations
-
-- **Use garbage collection** (`$` prefix) when:
-
-  - The object's ownership is complex or shared
-  - The object might outlive its creating scope
-  - Simplicity of memory management is more important than deterministic cleanup
-
-- **Use scoped manual allocation** (`#` prefix) when:
-
-  - You need deterministic resource cleanup
-  - The object represents a system resource (file, network connection)
-  - You want heap allocation but with predictable cleanup timing
-
-  **Use an arena allocator** when:
-
-  - Performance matters a lot.
-  - The lifetime and scope of usage is clear. Because you will need to deinit the arena yourself.
-    Usage:
-
-  ```rust
-  const std = @import("std");
-  // ArrayList of 1kb chunks
-  const Chunks = std.ArrayList([1024] u8);
-  const BigObject = struct {
-    chunks : Chunks,
-    fn initArena(arena : std.heap.Arena) Self{
-        let chunks = arena.create(Chunks)
-        let bigObj = arena.create(BigObject)
-        bigObj.chunks = chunks
-        return bigObj
-    }
-  }
-  fn arenaExample() !void {
-    let arena = std.heap.Arena.init()
-    const bigObj = BigObject.initArena(arena)
-    doSomeThingWithBigObject(bigObj)
-    // frees all memory allocated by the arena
-     arena.deinit()
-  }
-  ```
-
-## Default Allocation By Type
-
-Some types in Howl have default allocation strategies:
-
-- `str` and `strb`: Default to garbage collection
-- Fixed-size arrays: Default to stack allocation
-- Dynamic collections: Default to garbage collection
-
-You can override these defaults with explicit allocation prefixes when needed.
+// ❌ Avoid these patterns
+huge :: ~[1_000_000]u8{0}                  // Too large for stack
+bad :: fn() ~Point { return ~Point{} }           // Can't return stack data
+cycle :: &Node{.parent = cycle}            // Reference cycle
+```

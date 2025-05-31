@@ -1,8 +1,9 @@
 const std = @import("std");
 const testing = std.testing;
-const Lexer = @import("lexer.zig").Lexer;
-const Ast = @import("ast.zig");
-const SemanticAnalyzer = @import("semantic_analysis.zig").SemanticAnalyzer;
+const lib = @import("../root.zig");
+const Lexer = lib.Lexing.Lexer;
+const Ast = lib.Ast;
+const SemanticAnalyzer = lib.SemanticAnalysis.SemanticAnalyzer;
 
 const testSrc1 =
     //\\ const std = @import("std")

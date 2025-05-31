@@ -1,21 +1,22 @@
 const std = @import("std");
 const testing = std.testing;
-const Lexer = @import("lexer.zig").Lexer;
-const Ast = @import("ast.zig");
+const lib = @import("../root.zig");
+const Lexer = lib.Lexing.Lexer;
+const Ast = lib.Ast;
 
 const testSrc1 =
-    \\ const std = @import("std")
-    \\ pub const kek = 5
-    \\ pub const lol = 10 + kek
+    \\std :: @import("std")
+    \\pub kek :: 5
+    \\pub lol :: 10 + kek
     \\ 
-    \\ fn add(a: i32, b: i32) i32 {
-    \\     a + b
-    \\ }
+    \\add :: fn(a: i32, b: i32) i32 {
+    \\  a + b
+    \\}
     \\ 
-    \\ pub fn main() {
-    \\     let x = add(kek, lol)
-    \\    std.debug.print("x = {}\n", .{x})
-    \\ }
+    \\pub main :: fn () {
+    \\  x :: add(kek, lol)
+    \\  std.debug.print("x = {}\n", .{x})
+    \\}
     \\
 ;
 
