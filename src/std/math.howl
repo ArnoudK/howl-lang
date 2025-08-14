@@ -1,0 +1,73 @@
+// std/math module - Mathematical functions and constants
+
+// Mathematical constants
+PI: f64 : 3.14159265358979323846
+E: f64 : 2.71828182845904523536
+TAU: f64 : 6.28318530717958647692
+
+// Basic arithmetic functions
+abs :: fn(x: f64) -> f64 {
+    return if x < 0.0 { -x } else { x }
+}
+
+min :: fn(a: f64, b: f64) -> f64 {
+    return if a < b { a } else { b }
+}
+
+max :: fn(a: f64, b: f64) -> f64 {
+    return if a > b { a } else { b }
+}
+
+// Power function
+pow :: fn(base: f64, exponent: f64) -> f64 {
+    // TODO: Implement power function
+    return base
+}
+
+// Square root
+sqrt :: fn(x: f64) -> f64 {
+    // TODO: Implement square root
+    return x
+}
+
+// Trigonometric functions
+sin :: fn(x: f64) -> f64 {
+    // TODO: Implement sine
+    return x
+}
+
+cos :: fn(x: f64) -> f64 {
+    // TODO: Implement cosine
+    return x
+}
+
+tan :: fn(x: f64) -> f64 {
+    // TODO: Implement tangent
+    return x
+}
+
+// Logarithmic functions
+log :: fn(x: f64) -> f64 {
+    // Natural logarithm
+    return x
+}
+
+log10 :: fn(x: f64) -> f64 {
+    // Base-10 logarithm
+    return x
+}
+
+// Rounding functions
+floor :: fn(x: f64) -> f64 {
+    return @truncate(f64, x)
+}
+
+ceil :: fn(x: f64) -> f64 {
+    // TODO: Implement ceiling
+    return x
+}
+
+round :: fn(x: f64) -> f64 {
+    // TODO: Implement rounding
+    return x
+}

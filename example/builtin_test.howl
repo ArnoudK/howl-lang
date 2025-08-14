@@ -1,0 +1,19 @@
+std :: @import("std")
+
+pub main :: fn() !void {
+    // Test type introspection
+    value : i32 = 42
+    size :: @sizeOf(i32)
+    
+    // Test safe arithmetic (though we don't handle errors yet)
+    a : u8 = 100
+    b : u8 = 50
+    sum :: @add_s(a, b)
+    
+    // Test type casting
+    big_value : i64 = 1000
+    small_value :: @truncate(i16, big_value)
+    
+    std.debug.print("Value: {}, Size: {}, Sum: {}, Small: {}", .{value, size, sum, small_value})
+    return
+}

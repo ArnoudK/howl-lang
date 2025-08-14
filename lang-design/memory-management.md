@@ -13,7 +13,7 @@ Howl provides flexible memory management with distinct allocation strategies for
 | **RefCount**  | `&` prefix                 | Last reference dropped | Shared ownership, no cycles    | Good        |
 | **Atomic RC** | `` ` `` prefix             | Thread-safe ref count  | Multithreaded shared ownership | Fair        |
 | **Arena**     | `.init(.arena{my_arena})`  | Until arena freed      | Batch allocations              | Excellent   |
-|           | `my_arena.create(AnyType)` |                        |
+|               | `my_arena.create(AnyType)` |                        |
 
 ## Basic Usage
 
@@ -102,3 +102,9 @@ huge :: ~[1_000_000]u8{0}                  // Too large for stack
 bad :: fn() ~Point { return ~Point{} }           // Can't return stack data
 cycle :: &Node{.parent = cycle}            // Reference cycle
 ```
+
+## Type involvements
+
+When a Memory syntax is used before the type name it changes the type.
+Example: `` `MyStruct`` will cause the memory init type that is in all
+struct types of howllang to be set Atomic Refenence counting.

@@ -1,0 +1,76 @@
+// std module - Main standard library entry point
+
+// Re-export commonly used modules
+debug :: @import("std/debug.howl")
+mem :: @import("std/mem.howl")
+math :: @import("std/math.howl")
+io :: @import("std/io.howl")
+testing :: @import("std/testing.howl")
+
+// Common type aliases
+usize :: type = u64    // Platform word size
+isize :: type = i64    // Platform signed word size
+
+// Common utility functions
+TODO :: fn(message: str) {
+    @compileError("TODO: " ++ message)
+    return
+}
+
+unreachable :: fn() {
+    @panic("Reached unreachable code")
+    return
+}
+
+// Generic List type constructor
+List :: fn(T: type) type {
+    return struct {
+        items: []T,
+        capacity: usize,
+        len: usize,
+        allocator: ?*mem.Allocator,
+        
+        // Initialization methods
+        init :: fn() @This() {
+            return @This(){
+                .items = [],
+                .capacity = 0,
+                .len = 0,
+                .allocator = null
+            }
+        },
+        
+        initCapacity :: fn(initial_capacity: usize) @This() {
+            return @This(){
+                .items = [],
+                .capacity = initial_capacity,
+                .len = 0,
+                .allocator = null
+            }
+        },
+        
+        from :: fn(array: []T) @This() {
+            return @This(){
+                .items = array,
+                .capacity = array.len,
+                .len = array.len,
+                .allocator = null
+            }
+        }
+    }
+}
+
+// Type utility functions
+TypeInfo :: struct {
+    name: str,
+    size: usize,
+    alignment: usize
+}
+
+typeInfo :: fn(T: type) -> TypeInfo {
+    return TypeInfo{
+        .name = @TypeOf(T),
+        .size = @sizeOf(T),
+        .alignment = @alignOf(T)
+    }
+}

@@ -1,0 +1,11 @@
+main :: fn() i32 {
+    x := 42
+    y := undefinedVar
+    z := x + "string"  // Type mismatch error
+    w := nonExistentFunc()
+    return "not a number"  // Return type mismatch
+}
+
+badFunction :: fn(param: UnknownType) void {
+    return param + 5
+}

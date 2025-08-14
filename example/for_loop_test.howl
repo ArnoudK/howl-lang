@@ -1,0 +1,118 @@
+// Comprehensive For Loop Test Program
+// This tests all for loop variations and features
+
+fn main() {
+    print("=== FOR LOOP COMPREHENSIVE TEST ===\n");
+    
+    // 1. Basic for loop with range
+    print("\n1. Basic for loop (0 to 4):\n");
+    for i in 0..5 {
+        print("i = ");
+        print(i);
+        print("\n");
+    }
+    
+    // 2. For loop with step
+    print("\n2. For loop with step (0 to 10, step 2):\n");
+    for i in 0..11 step 2 {
+        print("i = ");
+        print(i);
+        print("\n");
+    }
+    
+    // 3. For loop with negative step (countdown)
+    print("\n3. For loop with negative step (10 down to 0):\n");
+    for i in 10..(-1) step -1 {
+        print("i = ");
+        print(i);
+        print("\n");
+    }
+    
+    // 4. For loop with variables as bounds
+    print("\n4. For loop with variable bounds:\n");
+    let start = 5;
+    let end = 8;
+    for i in start..end {
+        print("i = ");
+        print(i);
+        print("\n");
+    }
+    
+    // 5. For loop with expression bounds
+    print("\n5. For loop with expression bounds:\n");
+    for i in (2 + 1)..(3 * 3) {
+        print("i = ");
+        print(i);
+        print("\n");
+    }
+    
+    // 6. For loop with custom step variable
+    print("\n6. For loop with custom step:\n");
+    let step_size = 3;
+    for i in 0..13 step step_size {
+        print("i = ");
+        print(i);
+        print("\n");
+    }
+    
+    // 7. Nested for loops
+    print("\n7. Nested for loops (multiplication table):\n");
+    for x in 1..4 {
+        for y in 1..4 {
+            let result = x * y;
+            print(x);
+            print(" * ");
+            print(y);
+            print(" = ");
+            print(result);
+            print("  ");
+        }
+        print("\n");
+    }
+    
+    // 8. For loop with calculations inside
+    print("\n8. For loop with calculations (squares):\n");
+    for i in 1..6 {
+        let square = i * i;
+        print(i);
+        print("^2 = ");
+        print(square);
+        print("\n");
+    }
+    
+    // 9. For loop with conditionals
+    print("\n9. For loop with conditionals (even numbers only):\n");
+    for i in 1..11 {
+        if i % 2 == 0 {
+            print("Even: ");
+            print(i);
+            print("\n");
+        }
+    }
+    
+    // 10. Large step test
+    print("\n10. Large step test (0 to 100, step 25):\n");
+    for i in 0..101 step 25 {
+        print("i = ");
+        print(i);
+        print("\n");
+    }
+    
+    // 11. Edge case: single iteration
+    print("\n11. Single iteration (5 to 6):\n");
+    for i in 5..6 {
+        print("Single iteration: i = ");
+        print(i);
+        print("\n");
+    }
+    
+    // 12. Edge case: empty range
+    print("\n12. Empty range test (5 to 5):\n");
+    print("Before empty loop\n");
+    for i in 5..5 {
+        print("This should not print\n");
+    }
+    print("After empty loop\n");
+    
+    print("\n=== FOR LOOP TEST COMPLETE ===\n");
+}

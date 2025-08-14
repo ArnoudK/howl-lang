@@ -21,7 +21,7 @@ The following examples demonstrate Howl's clean and expressive syntax.
 
 ### Hello World Program
 
-```rust
+```howl
 // Import the standard library
 std :: @import("std")
 

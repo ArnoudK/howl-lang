@@ -1,0 +1,117 @@
+{
+  "name": "howl-language-support",
+  "displayName": "Howl Language Support",
+  "description": "Language support for the Howl programming language with LSP integration",
+  "version": "0.1.0",
+  "publisher": "howl-lang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/howl-lang/howl-lang"
+  },
+  "engines": {
+    "vscode": "^1.8.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "howl",
+    "language",
+    "lsp",
+    "syntax highlighting"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:howl",
+    "workspaceContains:**/*.howl",
+    "onCommand:howl.restartLanguageServer"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "howl",
+        "aliases": [
+          "Howl",
+          "howl"
+        ],
+        "extensions": [
+          ".howl"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/howl-light.png",
+          "dark": "./icons/howl-dark.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "howl",
+        "scopeName": "source.howl",
+        "path": "./syntaxes/howl.tmGrammar.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Howl Language",
+      "properties": {
+        "howl.lsp.serverPath": {
+          "type": "string",
+          "default": "howl_lsp",
+          "description": "Path to the Howl LSP server executable. If not absolute, will search in PATH."
+        },
+        "howl.lsp.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the Howl language server."
+        },
+        "howl.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable/disable the Howl language server."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "howl.restartLanguageServer",
+        "title": "Restart Language Server",
+        "category": "Howl"
+      },
+      {
+        "command": "howl.showOutputChannel",
+        "title": "Show Output Channel",
+        "category": "Howl"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "~24.2.1",
+    "@types/vscode": "^1.8.0",
+    "@typescript-eslint/eslint-plugin": "^8.39.1",
+    "@typescript-eslint/parser": "^8.39.1",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.6.0",
+    "eslint": "^9.33.0",
+    "typescript": "^5.9.2",
+    "vscode-languageclient": "^9.0.1"
+  },
+  "dependencies": {
+  },
+  "packageManager": "pnpm@10.14.0+sha512.ad27a79641b49c3e481a16a805baa71817a04bbe06a38d17e60e2eaee83f6a146c6a688125f5792e48dd5ba30e7da52a5cda4c3992b9ccf333f9ce223af84748"
+}

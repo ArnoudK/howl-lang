@@ -1,0 +1,42 @@
+// Comprehensive For Loop Test using correct Howl syntax
+std :: @import("std")
+
+main :: fn() {
+    std.debug.print("=== FOR LOOP COMPREHENSIVE TEST ===\n", .{})
+    
+    // 1. Basic array iteration
+    std.debug.print("\n1. Basic array iteration:\n", .{})
+    numbers := [1, 2, 3, 4, 5]
+    for (numbers) |value| {
+        std.debug.print("Value: {}\n", .{value})
+    }
+    
+    // 2. Range-based for loops (inclusive)
+    std.debug.print("\n2. Range-based for loop (0 to 5 inclusive):\n", .{})
+    for (0..=5) |i| {
+        std.debug.print("i = {}\n", .{i})
+    }
+    
+    // 3. Range-based for loops (exclusive)
+    std.debug.print("\n3. Range-based for loop (0 to 5 exclusive):\n", .{})
+    for (0..<5) |i| {
+        std.debug.print("i = {}\n", .{i})
+    }
+    
+    // 4. Range without explicit start (exclusive)
+    std.debug.print("\n4. Range without start (0 to 3 exclusive):\n", .{})
+    for (..<3) |i| {
+        std.debug.print("i = {}\n", .{i})
+    }
+    
+    // 5. Different number arrays
+    std.debug.print("\n5. Different number arrays:\n", .{})
+    floats := [1.5, 2.7, 3.14]
+    for (floats) |f| {
+        std.debug.print("Float: {}\n", .{f})
+    }
+    
+    std.debug.print("\n=== FOR LOOP TEST COMPLETE ===\n", .{})
+    
+    return
+}

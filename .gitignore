@@ -1,3 +1,36 @@
+# Build artifacts
 .zig-cache
+zig-cache
 zig-out
+zig-install
+zig
 
+# Compiled files
+*.o
+*.obj
+*.exe
+
+# Generated output
+*.js
+generated.*
+howl_output*
+
+# Debug and test files
+debug_*
+test_*
+simple_*_test.*
+
+# Temporary files
+*.bak
+*.backup
+*.tmp
+
+# Scripts and tools
+fix_*.py
+validate_*.sh
+test_*.sh
+
+# Symlinks to build outputs
+howl
+howl-new
+zir_tests/

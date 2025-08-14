@@ -32,12 +32,18 @@ Use best practices for Zig development, such as:
 The lexer has a `.addFile` method. This method takes control of the memory of the arguments.
 So make sure the filename and contents are stack allocated strings that can be freed.
 
-### Temporary tests
-
-- Temporary tests are stored in `src/tmp_test` -
-- Temporary test can be run with `cd PROJECT_ROOT && zig run src/tmp_test/TEST_NAME.zig`.
-
 ### Implementing the compiler
+
+We want to track errors throughout the whole compilation process.
+The process involves multiple stages that should be able to run separately.
+It needs to be modular so it can be reused.
+A reuse case is being able to used as a LSP (Language Server Protocol) server.
+
+The compiler should be able to handle requests for code completion, diagnostics, and other language features.
+
+The compiler needs to target the internal representation of Zig so it can leverage the compilation process of generating machine code.
+
+Another target should be Javascript (this is a `loosy` target that has less defined behavior)
 
 - look at the `lang-design` folder for the design documents.
 

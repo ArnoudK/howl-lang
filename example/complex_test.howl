@@ -1,0 +1,25 @@
+// Test more complex semantic analysis features
+
+pub add :: fn(a: i64, b: i64) i64 {
+    result := a + b
+    return result
+}
+
+pub process :: fn(data: i64) void {
+    // Test underscore assignments
+    _ = data
+    _ = add(data, 42)
+    
+    // Test regular assignments
+    temp := data * 2
+    final := temp + 10
+    
+    return
+}
+
+pub main :: fn() void {
+    value := 100
+    _ = process(value)
+    _ = add(value, 200)
+    return
+}

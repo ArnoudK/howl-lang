@@ -1,0 +1,36 @@
+main :: fn() {
+    // Test all integer types
+    i8_size := @sizeOf(i8)
+    i16_size := @sizeOf(i16)
+    i32_size := @sizeOf(i32)
+    i64_size := @sizeOf(i64)
+    i128_size := @sizeOf(i128)
+    
+    // Test all unsigned types
+    u8_size := @sizeOf(u8)
+    u16_size := @sizeOf(u16)
+    u32_size := @sizeOf(u32)
+    u64_size := @sizeOf(u64)
+    u128_size := @sizeOf(u128)
+    
+    // Test float types
+    f32_size := @sizeOf(f32)
+    f64_size := @sizeOf(f64)
+    
+    // Test other builtin types
+    bool_size := @sizeOf(bool)
+    str_size := @sizeOf(str)
+    void_size := @sizeOf(void)
+    
+    // Test @TypeOf with different types
+    i32_type := @TypeOf(i32)
+    str_type := @TypeOf(str)
+    
+    // Test safe arithmetic
+    safe_add := @add_s(10, 20)
+    safe_sub := @sub_s(50, 25)
+    safe_mul := @mul_s(5, 6)
+    safe_div := @div_s(100, 4)
+    
+    return
+}

@@ -1,0 +1,30 @@
+// Error testing for semantic analysis
+// Tests: type mismatches, undefined variables, duplicate declarations
+
+// Should work fine
+x :: 42
+y :: 3.14
+
+// Type mismatch error - assigning string to number
+// bad_number: i32 :: "not a number"
+
+// Undefined variable error
+// result :: undefined_var + 5
+
+// Duplicate declaration error
+// x :: 100  // Error: 'x' already declared
+
+// Function with type checking
+pub checkTypes :: fn(a: i32, b: f64) bool {
+    // Type mismatch in comparison - should error
+    // return a == b
+    
+    // Correct comparison
+    return a > 0 and b > 0.0
+}
+
+// Member access on non-struct type
+// bad_access :: x.field  // Error: i32 has no members
+
+// Call non-function
+// bad_call :: x()  // Error: 'x' is not callable

@@ -1,0 +1,1927 @@
+const std = @import("std");
+const ast = @import("ast.zig");
+const ErrorSystem = @import("error_system.zig");
+const Token = @import("token.zig").Token;
+
+// ============================================================================
+// Modern Parser with Error Recovery
+// ============================================================================
+
+const RecoveryToken = enum {
+    semicolon,
+    closing_brace,
+    closing_paren,
+    newline,
+    eof,
+    let,
+    @"fn",
+    @"if",
+    @"while",
+    @"for",
+    @"return",
+};
+
+pub const Parser = struct {
+    allocator: std.mem.Allocator,
+    tokens: []const Token,
+    current: usize,
+    arena: *ast.AstArena,
+    errors: *ErrorSystem.ErrorCollector,
+    source_map: ?*const ErrorSystem.SourceMap,
+    file_path: []const u8,
+    
+    // Error recovery state
+    panic_mode: bool,
+    in_recovery: bool,
+    recovery_tokens: []const RecoveryToken,
+    
+    // Debug state
+    debug_mode: bool,
+    
+    // Recursion tracking to prevent stack overflow
+    recursion_depth: usize,
+    max_recursion_depth: usize,
+    
+    fn debugPrint(self: *Parser, comptime format: []const u8, args: anytype) void {
+        if (self.debug_mode) {
+            std.debug.print("[PARSER] " ++ format ++ "\n", args);
+        }
+    }
+
+    fn checkRecursionDepth(self: *Parser) !void {
+        if (self.recursion_depth >= self.max_recursion_depth) {
+            self.debugPrint("RECURSION LIMIT HIT: depth={}", .{self.recursion_depth});
+            try self.reportError(.unexpected_token, "Maximum recursion depth exceeded", self.getCurrentSourceLoc());
+            return error.MaxRecursionDepthExceeded;
+        }
+    }
+
+    fn enterRecursion(self: *Parser) !void {
+        // Temporarily disabled for debugging
+        // try self.checkRecursionDepth();
+        // self.recursion_depth += 1;
+        _ = self;
+    }
+
+    fn exitRecursion(self: *Parser) void {
+        // Temporarily disabled for debugging
+        // if (self.recursion_depth > 0) {
+        //     self.recursion_depth -= 1;
+        // }
+        _ = self;
+    }
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        tokens: []const Token,
+        arena: *ast.AstArena,
+        errors: *ErrorSystem.ErrorCollector,
+        file_path: []const u8,
+        source_map: ?*const ErrorSystem.SourceMap,
+    ) Parser {
+        return Parser{
+            .allocator = allocator,
+            .tokens = tokens,
+            .current = 0,
+            .arena = arena,
+            .errors = errors,
+            .source_map = source_map,
+            .file_path = file_path,
+            .panic_mode = false,
+            .in_recovery = false,
+            .recovery_tokens = &[_]RecoveryToken{.semicolon, .closing_brace, .eof},
+            .debug_mode = false, // Disable debug mode
+            .recursion_depth = 0,
+            .max_recursion_depth = 1000, // Reasonable limit
+        };
+    }
+
+    // ============================================================================
+    // Whitespace Enforcement Functions
+    // ============================================================================
+    
+    /// Check if there's required whitespace before the current token
+    fn requireWhitespaceBefore(self: *Parser, error_type: ErrorSystem.ErrorCode, message: []const u8) !void {
+        if (self.current == 0) return; // At start of file
+        
+        const prev_token = self.tokens[self.current - 1];
+        const curr_token = self.peek();
+        
+        // Calculate positions to check for whitespace
+        const prev_end = prev_token.getEndPos();
+        const curr_start = curr_token.getPos();
+        
+        // If there's no gap between tokens, it's an error
+        if (prev_end >= curr_start) {
+            try self.reportError(error_type, message, self.getCurrentSourceLoc());
+        }
+    }
+    
+    /// Check if there's required whitespace after a token before advancing
+    fn requireWhitespaceAfter(self: *Parser, token_tag: std.meta.Tag(Token), error_type: ErrorSystem.ErrorCode, message: []const u8) !void {
+        if (!self.check(token_tag)) return;
+        
+        const token_pos = self.current;
+        _ = self.advance(); // Consume the token
+        
+        // Check if next token immediately follows (no whitespace)
+        if (!self.isAtEnd()) {
+            const token = self.tokens[token_pos];
+            const next_token = self.peek();
+            
+            const token_end = token.getEndPos();
+            const next_start = next_token.getPos();
+            
+            if (token_end >= next_start) {
+                try self.reportError(error_type, message, self.getCurrentSourceLoc());
+            }
+        }
+    }
+    
+    /// Require space around binary operators
+    fn requireSpaceAroundOperator(self: *Parser, operator_tag: std.meta.Tag(Token)) !void {
+        if (!self.check(operator_tag)) return;
+        
+        // Check space before operator
+        try self.requireWhitespaceBefore(.missing_space_around_operator, "Missing space before operator");
+        
+        // Consume operator and check space after
+        _ = self.advance();
+        if (!self.isAtEnd()) {
+            const prev_token = self.previous();
+            const next_token = self.peek();
+            
+            const prev_end = prev_token.getEndPos();
+            const next_start = next_token.getPos();
+            
+            if (prev_end >= next_start) {
+                try self.reportError(.missing_space_around_operator, "Missing space after operator", self.getCurrentSourceLoc());
+            }
+        }
+    }
+    
+    /// Ensure statements are on separate lines by checking for newlines
+    fn requireNewlineAfterStatement(self: *Parser) !void {
+        // Skip to find newline or end of file
+        var lookahead = self.current;
+        var found_newline = false;
+        
+        while (lookahead < self.tokens.len) {
+            const token = self.tokens[lookahead];
+            if (std.meta.activeTag(token) == .Newline) {
+                found_newline = true;
+                break;
+            } else if (std.meta.activeTag(token) == .Whitespace) {
+                lookahead += 1;
+                continue;
+            } else {
+                // Found another non-whitespace token on same line
+                break;
+            }
+        }
+        
+        // If we find another statement token without a newline, it's an error
+        if (lookahead < self.tokens.len and !found_newline) {
+            const next_token = self.tokens[lookahead];
+            if (self.isStatementStart(next_token)) {
+                try self.reportError(.multiple_statements_per_line, "Multiple statements on the same line", self.getCurrentSourceLoc());
+            }
+        }
+    }
+    
+    /// Check if a token can start a statement
+    fn isStatementStart(self: *const Parser, token: Token) bool {
+        _ = self; // Mark as intentionally unused
+        return switch (std.meta.activeTag(token)) {
+            .Identifier, .Pub, .Let, .Mut, .If, .While, .For, .Return, .LeftBrace => true,
+            else => false,
+        };
+    }
+
+    // ============================================================================
+    // Error Reporting with Source Location  
+    // ============================================================================
+
+    fn getCurrentSourceLoc(self: *const Parser) ast.SourceLoc {
+        if (self.current >= self.tokens.len) {
+            return ast.SourceLoc{
+                .file_path = self.file_path,
+                .start_pos = if (self.tokens.len > 0) self.tokens[self.tokens.len - 1].getPos() else 0,
+                .end_pos = if (self.tokens.len > 0) self.tokens[self.tokens.len - 1].getPos() else 0,
+                .line = 1,
+                .column = 1,
+            };
+        }
+
+        const token = self.tokens[self.current];
+        const pos = token.getPos();
+        
+        // Use source map if available for accurate line/column
+        if (self.source_map) |sm| {
+            const line_col = sm.getLineColumn(pos);
+            return ast.SourceLoc{
+                .file_path = self.file_path,
+                .start_pos = pos,
+                .end_pos = pos,
+                .line = line_col.line,
+                .column = line_col.column,
+            };
+        }
+
+        return ast.SourceLoc{
+            .file_path = self.file_path,
+            .start_pos = pos,
+            .end_pos = pos,
+            .line = 1,
+            .column = pos + 1,
+        };
+    }
+
+    fn reportError(
+        self: *Parser,
+        code: ErrorSystem.ErrorCode,
+        message: []const u8,
+        source_loc: ast.SourceLoc,
+    ) !void {
+        const err = try self.errors.createAndAddError(
+            code,
+            .parser,
+            .error_,
+            message,
+            source_loc.toSourceSpan(),
+        );
+
+        // Add helpful suggestions based on the error type
+        switch (code) {
+            .unexpected_token => {
+                // Use arena allocator instead of main allocator to avoid leaks
+                var arena_allocator = std.heap.ArenaAllocator.init(self.allocator);
+                defer arena_allocator.deinit();
+                // Skip suggestions to avoid memory leaks for now
+                // try err.withSuggestions(arena_allocator.allocator(), &[_][]const u8{
+                //     "Check for missing semicolons or parentheses",
+                //     "Verify correct syntax for the current statement",
+                // });
+                _ = err; // Acknowledge the error is used
+            },
+            .missing_semicolon => {
+                // Skip suggestions to avoid memory leaks for now
+                // try err.withSuggestions(self.allocator, &[_][]const u8{
+                //     "Add a semicolon ';' at the end of the statement",
+                // });
+                _ = err; // Acknowledge the error is used
+            },
+            .missing_closing_brace => {
+                // Skip suggestions to avoid memory leaks for now
+                // try err.withSuggestions(self.allocator, &[_][]const u8{
+                //     "Add a closing brace '}' to match the opening brace",
+                //     "Check for proper nesting of code blocks",
+                // });
+                _ = err; // Acknowledge the error is used
+            },
+            else => {
+                _ = err; // Acknowledge the error is used
+            },
+        }
+
+        self.panic_mode = true;
+    }
+
+    fn synchronize(self: *Parser) void {
+        self.panic_mode = false;
+        self.in_recovery = true;
+
+        while (!self.isAtEnd()) {
+            // Look for recovery tokens
+            const current_token = self.peek();
+            
+            if (self.isRecoveryToken(current_token)) {
+                self.in_recovery = false;
+                return;
+            }
+
+            // Skip to the next token
+            _ = self.advance();
+        }
+
+        self.in_recovery = false;
+    }
+
+    fn isRecoveryToken(self: *const Parser, token: Token) bool {
+        _ = self; // Mark as intentionally unused
+        return switch (token) {
+            .Semicolon => true,
+            .RightBrace => true,
+            .RightParen => true,
+            .Let => true,
+            .Fn => true,
+            .If => true,
+            .While => true,
+            .For => true,
+            .Return => true,
+            .EOF => true,
+            else => false,
+        };
+    }
+
+    // ============================================================================
+    // Token Management
+    // ============================================================================
+
+    fn isAtEnd(self: *const Parser) bool {
+        return self.current >= self.tokens.len or self.peek() == .EOF;
+    }
+
+    fn peek(self: *const Parser) Token {
+        if (self.current >= self.tokens.len) return Token{ .EOF = .{ .pos = 0 } };
+        return self.tokens[self.current];
+    }
+
+    fn previous(self: *const Parser) Token {
+        if (self.current == 0) return Token{ .EOF = .{ .pos = 0 } };
+        return self.tokens[self.current - 1];
+    }
+
+    fn advance(self: *Parser) Token {
+        if (!self.isAtEnd()) self.current += 1;
+        return self.previous();
+    }
+
+    fn check(self: *const Parser, token_type: std.meta.Tag(Token)) bool {
+        if (self.isAtEnd()) return false;
+        return std.meta.activeTag(self.peek()) == token_type;
+    }
+
+    fn match(self: *Parser, token_types: []const std.meta.Tag(Token)) bool {
+        for (token_types) |token_type| {
+            if (self.check(token_type)) {
+                _ = self.advance();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn consume(
+        self: *Parser,
+        token_type: std.meta.Tag(Token),
+        error_code: ErrorSystem.ErrorCode,
+        message: []const u8,
+    ) !Token {
+        if (self.check(token_type)) {
+            return self.advance();
+        }
+
+        const source_loc = self.getCurrentSourceLoc();
+        try self.reportError(error_code, message, source_loc);
+        
+        // Create an error node for recovery
+        _ = try ast.createErrorNode(self.arena, source_loc, error_code, message);
+        
+        return Token{ .EOF = .{ .pos = 0 } }; // Return a safe default
+    }
+
+    // ============================================================================
+    // Expression Parsing with Precedence Climbing
+    // ============================================================================
+
+    pub fn parseExpression(self: *Parser) anyerror!ast.NodeId {
+        try self.enterRecursion();
+        defer self.exitRecursion();
+        return self.parseAssignment();
+    }
+
+    fn parseAssignment(self: *Parser) !ast.NodeId {
+        try self.enterRecursion();
+        defer self.exitRecursion();
+        
+        self.debugPrint("parseAssignment: current={d}, token={}", .{self.current, self.peek()});
+        const expr = try self.parseLogicalOr();
+
+        if (self.match(&[_]std.meta.Tag(Token){.Equals, .ColonEquals})) {
+            self.debugPrint("Found assignment operator, parsing right side", .{});
+            const source_loc = self.getCurrentSourceLoc();
+            const value = try self.parseAssignment();
+            return ast.createBinaryExpr(self.arena, source_loc, .assign, expr, value);
+        }
+
+        return expr;
+    }
+
+    fn parseLogicalOr(self: *Parser) !ast.NodeId {
+        var expr = try self.parseLogicalAnd();
+
+        while (self.match(&[_]std.meta.Tag(Token){.Or})) {
+            const source_loc = self.getCurrentSourceLoc();
+            const right = try self.parseLogicalAnd();
+            expr = try ast.createBinaryExpr(self.arena, source_loc, .logical_or, expr, right);
+        }
+
+        return expr;
+    }
+
+    fn parseLogicalAnd(self: *Parser) !ast.NodeId {
+        var expr = try self.parseEquality();
+
+        while (self.match(&[_]std.meta.Tag(Token){.And})) {
+            const source_loc = self.getCurrentSourceLoc();
+            const right = try self.parseEquality();
+            expr = try ast.createBinaryExpr(self.arena, source_loc, .logical_and, expr, right);
+        }
+
+        return expr;
+    }
+
+    fn parseEquality(self: *Parser) !ast.NodeId {
+        var expr = try self.parseComparison();
+
+        while (self.match(&[_]std.meta.Tag(Token){.DoubleEquals, .ExclamationEquals})) {
+            const source_loc = self.getCurrentSourceLoc();
+            const op: ast.BinaryOp = switch (self.previous()) {
+                .DoubleEquals => .eq,
+                .ExclamationEquals => .ne,
+                else => unreachable,
+            };
+            const right = try self.parseComparison();
+            expr = try ast.createBinaryExpr(self.arena, source_loc, op, expr, right);
+        }
+
+        return expr;
+    }
+
+    fn parseComparison(self: *Parser) !ast.NodeId {
+        var expr = try self.parseTerm();
+
+        while (self.match(&[_]std.meta.Tag(Token){.GreaterThan, .GreaterThanEquals, .LessThan, .LessThanEquals})) {
+            const source_loc = self.getCurrentSourceLoc();
+            const op: ast.BinaryOp = switch (self.previous()) {
+                .GreaterThan => .gt,
+                .GreaterThanEquals => .ge,
+                .LessThan => .lt,
+                .LessThanEquals => .le,
+                else => unreachable,
+            };
+            const right = try self.parseTerm();
+            expr = try ast.createBinaryExpr(self.arena, source_loc, op, expr, right);
+        }
+
+        return expr;
+    }
+
+    fn parseTerm(self: *Parser) !ast.NodeId {
+        var expr = try self.parseFactor();
+
+        while (true) {
+            // Skip whitespace before checking for operators
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            if (self.match(&[_]std.meta.Tag(Token){.Plus, .Minus})) {
+                const source_loc = self.getCurrentSourceLoc();
+                const op: ast.BinaryOp = switch (self.previous()) {
+                    .Plus => .add,
+                    .Minus => .sub,
+                    else => unreachable,
+                };
+                
+                // Skip whitespace after operator
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+                
+                const right = try self.parseFactor();
+                expr = try ast.createBinaryExpr(self.arena, source_loc, op, expr, right);
+            } else {
+                break;
+            }
+        }
+
+        return expr;
+    }
+
+    fn parseFactor(self: *Parser) !ast.NodeId {
+        var expr = try self.parseUnary();
+
+        while (true) {
+            // Skip whitespace before checking for operators
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            if (self.match(&[_]std.meta.Tag(Token){.Asterisk, .Slash, .Percent})) {
+                const source_loc = self.getCurrentSourceLoc();
+                const op: ast.BinaryOp = switch (self.previous()) {
+                    .Asterisk => .mul,
+                    .Slash => .div,
+                    .Percent => .mod,
+                    else => unreachable,
+                };
+                
+                // Skip whitespace after operator
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+                
+                const right = try self.parseUnary();
+                expr = try ast.createBinaryExpr(self.arena, source_loc, op, expr, right);
+            } else {
+                break;
+            }
+        }
+
+        return expr;
+    }
+
+    fn parseUnary(self: *Parser) !ast.NodeId {
+        if (self.match(&[_]std.meta.Tag(Token){.Exclamation, .Minus})) {
+            const source_loc = self.getCurrentSourceLoc();
+            const op: ast.UnaryOp = switch (self.previous()) {
+                .Exclamation => .not,
+                .Minus => .negate,
+                else => unreachable,
+            };
+            const right = try self.parseUnary();
+            return ast.createUnaryExpr(self.arena, source_loc, op, right);
+        }
+
+        return self.parseCall();
+    }
+
+    fn parseCall(self: *Parser) !ast.NodeId {
+        var expr = try self.parsePrimary();
+
+        while (true) {
+            if (self.match(&[_]std.meta.Tag(Token){.LeftParen})) {
+                expr = try self.finishCall(expr);
+            } else if (self.match(&[_]std.meta.Tag(Token){.LeftBracket})) {
+                const source_loc = self.getCurrentSourceLoc();
+                const index = try self.parseExpression();
+                _ = try self.consume(.RightBracket, .unexpected_token, "Expected ']' after array index");
+                expr = try self.arena.createNode(ast.AstNode.init(.{
+                    .index_expr = .{ .object = expr, .index = index }
+                }, source_loc));
+            } else if (self.match(&[_]std.meta.Tag(Token){.Dot})) {
+                const source_loc = self.getCurrentSourceLoc();
+                const name_token = try self.consume(.Identifier, .unexpected_token, "Expected property name after '.'");
+                if (name_token == .Identifier) {
+                    const field_name = name_token.Identifier.value;
+                    expr = try self.arena.createNode(ast.AstNode.init(.{
+                        .member_expr = .{ .object = expr, .field = field_name }
+                    }, source_loc));
+                }
+            } else {
+                break;
+            }
+        }
+
+        return expr;
+    }
+
+    fn parseCall_withCallee(self: *Parser, callee: ast.NodeId) !ast.NodeId {
+        var expr = callee;
+
+        while (true) {
+            if (self.match(&[_]std.meta.Tag(Token){.LeftParen})) {
+                expr = try self.finishCall(expr);
+            } else if (self.match(&[_]std.meta.Tag(Token){.LeftBracket})) {
+                const source_loc = self.getCurrentSourceLoc();
+                const index = try self.parseExpression();
+                _ = try self.consume(.RightBracket, .unexpected_token, "Expected ']' after array index");
+                expr = try self.arena.createNode(ast.AstNode.init(.{
+                    .index_expr = .{ .object = expr, .index = index }
+                }, source_loc));
+            } else if (self.match(&[_]std.meta.Tag(Token){.Dot})) {
+                const source_loc = self.getCurrentSourceLoc();
+                const name_token = try self.consume(.Identifier, .unexpected_token, "Expected property name after '.'");
+                if (name_token == .Identifier) {
+                    const field_name = name_token.Identifier.value;
+                    expr = try self.arena.createNode(ast.AstNode.init(.{
+                        .member_expr = .{ .object = expr, .field = field_name }
+                    }, source_loc));
+                }
+            } else {
+                break;
+            }
+        }
+
+        return expr;
+    }
+
+    fn finishCall(self: *Parser, callee: ast.NodeId) !ast.NodeId {
+        const source_loc = self.getCurrentSourceLoc();
+        var args = std.ArrayList(ast.NodeId).init(self.allocator);
+
+        if (!self.check(.RightParen)) {
+            while (true) {
+                if (args.items.len >= 255) {
+                    try self.reportError(.wrong_argument_count, "Can't have more than 255 arguments", self.getCurrentSourceLoc());
+                }
+                
+                const arg = try self.parseExpression();
+                try args.append(arg);
+                
+                if (!self.match(&[_]std.meta.Tag(Token){.Comma})) break;
+            }
+        }
+
+        _ = try self.consume(.RightParen, .missing_closing_paren, "Expected ')' after arguments");
+
+        // Check if this is a generic type instantiation (e.g., List(T))
+        // by looking at the callee and checking if it could be a type constructor
+        if (try self.isTypeConstructor(callee)) {
+            // This is a generic type instantiation like List(T)
+            return self.arena.createNode(ast.AstNode.init(.{
+                .generic_type_expr = .{ .base_type = callee, .type_params = args }
+            }, source_loc));
+        } else {
+            // This is a regular function call
+            return self.arena.createNode(ast.AstNode.init(.{
+                .call_expr = .{ .callee = callee, .args = args }
+            }, source_loc));
+        }
+    }
+
+    fn isTypeConstructor(self: *Parser, callee: ast.NodeId) !bool {
+        const node = self.arena.getNode(callee) orelse return false;
+        
+        // Check if it's an identifier that could be a type (starts with uppercase)
+        if (node.data == .identifier) {
+            const ident = node.data.identifier;
+            if (ident.name.len > 0 and std.ascii.isUpper(ident.name[0])) {
+                return true;
+            }
+        }
+        
+        // Check if it's a member expression like std.List
+        if (node.data == .member_expr) {
+            const member = node.data.member_expr;
+            // If the field name starts with uppercase, it's likely a type
+            if (member.field.len > 0 and std.ascii.isUpper(member.field[0])) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    fn parsePrimary(self: *Parser) !ast.NodeId {
+        try self.enterRecursion();
+        defer self.exitRecursion();
+        
+        const source_loc = self.getCurrentSourceLoc();
+        self.debugPrint("parsePrimary: current={d}, token={}", .{self.current, self.peek()});
+
+        // Skip whitespace at the start of primary expressions
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+
+        // Handle literals
+        if (self.match(&[_]std.meta.Tag(Token){.True})) {
+            return ast.createLiteralExpr(self.arena, source_loc, ast.Literal.bool_true);
+        }
+
+        if (self.match(&[_]std.meta.Tag(Token){.False})) {
+            return ast.createLiteralExpr(self.arena, source_loc, ast.Literal.bool_false);
+        }
+
+        if (self.match(&[_]std.meta.Tag(Token){.IntegerLiteral})) {
+            const token = self.previous();
+            if (ast.Literal.fromToken(token)) |literal| {
+                return ast.createLiteralExpr(self.arena, source_loc, literal);
+            }
+        }
+
+        if (self.match(&[_]std.meta.Tag(Token){.FloatLiteral})) {
+            const token = self.previous();
+            if (ast.Literal.fromToken(token)) |literal| {
+                return ast.createLiteralExpr(self.arena, source_loc, literal);
+            }
+        }
+
+        if (self.match(&[_]std.meta.Tag(Token){.StringLiteral})) {
+            const token = self.previous();
+            if (ast.Literal.fromToken(token)) |literal| {
+                return ast.createLiteralExpr(self.arena, source_loc, literal);
+            }
+        }
+
+        // Handle @import specifically
+        if (self.match(&[_]std.meta.Tag(Token){.Import})) {
+            // Create an identifier for @import
+            const import_id = try ast.createIdentifier(self.arena, source_loc, "import");
+            
+            // Parse as function call if followed by parentheses
+            if (self.check(.LeftParen)) {
+                return self.parseCall_withCallee(import_id);
+            } else {
+                return import_id;
+            }
+        }
+
+        // Handle other built-in functions like @import
+        if (self.match(&[_]std.meta.Tag(Token){.At})) {
+            const builtin_name_token = try self.consume(.Identifier, .expected_identifier, "Expected built-in function name after '@'");
+            if (builtin_name_token == .Identifier) {
+                const builtin_name = builtin_name_token.Identifier.value;
+                
+                // Create a special identifier for built-ins
+                const builtin_id = try ast.createIdentifier(self.arena, source_loc, builtin_name);
+                
+                // Parse as function call if followed by parentheses
+                if (self.check(.LeftParen)) {
+                    return self.parseCall_withCallee(builtin_id);
+                } else {
+                    return builtin_id;
+                }
+            }
+        }
+
+        // Handle if expression (ternary: if condition then_expr else else_expr)
+        if (self.match(&[_]std.meta.Tag(Token){.If})) {
+            return self.parseIfExpression();
+        }
+
+        // Handle match expression
+        if (self.match(&[_]std.meta.Tag(Token){.Match})) {
+            return self.parseMatchExpression();
+        }
+
+        // Handle anonymous struct literals .{...}
+        if (self.match(&[_]std.meta.Tag(Token){.Dot})) {
+            if (self.check(.LeftBrace)) {
+                _ = self.advance(); // consume {
+                
+                // For now, parse this as a simple struct literal
+                // TODO: Implement proper struct literal parsing with named fields
+                var args = std.ArrayList(ast.NodeId).init(self.allocator);
+                // Don't defer deinit since we'll transfer ownership to AST
+                
+                // Skip whitespace
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+                
+                // Parse comma-separated values inside the struct
+                if (!self.check(.RightBrace)) {
+                    const first_value = try self.parseExpression();
+                    try args.append(first_value);
+                    
+                    while (self.match(&[_]std.meta.Tag(Token){.Comma})) {
+                        // Skip whitespace after comma
+                        while (self.check(.Whitespace)) {
+                            _ = self.advance();
+                        }
+                        
+                        if (self.check(.RightBrace)) break; // Trailing comma
+                        
+                        const value = try self.parseExpression();
+                        try args.append(value);
+                    }
+                }
+                
+                _ = try self.consume(.RightBrace, .missing_closing_brace, "Expected '}' after struct literal");
+                
+                // Create a struct literal AST node (simplified as call for now)
+                const struct_name = try ast.createIdentifier(self.arena, source_loc, "__anonymous_struct");
+                return self.arena.createNode(ast.AstNode.init(.{
+                    .call_expr = .{ .callee = struct_name, .args = args }
+                }, source_loc));
+            } else {
+                // Just a dot, not followed by {, might be an error
+                try self.reportError(.unexpected_token, "Unexpected '.' not followed by '{'", source_loc);
+                return ast.createErrorNode(self.arena, source_loc, .unexpected_token, "Unexpected '.'");
+            }
+        }
+
+        // Handle built-in type tokens
+        if (self.match(&[_]std.meta.Tag(Token){.I8})) {
+            return ast.createIdentifier(self.arena, source_loc, "i8");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.I16})) {
+            return ast.createIdentifier(self.arena, source_loc, "i16");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.I32})) {
+            return ast.createIdentifier(self.arena, source_loc, "i32");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.I64})) {
+            return ast.createIdentifier(self.arena, source_loc, "i64");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.I128})) {
+            return ast.createIdentifier(self.arena, source_loc, "i128");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.U8})) {
+            return ast.createIdentifier(self.arena, source_loc, "u8");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.U16})) {
+            return ast.createIdentifier(self.arena, source_loc, "u16");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.U32})) {
+            return ast.createIdentifier(self.arena, source_loc, "u32");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.U64})) {
+            return ast.createIdentifier(self.arena, source_loc, "u64");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.U128})) {
+            return ast.createIdentifier(self.arena, source_loc, "u128");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.F8})) {
+            return ast.createIdentifier(self.arena, source_loc, "f8");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.F16})) {
+            return ast.createIdentifier(self.arena, source_loc, "f16");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.F32})) {
+            return ast.createIdentifier(self.arena, source_loc, "f32");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.F64})) {
+            return ast.createIdentifier(self.arena, source_loc, "f64");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.Str})) {
+            return ast.createIdentifier(self.arena, source_loc, "str");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.Bool})) {
+            return ast.createIdentifier(self.arena, source_loc, "bool");
+        }
+        if (self.match(&[_]std.meta.Tag(Token){.Void})) {
+            return ast.createIdentifier(self.arena, source_loc, "void");
+        }
+
+        if (self.match(&[_]std.meta.Tag(Token){.Identifier})) {
+            const token = self.previous();
+            if (token == .Identifier) {
+                return ast.createIdentifier(self.arena, source_loc, token.Identifier.value);
+            }
+        }
+
+        // Array literal: [1, 2, 3]
+        if (self.match(&[_]std.meta.Tag(Token){.LeftBracket})) {
+            var elements = std.ArrayList(ast.NodeId).init(self.allocator);
+            
+            // Skip whitespace after [
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            if (!self.check(.RightBracket)) {
+                while (true) {
+                    const element = try self.parseExpression();
+                    try elements.append(element);
+                    
+                    if (!self.match(&[_]std.meta.Tag(Token){.Comma})) break;
+                    
+                    // Skip whitespace after comma
+                    while (self.check(.Whitespace)) {
+                        _ = self.advance();
+                    }
+                    
+                    if (self.check(.RightBracket)) break; // Trailing comma
+                }
+            }
+            
+            _ = try self.consume(.RightBracket, .unexpected_token, "Expected ']' after array elements");
+            
+            return self.arena.createNode(ast.AstNode.init(.{
+                .array_init = .{ .elements = elements }
+            }, source_loc));
+        }
+
+        // Grouped expression
+        if (self.match(&[_]std.meta.Tag(Token){.LeftParen})) {
+            const expr = try self.parseExpression();
+            _ = try self.consume(.RightParen, .missing_closing_paren, "Expected ')' after expression");
+            return expr;
+        }
+
+        // If we can't parse anything, report an error but try to recover
+        self.debugPrint("parsePrimary: no match found, reporting error", .{});
+        try self.reportError(.invalid_expression, "Expected expression", source_loc);
+        
+        // CRUCIAL: Advance past the problematic token to avoid infinite loops
+        if (!self.isAtEnd()) {
+            _ = self.advance();
+        }
+        
+        // Return an error node
+        return ast.createErrorNode(self.arena, source_loc, .invalid_expression, "Expected expression");
+    }
+
+    // ============================================================================
+    // Statement Parsing
+    // ============================================================================
+
+    pub fn parseStatement(self: *Parser) !ast.NodeId {
+        try self.enterRecursion();
+        defer self.exitRecursion();
+        
+        self.debugPrint("parseStatement: current={d}, token={}", .{self.current, self.peek()});
+        
+        // Safety check: store current position to detect if we're making progress
+        const start_position = self.current;
+        
+        // Skip errors and try to recover
+        if (self.panic_mode) {
+            self.synchronize();
+        }
+
+        // Skip StartOfFile tokens if present
+        while (self.check(.StartOfFile)) {
+            self.debugPrint("Skipping StartOfFile token", .{});
+            _ = self.advance();
+        }
+
+        // Skip newlines and whitespace
+        while (self.check(.Newline) or self.check(.Whitespace)) {
+            self.debugPrint("Skipping newline/whitespace token", .{});
+            _ = self.advance();
+        }
+        
+        // If we're at the end after skipping, create a dummy literal
+        if (self.isAtEnd()) {
+            self.debugPrint("At end of tokens, returning dummy literal", .{});
+            return ast.createLiteralExpr(self.arena, self.getCurrentSourceLoc(), ast.Literal{ .integer = .{ .value = 0 } });
+        }
+        
+        // If we've skipped whitespace and now see a closing brace, this might be an empty block
+        // Return a no-op statement to avoid trying to parse the brace as an expression
+        if (self.check(.RightBrace)) {
+            return ast.createLiteralExpr(self.arena, self.getCurrentSourceLoc(), ast.Literal{ .integer = .{ .value = 0 } });
+        }
+
+        // Handle return statements
+        if (self.check(.Return)) {
+            self.debugPrint("Found return statement, parsing return", .{});
+            return self.parseReturnStatement();
+        }
+
+        // Handle import statements
+        if (self.check(.Import)) {
+            self.debugPrint("Found import statement, parsing import", .{});
+            return self.parseImportStatement();
+        }
+
+        // Handle for statements
+        if (self.check(.For)) {
+            self.debugPrint("Found for statement, parsing for loop", .{});
+            return self.parseForStatement();
+        }
+
+        // Try to parse Howl-style declarations with whitespace enforcement
+        // Check for: [pub] identifier :: 
+        if (self.check(.Identifier) or self.check(.Pub)) {
+            const saved_pos = self.current;
+            
+            // Optional pub
+            if (self.check(.Pub)) {
+                _ = self.advance();
+                // Require space after 'pub' keyword
+                if (!self.isAtEnd() and !self.check(.Whitespace) and !self.check(.Newline)) {
+                    try self.reportError(.missing_space_after_keyword, "Missing space after 'pub'", self.getCurrentSourceLoc());
+                }
+                // Skip whitespace after pub
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+            }
+            
+            // Check for identifier
+            if (self.check(.Identifier)) {
+                const name_token = self.advance();
+                
+                // Skip whitespace after identifier
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+                
+                // Check for different declaration patterns
+                if (self.check(.ColonEquals)) {
+                    // Pattern: identifier := expression (mutable without type)
+                    _ = self.advance(); // consume :=
+                    
+                    // Skip whitespace after :=
+                    while (self.check(.Whitespace)) {
+                        _ = self.advance();
+                    }
+                    
+                    // Get the name
+                    const name = if (name_token == .Identifier) name_token.Identifier.value else "error";
+                    const source_loc = self.getCurrentSourceLoc();
+                    
+                    // Parse the initializer expression
+                    const initializer = try self.parseExpression();
+                    
+                    // Ensure newline after variable declaration
+                    try self.requireNewlineAfterStatement();
+                    
+                    return self.arena.createNode(ast.AstNode.init(.{
+                        .var_decl = .{
+                            .name = name,
+                            .type_annotation = null,
+                            .initializer = initializer,
+                            .is_mutable = true, // := creates mutable variables
+                        }
+                    }, source_loc));
+                } else if (self.check(.Colon)) {
+                    // Pattern: identifier : type = expression OR identifier : type : expression
+                    _ = self.advance(); // consume :
+                    
+                    // Skip whitespace after :
+                    while (self.check(.Whitespace)) {
+                        _ = self.advance();
+                    }
+                    
+                    // Parse the type annotation
+                    const type_annotation = try self.parseType();
+                    
+                    // Skip whitespace after type
+                    while (self.check(.Whitespace)) {
+                        _ = self.advance();
+                    }
+                    
+                    const name = if (name_token == .Identifier) name_token.Identifier.value else "error";
+                    const source_loc = self.getCurrentSourceLoc();
+                    
+                    if (self.check(.Equals)) {
+                        // Pattern: identifier : type = expression (mutable with type)
+                        _ = self.advance(); // consume =
+                        
+                        // Skip whitespace after =
+                        while (self.check(.Whitespace)) {
+                            _ = self.advance();
+                        }
+                        
+                        const initializer = try self.parseExpression();
+                        
+                        // Ensure newline after variable declaration
+                        try self.requireNewlineAfterStatement();
+                        
+                        return self.arena.createNode(ast.AstNode.init(.{
+                            .var_decl = .{
+                                .name = name,
+                                .type_annotation = type_annotation,
+                                .initializer = initializer,
+                                .is_mutable = true, // : type = creates mutable variables
+                            }
+                        }, source_loc));
+                    } else if (self.check(.Colon)) {
+                        // Pattern: identifier : type : expression (immutable with type)
+                        _ = self.advance(); // consume second :
+                        
+                        // Skip whitespace after :
+                        while (self.check(.Whitespace)) {
+                            _ = self.advance();
+                        }
+                        
+                        const initializer = try self.parseExpression();
+                        
+                        // Ensure newline after constant declaration
+                        try self.requireNewlineAfterStatement();
+                        
+                        return self.arena.createNode(ast.AstNode.init(.{
+                            .var_decl = .{
+                                .name = name,
+                                .type_annotation = type_annotation,
+                                .initializer = initializer,
+                                .is_mutable = false, // : type : creates immutable constants
+                            }
+                        }, source_loc));
+                    } else {
+                        // Type annotation without assignment - this might be an error or incomplete
+                        try self.reportError(.unexpected_token, "Expected '=' or ':' after type annotation", self.getCurrentSourceLoc());
+                        self.current = saved_pos; // Reset position
+                    }
+                } else if (self.check(.DoubleColon)) {
+                    // Pattern: identifier :: expression (immutable without type)
+                    // Require space before double colon (this check was moved from earlier)
+                    
+                    _ = self.advance(); // consume ::
+                    
+                    // Require space after double colon
+                    if (!self.isAtEnd() and !self.check(.Whitespace) and !self.check(.Newline)) {
+                        try self.reportError(.missing_space_around_operator, "Missing space after '::'", self.getCurrentSourceLoc());
+                    }
+                    
+                    // Skip whitespace after double colon
+                    while (self.check(.Whitespace)) {
+                        _ = self.advance();
+                    }
+                    
+                    // Get the name
+                    const name = if (name_token == .Identifier) name_token.Identifier.value else "error";
+                    const source_loc = self.getCurrentSourceLoc();
+                    
+                    // Check what follows the double colon
+                    if (self.check(.Fn)) {
+                        // Function declaration: [pub] name :: fn(...)
+                        self.current = saved_pos; // Reset and parse as function
+                        const func_result = self.parseHowlFunctionDeclaration() catch |err| {
+                            // If function parsing fails, try to recover
+                            self.debugPrint("Function declaration parsing failed: {}, recovering", .{err});
+                            try self.reportError(.unexpected_token, "Error parsing function declaration", self.getCurrentSourceLoc());
+                            // Advance to try to get unstuck
+                            if (self.current == saved_pos) {
+                                _ = self.advance();
+                            }
+                            return self.arena.createNode(ast.AstNode.init(.{
+                                .error_node = .{
+                                    .error_code = .unexpected_token,
+                                    .message = "Failed to parse function declaration",
+                                }
+                            }, self.getCurrentSourceLoc()));
+                        };
+                        // Ensure newline after function declaration
+                        try self.requireNewlineAfterStatement();
+                        return func_result;
+                    } else {
+                        // Constant definition: name :: expression
+                        const value = try self.parseExpression();
+                        
+                        // Ensure newline after constant declaration
+                        try self.requireNewlineAfterStatement();
+                        
+                        return self.arena.createNode(ast.AstNode.init(.{
+                            .var_decl = .{
+                                .name = name,
+                                .type_annotation = null,
+                                .initializer = value,
+                                .is_mutable = false,
+                            }
+                        }, source_loc));
+                    }
+                } else {
+                    // Not a recognized declaration pattern, reset position and parse as expression
+                    self.current = saved_pos;
+                }
+            }
+        }
+
+        // Continue parsing assignment if needed
+        const expr_result = self.parseExpression() catch |err| {
+            if (self.current == start_position) {
+                try self.reportError(.unexpected_token, "Error parsing expression, skipping token", self.getCurrentSourceLoc());
+                _ = self.advance();
+                return ast.createErrorNode(self.arena, self.getCurrentSourceLoc(), .unexpected_token, "Failed to parse expression");
+            }
+            return err;
+        };
+        
+        // Howl doesn't use semicolons - if we see one, it's an error
+        if (self.check(.Semicolon)) {
+            try self.reportError(.unexpected_token, "Semicolons are not allowed in Howl", self.getCurrentSourceLoc());
+            _ = self.advance();
+        }
+        
+        return expr_result;
+    }
+
+    fn parseHowlFunctionDeclaration(self: *Parser) !ast.NodeId {
+        const source_loc = self.getCurrentSourceLoc();
+        
+        // Parse optional 'pub'
+        var is_public = false;
+        if (self.match(&[_]std.meta.Tag(Token){.Pub})) {
+            is_public = true;
+            // Require space after 'pub'
+            if (!self.isAtEnd() and !self.check(.Whitespace) and !self.check(.Newline)) {
+                try self.reportError(.missing_space_after_keyword, "Missing space after 'pub'", self.getCurrentSourceLoc());
+            }
+        }
+        
+        // Skip whitespace after pub
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
+        // Parse function name
+        const name_token = try self.consume(.Identifier, .expected_identifier, "Expected function name");
+        const name = if (name_token == .Identifier) name_token.Identifier.value else "error";
+
+        // Require space before ::
+        if (!self.check(.Whitespace)) {
+            try self.reportError(.missing_space_around_operator, "Missing space before '::'", self.getCurrentSourceLoc());
+        }
+
+        // Skip whitespace after function name
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+
+        // Consume ::
+        _ = try self.consume(.DoubleColon, .unexpected_token, "Expected '::' after function name");
+        
+        // Require space after ::
+        if (!self.isAtEnd() and !self.check(.Whitespace) and !self.check(.Newline)) {
+            try self.reportError(.missing_space_around_operator, "Missing space after '::'", self.getCurrentSourceLoc());
+        }
+        
+        // Skip whitespace after ::
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
+        // Consume fn
+        _ = try self.consume(.Fn, .expected_identifier, "Expected 'fn' after '::'");
+
+        // No space required between 'fn' and '(' - allow fn() or fn ()
+
+        // Skip whitespace after fn
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+
+        _ = try self.consume(.LeftParen, .missing_closing_brace, "Expected '(' after 'fn'");
+        
+        // Parse parameters
+        var params = std.ArrayList(ast.Parameter).init(self.allocator);
+        
+        // Skip whitespace after (
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
+        if (!self.check(.RightParen)) {
+            var param_count: usize = 0;
+            const max_params = 100;
+            
+            while (true) {
+                param_count += 1;
+                if (param_count > max_params) {
+                    try self.reportError(.unexpected_token, "Too many parameters", self.getCurrentSourceLoc());
+                    break;
+                }
+                
+                // Skip whitespace
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+                
+                if (self.check(.RightParen)) {
+                    break;
+                }
+                
+                const param_name_token = try self.consume(.Identifier, .expected_identifier, "Expected parameter name");
+                const param_name = if (param_name_token == .Identifier) param_name_token.Identifier.value else "error";
+                
+                // Skip whitespace after parameter name
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+                
+                var param_type: ?ast.NodeId = null;
+                if (self.match(&[_]std.meta.Tag(Token){.Colon})) {
+                    // Require space after colon
+                    if (!self.isAtEnd() and !self.check(.Whitespace) and !self.check(.Newline)) {
+                        try self.reportError(.missing_space_around_operator, "Missing space after ':'", self.getCurrentSourceLoc());
+                    }
+                    // Skip whitespace after colon
+                    while (self.check(.Whitespace)) {
+                        _ = self.advance();
+                    }
+                    param_type = try self.parseType();
+                }
+                
+                try params.append(ast.Parameter{
+                    .name = param_name,
+                    .type_annotation = param_type,
+                    .default_value = null,
+                    .source_loc = self.getCurrentSourceLoc(),
+                });
+                
+                // Skip whitespace before comma
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+                
+                if (!self.match(&[_]std.meta.Tag(Token){.Comma})) {
+                    break;
+                }
+                
+                // Require space after comma
+                if (!self.isAtEnd() and !self.check(.Whitespace) and !self.check(.Newline)) {
+                    try self.reportError(.missing_space_around_operator, "Missing space after ','", self.getCurrentSourceLoc());
+                }
+                
+                // Skip whitespace after comma
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+            }
+        }
+
+        _ = try self.consume(.RightParen, .missing_closing_paren, "Expected ')' after parameters");
+
+        // Skip whitespace after )
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+
+        // Handle return type (for !void, -> i32, or direct types like i32)
+        var return_type: ?ast.NodeId = null;
+        if (self.check(.Exclamation)) {
+            // Handle error union type like !void
+            _ = self.advance(); // consume !
+            // Skip whitespace after !
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            return_type = try self.parseType();
+        } else if (self.match(&[_]std.meta.Tag(Token){.Arrow})) {
+            // Require space after ->
+            if (!self.isAtEnd() and !self.check(.Whitespace) and !self.check(.Newline)) {
+                try self.reportError(.missing_space_around_operator, "Missing space after '->'", self.getCurrentSourceLoc());
+            }
+            // Skip whitespace after ->
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            return_type = try self.parseType();
+        } else if (self.check(.Identifier) or self.check(.Void) or self.check(.I32) or self.check(.I64) or self.check(.U32) or self.check(.U64) or self.check(.F32) or self.check(.F64) or self.check(.Str) or self.check(.Bool)) {
+            // Handle direct return type like: fn(x: i32) i32
+            return_type = try self.parseType();
+        }
+
+        // Skip whitespace before body
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+
+        // Require space before opening brace
+        if (self.check(.LeftBrace)) {
+            // Check if there was whitespace before this brace
+            if (self.current > 0) {
+                const prev_token = self.tokens[self.current - 1];
+                const curr_token = self.peek();
+                
+                if (prev_token.getEndPos() >= curr_token.getPos() and std.meta.activeTag(prev_token) != .Whitespace) {
+                    try self.reportError(.missing_space_before_brace, "Missing space before '{'", self.getCurrentSourceLoc());
+                }
+            }
+        }
+
+        // Consume opening brace
+        _ = try self.consume(.LeftBrace, .missing_closing_brace, "Expected '{' before function body");
+
+        const body = try self.parseBlockStatement();
+        
+        // Transfer ownership of params ArrayList to AST node
+        return self.arena.createNode(ast.AstNode.init(.{
+            .function_decl = .{
+                .name = name,
+                .params = params,
+                .return_type = return_type,
+                .body = body,
+            }
+        }, source_loc));
+    }
+
+    fn parseWhileStatement(self: *Parser) !ast.NodeId {
+        const source_loc = self.getCurrentSourceLoc();
+        
+        const condition = try self.parseExpression();
+        const body = try self.parseStatement();
+
+        return self.arena.createNode(ast.AstNode.init(.{
+            .while_expr = .{
+                .condition = condition,
+                .body = body,
+            }
+        }, source_loc));
+    }
+
+    fn parseForStatement(self: *Parser) !ast.NodeId {
+        const source_loc = self.getCurrentSourceLoc();
+        
+        // Consume the 'for' token
+        _ = try self.consume(.For, .unexpected_token, "Expected 'for'");
+        
+        // Skip whitespace after 'for'
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
+        // Parse: for (iterable) |captures| body OR for (range) |captures| body
+        _ = try self.consume(.LeftParen, .missing_closing_paren, "Expected '(' after 'for'");
+        
+        // Check if this starts with a range expression (..<, ..=)
+        var iterable: ast.NodeId = undefined;
+        
+        if (self.check(.DotDotLessThan) or self.check(.DotDotEquals)) {
+            // Handle `..<end` or `..=end` syntax
+            const is_inclusive = self.check(.DotDotEquals);
+            _ = if (is_inclusive) self.advance() else self.advance(); // consume ..< or ..=
+            
+            // Skip whitespace after range operator
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            const end_expr = try self.parseExpression();
+            
+                iterable = try self.arena.createNode(ast.AstNode.init(.{
+                .range_expr = .{
+                    .start = null,
+                    .end = end_expr,
+                    .inclusive = is_inclusive,
+                }
+            }, source_loc));
+        } else {
+            // Parse the first expression (could be start of range or regular iterable)
+            const first_expr = try self.parseExpression();
+            
+            // Skip whitespace
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Check if this is a range expression (start..=end or start..<end)
+            if (self.check(.DotDotLessThan) or self.check(.DotDotEquals)) {
+                const is_inclusive = self.check(.DotDotEquals);
+                _ = if (is_inclusive) self.advance() else self.advance(); // consume ..< or ..=
+                
+                // Skip whitespace after range operator
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+                
+                const end_expr = try self.parseExpression();
+                
+            iterable = try self.arena.createNode(ast.AstNode.init(.{
+                    .range_expr = .{
+                        .start = first_expr,
+                        .end = end_expr,
+                        .inclusive = is_inclusive,
+                    }
+                }, source_loc));
+            } else {
+                // This is a regular iterable, not a range
+                iterable = first_expr;
+            }
+        }
+        
+        // Skip whitespace
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
+        // Check for optional range specification (like 0..) - keep old syntax for backward compatibility
+        var range_start: ?ast.NodeId = null;
+        if (self.match(&[_]std.meta.Tag(Token){.Comma})) {
+            // Skip whitespace after comma
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Parse range start (e.g., "0" from "0..")
+            range_start = try self.parseExpression();
+            
+            // Expect ".." after range start
+            _ = try self.consume(.DotDot, .unexpected_token, "Expected '..' in range specification");
+        }
+        
+        _ = try self.consume(.RightParen, .missing_closing_paren, "Expected ')' after for expression");
+        
+        // Skip whitespace before captures
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
+        // Parse captures: |value| or |value, index| or |_, index|
+        _ = try self.consume(.Pipe, .unexpected_token, "Expected '|' to start captures");
+        
+        var captures = std.ArrayList(ast.ForCapture).init(self.allocator);
+        
+        // Parse first capture
+        var first_capture_name: []const u8 = undefined;
+        if (self.check(.Identifier)) {
+            const first_capture_token = try self.consume(.Identifier, .expected_identifier, "Expected capture variable name");
+            first_capture_name = first_capture_token.Identifier.value;
+        } else if (self.check(.Underscore)) {
+            _ = try self.consume(.Underscore, .unexpected_token, "Expected capture variable name");
+            first_capture_name = "_";
+        } else {
+            try self.reportError(.expected_identifier, "Expected identifier or '_' for capture variable", self.getCurrentSourceLoc());
+            first_capture_name = "_"; // Fallback
+        }
+        
+        try captures.append(ast.ForCapture{
+            .name = first_capture_name,
+            .capture_type = if (std.mem.eql(u8, first_capture_name, "_")) .ignored else .value,
+            .source_loc = source_loc,
+        });
+        
+        // Check for second capture (index)
+        if (self.match(&[_]std.meta.Tag(Token){.Comma})) {
+            // Skip whitespace after comma
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            var second_capture_name: []const u8 = undefined;
+            if (self.check(.Identifier)) {
+                const second_capture_token = try self.consume(.Identifier, .expected_identifier, "Expected second capture variable name");
+                second_capture_name = second_capture_token.Identifier.value;
+            } else if (self.check(.Underscore)) {
+                _ = try self.consume(.Underscore, .unexpected_token, "Expected capture variable name");
+                second_capture_name = "_";
+            } else {
+                try self.reportError(.expected_identifier, "Expected identifier or '_' for second capture variable", self.getCurrentSourceLoc());
+                second_capture_name = "_"; // Fallback
+            }
+            
+            try captures.append(ast.ForCapture{
+                .name = second_capture_name,
+                .capture_type = if (std.mem.eql(u8, second_capture_name, "_")) .ignored else .index,
+                .source_loc = source_loc,
+            });
+        }
+        
+        _ = try self.consume(.Pipe, .unexpected_token, "Expected '|' to end captures");
+        
+        // Skip whitespace before body
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
+        // Consume opening brace
+        _ = try self.consume(.LeftBrace, .missing_closing_brace, "Expected '{' to start for loop body");
+        
+        // Parse the body
+        const body = try self.parseBlockStatement();
+        
+        return self.arena.createNode(ast.AstNode.init(.{
+            .for_expr = .{
+                .iterable = iterable,
+                .captures = captures,
+                .body = body,
+            }
+        }, source_loc));
+    }
+
+    fn parseReturnStatement(self: *Parser) !ast.NodeId {
+        const source_loc = self.getCurrentSourceLoc();
+        
+        // Consume the 'return' token
+        _ = try self.consume(.Return, .unexpected_token, "Expected 'return'");
+        
+        var value: ?ast.NodeId = null;
+        
+        // Skip whitespace after return
+        while (self.check(.Whitespace) or self.check(.Newline)) {
+            _ = self.advance();
+        }
+        
+        if (!self.check(.RightBrace) and !self.isAtEnd() and !self.check(.Semicolon)) {
+            value = try self.parseExpression();
+        }
+        
+        // Howl doesn't use semicolons - if we see one, it's an error
+        if (self.check(.Semicolon)) {
+            try self.reportError(.unexpected_token, "Semicolons are not allowed in Howl", self.getCurrentSourceLoc());
+            _ = self.advance(); // Skip the semicolon
+        }
+
+        return self.arena.createNode(ast.AstNode.init(.{
+            .return_stmt = .{ .value = value }
+        }, source_loc));
+    }
+
+    fn parseImportStatement(self: *Parser) !ast.NodeId {
+        const source_loc = self.getCurrentSourceLoc();
+        
+        // Consume the @import token
+        _ = try self.consume(.Import, .unexpected_token, "Expected '@import'");
+        
+        // Skip whitespace after @import
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
+        // Expect opening parenthesis
+        _ = try self.consume(.LeftParen, .unexpected_token, "Expected '(' after '@import'");
+        
+        // Skip whitespace after (
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
+        // Expect string literal for the module path
+        const module_path_token = try self.consume(.StringLiteral, .unexpected_token, "Expected string literal for module path");
+        const module_path = if (module_path_token == .StringLiteral) module_path_token.StringLiteral.value else "error";
+        
+        // Skip whitespace before )
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
+        // Expect closing parenthesis
+        _ = try self.consume(.RightParen, .unexpected_token, "Expected ')' after module path");
+        
+        // Ensure newline after import statement
+        try self.requireNewlineAfterStatement();
+        
+        return self.arena.createNode(ast.AstNode.init(.{
+            .import_decl = .{ .module_path = module_path }
+        }, source_loc));
+    }
+
+    fn parseBlockStatement(self: *Parser) anyerror!ast.NodeId {
+        const source_loc = self.getCurrentSourceLoc();
+        var statements = std.ArrayList(ast.NodeId).init(self.allocator);
+
+        // Skip whitespace tokens at the start of the block
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+
+        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            // Skip whitespace before each statement
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Check again for RightBrace after skipping whitespace
+            if (self.check(.RightBrace)) {
+                break;
+            }
+            
+            const stmt = self.parseStatement() catch {
+                // Error recovery for block statements
+                try self.reportError(.unexpected_token, "Error parsing statement in block", self.getCurrentSourceLoc());
+                self.synchronize();
+                continue;
+            };
+            try statements.append(stmt);
+        }
+
+        _ = try self.consume(.RightBrace, .missing_closing_brace, "Expected '}' after block");
+
+        // Use the ArrayList's items directly - they'll live as long as the ArrayList
+        // TODO: This creates a small memory leak. The dupe'd slice should be tracked and freed.
+        // Transfer ownership of ArrayList to AST node
+        return ast.createBlock(self.arena, source_loc, statements);
+    }
+
+    // ============================================================================
+    // Public API
+    // ============================================================================
+
+    pub fn parseProgram(self: *Parser) !ast.NodeId {
+        self.debugPrint("Starting parseProgram, tokens: {d}", .{self.tokens.len});
+        const source_loc = self.getCurrentSourceLoc();
+        var statements = std.ArrayList(ast.NodeId).init(self.allocator);
+        
+        var iteration_count: usize = 0;
+        var stuck_counter: usize = 0;
+        const max_iterations = self.tokens.len * 10; // Allow 10x token count iterations
+
+        while (!self.isAtEnd()) {
+            iteration_count += 1;
+            self.debugPrint("parseProgram iteration {d}, current: {d}, token: {}", .{iteration_count, self.current, self.peek()});
+            
+            if (iteration_count > max_iterations) {
+                try self.reportError(.unexpected_token, "parser reached maximum iterations, stopping to prevent infinite loop", self.getCurrentSourceLoc());
+                break;
+            }
+            
+            if (self.panic_mode) {
+                self.synchronize();
+                continue;
+            }
+            
+            // Safety check: prevent infinite loops
+            const old_current = self.current;
+            
+            const stmt = self.parseStatement() catch |err| blk: {
+                self.debugPrint("parseStatement failed with error: {}, advancing", .{err});
+                // If statement parsing fails, try to recover by advancing
+                if (self.current == old_current and !self.isAtEnd()) {
+                    try self.reportError(.unexpected_token, "Error parsing statement, skipping token", self.getCurrentSourceLoc());
+                    _ = self.advance();
+                }
+                // Create an error node to continue parsing
+                break :blk ast.createErrorNode(self.arena, self.getCurrentSourceLoc(), .unexpected_token, "Failed to parse statement") catch unreachable;
+            };
+            try statements.append(stmt);
+            
+            // Ensure we're making progress
+            if (self.current == old_current and !self.isAtEnd()) {
+                // Force advance to prevent infinite loop, but only report error once per token
+                if (self.current > 0) { // Only report if we haven't already reported for this token
+                    try self.reportError(.unexpected_token, "Unexpected token, skipping", self.getCurrentSourceLoc());
+                }
+                _ = self.advance();
+                // Add a safety counter to prevent getting truly stuck
+                stuck_counter += 1;
+                if (stuck_counter > 100) { // Prevent infinite loops
+                    try self.reportError(.unexpected_token, "Parser appears to be in infinite loop, stopping", self.getCurrentSourceLoc());
+                    break;
+                }
+            } else {
+                stuck_counter = 0; // Reset counter when we make progress
+            }
+        }
+
+        // Use the ArrayList's items directly - they'll live as long as the ArrayList
+        // TODO: This creates a small memory leak. The dupe'd slice should be tracked and freed.
+        // Transfer ownership of ArrayList to AST node
+        return ast.createBlock(self.arena, source_loc, statements);
+    }
+
+    fn parseIfExpression(self: *Parser) !ast.NodeId {
+        const source_loc = self.getCurrentSourceLoc();
+        
+        // Parse: if (condition) then_expr else else_expr
+        _ = try self.consume(.LeftParen, .missing_closing_paren, "Expected '(' after 'if'");
+        const condition = try self.parseExpression();
+        _ = try self.consume(.RightParen, .missing_closing_paren, "Expected ')' after if condition");
+        
+        const then_branch = try self.parseExpression();
+        
+        _ = try self.consume(.Else, .unexpected_token, "Expected 'else' in if expression");
+        const else_branch = try self.parseExpression();
+        
+        return self.arena.createNode(ast.AstNode.init(.{
+            .if_expr = .{
+                .condition = condition,
+                .then_branch = then_branch,
+                .else_branch = else_branch,
+            }
+        }, source_loc));
+    }
+
+    fn parseMatchExpression(self: *Parser) !ast.NodeId {
+        const source_loc = self.getCurrentSourceLoc();
+        
+        // Parse: match expression { | pattern => body | pattern => body }
+        const expression = try self.parseExpression();
+        _ = try self.consume(.LeftBrace, .missing_closing_brace, "Expected '{' after match expression");
+        
+        var arms = std.ArrayList(ast.MatchArm).init(self.allocator);
+        
+        // Skip initial whitespace
+        while (self.check(.Whitespace) or self.check(.Newline)) {
+            _ = self.advance();
+        }
+        
+        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            // Parse match arm: | pattern => body
+            _ = try self.consume(.Pipe, .unexpected_token, "Expected '|' at start of match arm");
+            
+            const pattern = try self.parseMatchPattern();
+            
+            // Optional guard condition
+            var guard: ?ast.NodeId = null;
+            if (self.match(&[_]std.meta.Tag(Token){.If})) {
+                guard = try self.parseExpression();
+            }
+            
+            _ = try self.consume(.DoubleArrow, .unexpected_token, "Expected '=>' after match pattern");
+            const body = try self.parseExpression();
+            
+            try arms.append(ast.MatchArm{
+                .pattern = pattern,
+                .guard = guard,
+                .body = body,
+                .source_loc = self.getCurrentSourceLoc(),
+            });
+            
+            // Skip trailing whitespace and newlines
+            while (self.check(.Whitespace) or self.check(.Newline)) {
+                _ = self.advance();
+            }
+        }
+        
+        _ = try self.consume(.RightBrace, .missing_closing_brace, "Expected '}' after match arms");
+        
+        // Transfer ownership of arms ArrayList to AST node
+        return self.arena.createNode(ast.AstNode.init(.{
+            .match_expr = .{ .expression = expression, .arms = arms }
+        }, source_loc));
+    }
+
+    fn parseMatchPattern(self: *Parser) !ast.MatchPattern {
+        // Handle wildcard pattern
+        if (self.match(&[_]std.meta.Tag(Token){.Underscore})) {
+            return ast.MatchPattern.wildcard;
+        }
+        
+        // Handle literal patterns  
+        if (self.check(.True) or self.check(.False) or self.check(.IntegerLiteral) or 
+           self.check(.FloatLiteral) or self.check(.StringLiteral) or self.check(.CharLiteral)) {
+            const token = self.advance();
+            if (ast.Literal.fromToken(token)) |literal| {
+                return ast.MatchPattern{ .literal = literal };
+            }
+        }
+        
+        // Handle identifier patterns
+        if (self.match(&[_]std.meta.Tag(Token){.Identifier})) {
+            const token = self.previous();
+            if (token == .Identifier) {
+                return ast.MatchPattern{ .identifier = token.Identifier.value };
+            }
+        }
+        
+        // Handle range patterns (simplified for now)
+        // TODO: Implement proper range pattern parsing
+        
+        try self.reportError(.unexpected_token, "Invalid match pattern", self.getCurrentSourceLoc());
+        return ast.MatchPattern.wildcard; // fallback
+    }
+
+    fn parseType(self: *Parser) !ast.NodeId {
+        const source_loc = self.getCurrentSourceLoc();
+        
+        // Handle error union types (e.g., !void, !i32)
+        if (self.match(&[_]std.meta.Tag(Token){.Exclamation})) {
+            _ = try self.parseType(); // Parse the inner type but ignore for now
+            // For now, create a simple identifier with error union syntax
+            // TODO: Create proper error union type AST node
+            return ast.createIdentifier(self.arena, source_loc, "!void"); // Simplified for now
+        }
+        
+        // Handle array types [N]T or []T
+        if (self.match(&[_]std.meta.Tag(Token){.LeftBracket})) {
+            var array_size: ?ast.NodeId = null;
+            
+            // Skip whitespace after [
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Check if this is a sized array [N] or slice []
+            if (!self.check(.RightBracket)) {
+                array_size = try self.parseExpression();
+            }
+            
+            _ = try self.consume(.RightBracket, .unexpected_token, "Expected ']' in array type");
+            
+            // Skip whitespace after ]
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            const element_type = try self.parseType();
+            _ = element_type; // TODO: Use element_type in proper array type creation
+            
+            // For now, create a simplified array type identifier
+            // TODO: Create proper array type AST node
+            if (array_size) |_| {
+                return ast.createIdentifier(self.arena, source_loc, "[N]T"); // Simplified sized array
+            } else {
+                return ast.createIdentifier(self.arena, source_loc, "[]T"); // Simplified slice
+            }
+        }
+        
+        // Handle built-in types
+        if (self.match(&[_]std.meta.Tag(Token){.Void})) {
+            return ast.createIdentifier(self.arena, source_loc, "void");
+        }
+        
+        if (self.match(&[_]std.meta.Tag(Token){.I32})) {
+            return ast.createIdentifier(self.arena, source_loc, "i32");
+        }
+        
+        if (self.match(&[_]std.meta.Tag(Token){.I64})) {
+            return ast.createIdentifier(self.arena, source_loc, "i64");
+        }
+        
+        if (self.match(&[_]std.meta.Tag(Token){.U32})) {
+            return ast.createIdentifier(self.arena, source_loc, "u32");
+        }
+        
+        if (self.match(&[_]std.meta.Tag(Token){.U64})) {
+            return ast.createIdentifier(self.arena, source_loc, "u64");
+        }
+        
+        if (self.match(&[_]std.meta.Tag(Token){.F32})) {
+            return ast.createIdentifier(self.arena, source_loc, "f32");
+        }
+        
+        if (self.match(&[_]std.meta.Tag(Token){.F64})) {
+            return ast.createIdentifier(self.arena, source_loc, "f64");
+        }
+        
+        if (self.match(&[_]std.meta.Tag(Token){.Str})) {
+            return ast.createIdentifier(self.arena, source_loc, "str");
+        }
+        
+        if (self.match(&[_]std.meta.Tag(Token){.Bool})) {
+            return ast.createIdentifier(self.arena, source_loc, "bool");
+        }
+        
+        // Handle identifier types
+        if (self.match(&[_]std.meta.Tag(Token){.Identifier})) {
+            const token = self.previous();
+            if (token == .Identifier) {
+                return ast.createIdentifier(self.arena, source_loc, token.Identifier.value);
+            }
+        }
+        
+        // TODO: Handle more complex types like pointers, arrays, etc.
+        
+        try self.reportError(.unexpected_token, "Expected type", source_loc);
+        return ast.createIdentifier(self.arena, source_loc, "error"); // Return error type instead of throwing
+    }
+};

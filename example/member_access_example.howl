@@ -1,0 +1,5 @@
+@import("std")
+
+// This will produce a semantic error since std is not defined as a module yet
+// but it shows that the lexing and parsing of member access is working
+x := std.debug.print

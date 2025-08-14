@@ -1,0 +1,60 @@
+// Example Howl program
+// This is a simple Hello World program in Howl
+std :: @import("std")
+print :: std.debug.println
+
+pub main :: fn() {
+    message :: "Hello, World!"
+    number : i32 : 42
+    
+    // Print the message
+    print("{s}", .{message})
+    
+    match number {
+    | > 40 => {
+            print("Number is greater than 40")
+        }
+    | < 40 =>  {
+            print("Number  is less than 40")
+        }
+    | _ => {
+            print("Number is equal to 40")        
+        }
+    }
+    
+    // variable
+    a := 0
+
+    // Loop example
+    for (0..<10) |i| {
+        a += i
+        print("{d}", .{i})
+    }
+    
+    print("accum: {d}", .{a})
+
+}
+
+/// Doc comment
+/// Represents a person with a name and age.
+Person :: struct {
+    name: string,
+    age: u32,
+}
+
+create_person :: fn(name: string, age: u32) Person {
+    return Person {
+        name: name,
+        age: age,
+    }
+}
+
+// Constants
+pub PI : f64 : 3.14159
+pub MAX_SIZE : u32 : 1000
+
+Color :: enum {
+    Red,
+    Green,
+    Blue,
+}

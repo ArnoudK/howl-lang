@@ -44,12 +44,16 @@ product :: try @mul_s(c, d)
 
 ## Bitwise Operators
 
-| Operator | Description | Example (0b values)                  |
-| :------- | :---------- | :----------------------------------- |
-| `bOr`    | Bitwise OR  | `00001111 bOr 10110101  = 10111111`  |
-| `bAnd`   | Bitwise AND | `0001111  bAnd 10110101  = 00000101` |
-| `bNot`   | Bitwise NOT | ` bNot 10110101 = 01001010`          |
-| `bXor`   | Bitwise XOR | `00001111 xOr 10110101 = 10111010`   |
+| Operator | Description     | Example (0b values)                  |
+| :------- | :-------------- | :----------------------------------- |
+| `bOr`    | Bitwise OR      | `00001111 bOr 10110101  = 10111111`  |
+| `bAnd`   | Bitwise AND     | `0001111  bAnd 10110101  = 00000101` |
+| `bNot`   | Bitwise NOT     | ` bNot 10110101 = 01001010`          |
+| `bXor`   | Bitwise XOR     | `00001111 bXor 10110101 = 10111010`  |
+| `bShL`   | Bitshift left   | `00001111 bShL 5 = 111000000`        |
+| `bShR`   | Bitshift right  | `00001111 bShR 2 = 00000011`         |
+| `bRotL`  | Bitrotate left  | `00001111 bRotL 5 = 111000001`       |
+| `bRotR`  | Bitrotate right | `00001111 bRotR 5 = 01111000`        |
 
 ## Operator Precedence
 
@@ -97,6 +101,28 @@ inverted_flags :: bNot flags1        // Inverts all bits
 // Pipe operator
 processed :: value |> process |> format
 // Equivalent to: format(process(value))
+
+// you can also capture the value
+a :: abc() |> |abcVal| getName(2, abcVal)
+
+
+```
+
+## Null-Safety Operators
+
+Howl provides operators for safe handling of optional values:
+
+| Operator | Description                       | Example                            |
+| :------- | :-------------------------------- | :--------------------------------- |
+| `orelse` | Null-coalescing (provide default) | `maybe_value orelse default_value` |
+
+```rust
+// Null-coalescing with orelse
+username :: getUserInput() orelse "anonymous"
+config_value :: getConfig("timeout") orelse 30
+
+// Can be chained for multiple fallbacks
+result :: primarySource() orelse secondarySource() orelse defaultValue
 ```
 
 ## Custom Operators
@@ -116,5 +142,5 @@ combine :: fn (a: Vector, b: Vector) Vector {
 result :: combine(vec1, vec2)
 
 // For a more functional style, use the pipe operator
-result :: vec1 |> (fn(v) combine(v, vec2))
+result :: vec1 |> combine(vec2)
 ```

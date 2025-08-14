@@ -1,0 +1,35 @@
+// std/debug module - Debugging utilities for Howl programs
+
+// Print a message to stdout
+print :: fn(message: str) {
+    // This function will be handled specially by the compiler
+    // JavaScript: console.log()
+    // ZIR: std.debug.print()
+    return
+}
+
+// Print formatted message with values
+printf :: fn(format: str, args: ...) {
+    // Formatted printing with variable arguments
+    return
+}
+
+// Assert that a condition is true, panic if false
+assert :: fn(condition: bool, message: str) {
+    if !condition {
+        @panic(message)
+    }
+    return
+}
+
+// Print debug information about a value
+dump :: fn(value: any) {
+    // Print detailed information about any value
+    return
+}
+
+// Debugging breakpoint (no-op in release mode)
+breakpoint :: fn() {
+    // Insert debugger breakpoint
+    return
+}

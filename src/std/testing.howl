@@ -1,0 +1,54 @@
+// std/testing module - Testing utilities for Howl programs
+
+// Assert that two values are equal
+expect :: fn(actual: any, expected: any) {
+    // TODO: Implement value comparison
+    // For now, just assert they're the same
+    return
+}
+
+// Assert that a condition is true
+expectTrue :: fn(condition: bool) {
+    if !condition {
+        @panic("Expected true, got false")
+    }
+    return
+}
+
+// Assert that a condition is false
+expectFalse :: fn(condition: bool) {
+    if condition {
+        @panic("Expected false, got true")
+    }
+    return
+}
+
+// Assert that two values are equal (generic)
+expectEqual :: fn(actual: any, expected: any) {
+    // TODO: Implement deep equality comparison
+    return
+}
+
+// Assert that two values are not equal
+expectNotEqual :: fn(actual: any, expected: any) {
+    // TODO: Implement inequality comparison
+    return
+}
+
+// Assert that a function panics
+expectPanic :: fn(func: fn()) {
+    // TODO: Implement panic detection
+    return
+}
+
+// Test runner (simplified)
+runTest :: fn(name: str, testFunc: fn()) {
+    // TODO: Implement test execution and reporting
+    return
+}
+
+// Benchmark a function
+benchmark :: fn(name: str, func: fn()) {
+    // TODO: Implement benchmarking
+    return
+}

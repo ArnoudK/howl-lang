@@ -1,0 +1,39 @@
+// Advanced semantic analysis test for Howl
+// Tests: compile-time types, struct declarations, type aliases
+
+// Compile-time type creation (like Zig's 'type')
+PointType :: struct {
+    x: i32,
+    y: i32,
+}
+
+// Type aliases
+Coordinate :: i32
+Vector :: PointType
+
+// Using the struct type
+origin :: PointType {
+    x: 0,
+    y: 0,
+}
+
+// Function using custom types  
+pub distance :: fn(p1: PointType, p2: PointType) f64 {
+    dx :: p2.x - p1.x
+    dy :: p2.y - p1.y
+    return sqrt(dx * dx + dy * dy)
+}
+
+// Generic-like type creation at compile time
+createArray :: fn(comptime T: type, size: i32) type {
+    return struct {
+        data: [size]T,
+        length: i32,
+    }
+}
+
+IntArray :: createArray(i32, 10)
+numbers :: IntArray {
+    data: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    length: 10,
+}

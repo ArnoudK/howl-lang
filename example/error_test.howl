@@ -1,0 +1,17 @@
+// Test file designed to trigger semantic errors for memory leak testing
+
+pub errorFunc :: fn(x: i64) void {
+    // This should trigger type errors that allocate error messages
+    result := x + "string"  // Type mismatch error
+    return result           // Return type mismatch error
+}
+
+pub anotherFunc :: fn() i64 {
+    return  // Missing return value error
+}
+
+pub duplicateTest :: fn() void {
+    x := 42
+    x := 24  // Duplicate variable error
+    return
+}

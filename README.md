@@ -20,6 +20,16 @@ zig build
 zig build run
 ```
 
+### LSP Support
+The project includes a Language Server Protocol (LSP) implementation for editor integration:
+
+```bash
+# Build and run the LSP server
+zig build lsp
+```
+
+For detailed LSP setup instructions, see [LSP_README.md](LSP_README.md).
+
 ### Testing
 All tests can be run through the build system:
 ```bash

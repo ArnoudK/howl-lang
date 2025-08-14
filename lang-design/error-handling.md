@@ -13,7 +13,7 @@ catch_example :: fn() void {
     // Simple error handling
     throwingFunction() catch |e| {
         print_d("Error occurred: {e}", .{e})
-        }
+    }
 
     // Providing a fallback value
      str :: throwingFunction2() catch |e| {

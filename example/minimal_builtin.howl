@@ -1,0 +1,4 @@
+pub main :: fn() !void {
+    size :: @sizeOf(i32)
+    return
+}

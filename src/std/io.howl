@@ -1,0 +1,62 @@
+// std/io module - Input/output operations
+
+// Write string to stdout
+print :: fn(message: str) {
+    // Alias to std.debug.print for consistency
+    return
+}
+
+// Write string to stdout with newline
+println :: fn(message: str) {
+    // Print with automatic newline
+    return
+}
+
+// Write to stderr
+eprint :: fn(message: str) {
+    // Error output
+    return
+}
+
+// Write to stderr with newline
+eprintln :: fn(message: str) {
+    // Error output with newline
+    return
+}
+
+// Read from stdin (simplified)
+readLine :: fn() -> str {
+    // TODO: Implement stdin reading
+    return ""
+}
+
+// File operations (simplified interfaces)
+File :: struct {
+    handle: i32  // File handle/descriptor
+}
+
+open :: fn(path: str, mode: str) -> File {
+    // TODO: Implement file opening
+    return File{ .handle = -1 }
+}
+
+close :: fn(file: File) {
+    // TODO: Implement file closing
+    return
+}
+
+read :: fn(file: File, buffer: *u8, size: usize) -> usize {
+    // TODO: Implement file reading
+    return 0
+}
+
+write :: fn(file: File, data: *const u8, size: usize) -> usize {
+    // TODO: Implement file writing
+    return 0
+}
+
+// Check if file exists
+exists :: fn(path: str) -> bool {
+    // TODO: Implement file existence check
+    return false
+}

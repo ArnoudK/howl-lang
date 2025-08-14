@@ -1,0 +1,4 @@
+@import("std")
+
+main := 42
+result := main + 10

@@ -1,321 +1,228 @@
-const std = @import("std");
-const root = @import("./root.zig");
+//! Howl Language Compiler - Main Entry Point
 
-const stdout_file = std.io.getStdOut().writer();
-const stderr_file = std.io.getStdErr().writer();
+const std = @import("std");
+const root = @import("root.zig");
+
+// Use the library exports directly
+const Compiler = root.Compiler;
+const CompileOptions = root.CompileOptions;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{
-        .safety = true,
-        .retain_metadata = true,
-        .enable_memory_limit = false,
-    }){};
-    defer {
-        const deinit_status = gpa.deinit();
-        if (deinit_status == .leak) {
-            std.log.err("Memory leak detected!", .{});
-        }
-    }
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Get command line arguments
+    // Parse command line arguments
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
     if (args.len < 2) {
-        stdout_file.print(HelpMessage, .{}) catch {};
+        std.debug.print("Usage: {s} <file.howl> [options]\n", .{args[0]});
+        std.debug.print("   or: {s} [options] <file.howl>\n", .{args[0]});
+        std.debug.print("\nTarget Selection:\n", .{});
+        std.debug.print("  -tjs                 Generate JavaScript code (default)\n", .{});
+        std.debug.print("  -t64                 Generate 64-bit native binary\n", .{});
+        std.debug.print("  -t32                 Generate 32-bit native binary\n", .{});
+        std.debug.print("  -tobj                Generate object file\n", .{});
+        std.debug.print("  -tllvm               Generate LLVM IR\n", .{});
+        std.debug.print("\nOther Options:\n", .{});
+        std.debug.print("  --format=<format>    Output format: colored, plain, json, summary (default: colored)\n", .{});
+        std.debug.print("  --target=<target>    Legacy target syntax (use -t flags instead)\n", .{});
+        std.debug.print("  --max-errors=<n>     Maximum number of errors to show (default: 10)\n", .{});
+        std.debug.print("  --no-warnings        Disable warnings\n", .{});
+        std.debug.print("  --stop-on-error      Stop compilation on first error\n", .{});
+        std.debug.print("  --dump-ast           Dump AST if compilation succeeds\n", .{});
+        std.debug.print("  --dump-zir           Dump ZIR if ZIR generation succeeds\n", .{});
+        std.debug.print("  --stats              Show compilation statistics\n", .{});
+        std.debug.print("\nExamples:\n", .{});
+        std.debug.print("  {s} example/simple-program.howl -tjs\n", .{args[0]});
+        std.debug.print("  {s} -t64 example/simple-program.howl\n", .{args[0]});
+        std.debug.print("  {s} example/simple-program.howl -t64 --dump-zir\n", .{args[0]});
+        std.debug.print("  {s} -tobj --stats example/simple-program.howl\n", .{args[0]});
         return;
     }
 
-    // Parse command line arguments manually
-    var show_tokens = false;
-    var show_syntax = false;
-    var show_semantic = false;
-    var log_level = LogLevel.Default;
-    var subcommand: ?SubCommand = null;
-    var input_files = std.ArrayList([]const u8).init(allocator);
-    defer input_files.deinit();
+    // Find the file path - it's the first argument that doesn't start with '-'
+    var file_path: []const u8 = undefined;
+    var file_path_found = false;
+    for (args[1..]) |arg| {
+        if (!std.mem.startsWith(u8, arg, "-")) {
+            file_path = arg;
+            file_path_found = true;
+            break;
+        }
+    }
+    
+    if (!file_path_found) {
+        std.debug.print("Error: No input file specified\n", .{});
+        std.debug.print("Usage: {s} [options] <file.howl>\n", .{args[0]});
+        return;
+    }
 
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "--tokens")) {
-            show_tokens = true;
-        } else if (std.mem.eql(u8, arg, "--syntax")) {
-            show_syntax = true;
-        } else if (std.mem.eql(u8, arg, "--semantic")) {
-            show_semantic = true;
-        } else if (std.mem.eql(u8, arg, "--log")) {
-            if (i + 1 < args.len) {
-                i += 1;
-                const log_arg = args[i];
-                if (std.mem.eql(u8, log_arg, "Silent")) {
-                    log_level = .Silent;
-                } else if (std.mem.eql(u8, log_arg, "Verbose")) {
-                    log_level = .Verbose;
-                } else if (std.mem.eql(u8, log_arg, "Debug")) {
-                    log_level = .Debug;
-                } else if (std.mem.eql(u8, log_arg, "All")) {
-                    log_level = .All;
-                } else {
-                    log_level = .Default;
-                }
+    // Parse options
+    var output_format = CompileOptions.OutputFormat.colored_text;
+    var target: root.CompileTarget = .javascript;
+    var max_errors: u32 = 10;
+    var enable_warnings = true;
+    var stop_on_first_error = false;
+    var show_stats = false;
+
+    for (args[1..]) |arg| {
+        // Skip the file path
+        if (std.mem.eql(u8, arg, file_path)) {
+            continue;
+        }
+        
+        // New short flag format for targets
+        if (std.mem.eql(u8, arg, "-tjs")) {
+            target = .javascript;
+        } else if (std.mem.eql(u8, arg, "-t64")) {
+            target = .zig_binary;
+        } else if (std.mem.eql(u8, arg, "-t32")) {
+            target = .zig_binary; // For now, treat 32-bit same as 64-bit
+        } else if (std.mem.eql(u8, arg, "-tobj")) {
+            target = .zig_object;
+        } else if (std.mem.eql(u8, arg, "-tllvm")) {
+            target = .llvm_ir;
+        // Legacy format support
+        } else if (std.mem.startsWith(u8, arg, "--format=")) {
+            const format_str = arg[9..];
+            if (std.mem.eql(u8, format_str, "colored")) {
+                output_format = CompileOptions.OutputFormat.colored_text;
+            } else if (std.mem.eql(u8, format_str, "plain")) {
+                output_format = CompileOptions.OutputFormat.plain_text;
+            } else if (std.mem.eql(u8, format_str, "json")) {
+                output_format = CompileOptions.OutputFormat.json;
+            } else if (std.mem.eql(u8, format_str, "summary")) {
+                output_format = CompileOptions.OutputFormat.summary_only;
+            } else {
+                std.debug.print("Unknown format: {s}\n", .{format_str});
+                return;
             }
-        } else if (std.mem.eql(u8, arg, "help")) {
-            subcommand = .help;
-        } else if (std.mem.eql(u8, arg, "version")) {
-            subcommand = .version;
-        } else if (std.mem.eql(u8, arg, "build")) {
-            subcommand = .build;
-        } else if (std.mem.eql(u8, arg, "run")) {
-            subcommand = .run;
-        } else if (std.mem.eql(u8, arg, "debug")) {
-            subcommand = .debug;
-        } else if (std.mem.eql(u8, arg, "lsp")) {
-            subcommand = .lsp;
-        } else if (!std.mem.startsWith(u8, arg, "--")) {
-            // This is an input file
-            try input_files.append(arg);
+        } else if (std.mem.startsWith(u8, arg, "--target=")) {
+            const target_str = arg[9..];
+            std.debug.print("Warning: --target= syntax is deprecated. Use -t flags instead (e.g., -tjs, -t64)\n", .{});
+            if (std.mem.eql(u8, target_str, "js")) {
+                target = .javascript;
+            } else if (std.mem.eql(u8, target_str, "zig-bin")) {
+                target = .zig_binary;
+            } else if (std.mem.eql(u8, target_str, "zig-obj")) {
+                target = .zig_object;
+            } else if (std.mem.eql(u8, target_str, "llvm")) {
+                target = .llvm_ir;
+            } else {
+                std.debug.print("Unknown target: {s}\n", .{target_str});
+                return;
+            }
+        } else if (std.mem.startsWith(u8, arg, "--max-errors=")) {
+            max_errors = std.fmt.parseInt(u32, arg[13..], 10) catch {
+                std.debug.print("Invalid max-errors value: {s}\n", .{arg[13..]});
+                return;
+            };
+        } else if (std.mem.eql(u8, arg, "--no-warnings")) {
+            enable_warnings = false;
+        } else if (std.mem.eql(u8, arg, "--stop-on-error")) {
+            stop_on_first_error = true;
+        } else if (std.mem.eql(u8, arg, "--stats")) {
+            show_stats = true;
+        } else {
+            std.debug.print("Unknown option: {s}\n", .{arg});
+            std.debug.print("Use -tjs, -t64, -tobj, -tllvm for target selection\n", .{});
+            return;
         }
     }
 
-    // Default to debug if no subcommand provided
-    if (subcommand == null) {
-        subcommand = .debug;
-    }
-
-    if (log_level != .Silent) {
-        stdout_file.print("[LOG LEVEL] set to '{s}'\n", .{@tagName(log_level)}) catch {};
-    }
-
-    switch (subcommand.?) {
-        .help => {
-            stdout_file.print(HelpMessage, .{}) catch {};
-            return;
-        },
-        .version => {
-            stdout_file.print("Howl Programming Language v0.0.1\n", .{}) catch {};
-        },
-        .build => {
-            if (input_files.items.len == 0) {
-                stderr_file.print("Error: No input files specified for build\n", .{}) catch {};
-                return;
-            }
-            try buildFiles(allocator, input_files.items, show_tokens, show_syntax, show_semantic, log_level);
-        },
-        .run => {
-            if (input_files.items.len == 0) {
-                stderr_file.print("Error: No input files specified for run\n", .{}) catch {};
-                return;
-            }
-            try runFiles(allocator, input_files.items, show_tokens, show_syntax, show_semantic, log_level);
-        },
-        .lsp => {
-            stdout_file.print("LSP mode not yet implemented\n", .{}) catch {};
-        },
-        .debug => {
-            if (input_files.items.len == 0) {
-                stderr_file.print("Error: No input files specified for debug\n", .{}) catch {};
-                return;
-            }
-            try debugFiles(allocator, input_files.items, show_tokens, show_syntax, show_semantic, log_level);
-        },
-    }
-}
-
-// File processing functions
-fn buildFiles(allocator: std.mem.Allocator, files: []const []const u8, show_tokens: bool, show_syntax: bool, show_semantic: bool, log_level: LogLevel) !void {
-    if (log_level != .Silent) {
-        stdout_file.print("Building {d} file(s)...\n", .{files.len}) catch {};
-    }
-
-    for (files) |file_path| {
-        try processFile(allocator, file_path, show_tokens, show_syntax, show_semantic, log_level, .build);
-    }
-}
-
-fn runFiles(allocator: std.mem.Allocator, files: []const []const u8, show_tokens: bool, show_syntax: bool, show_semantic: bool, log_level: LogLevel) !void {
-    if (log_level != .Silent) {
-        stdout_file.print("Running {d} file(s)...\n", .{files.len}) catch {};
-    }
-
-    for (files) |file_path| {
-        try processFile(allocator, file_path, show_tokens, show_syntax, show_semantic, log_level, .run);
-    }
-}
-
-fn debugFiles(allocator: std.mem.Allocator, files: []const []const u8, show_tokens: bool, show_syntax: bool, show_semantic: bool, log_level: LogLevel) !void {
-    stdout_file.print("Debug mode: Processing {d} file(s)...\n", .{files.len}) catch {};
-
-    for (files) |file_path| {
-        try processFile(allocator, file_path, show_tokens, show_syntax, show_semantic, log_level, .debug);
-    }
-}
-
-const ProcessMode = enum { build, run, debug };
-
-fn processFile(allocator: std.mem.Allocator, file_path: []const u8, show_tokens: bool, show_syntax: bool, show_semantic: bool, log_level: LogLevel, mode: ProcessMode) !void {
-    // Read the file
-    const file_contents = std.fs.cwd().readFileAlloc(allocator, file_path, std.math.maxInt(usize)) catch |err| {
-        stderr_file.print("Error reading file '{s}': {}\n", .{ file_path, err }) catch {};
+    // Read source file
+    const source_content = std.fs.cwd().readFileAlloc(allocator, file_path, 1024 * 1024) catch |err| {
+        std.debug.print("Error reading file '{s}': {}\n", .{ file_path, err });
         return;
     };
-    defer allocator.free(file_contents);
+    defer allocator.free(source_content);
 
-    // Create a copy of the file path for the lexer (it takes ownership)
-    const file_name = try allocator.dupe(u8, file_path);
-    const file_content_copy = try allocator.dupe(u8, file_contents);
+    // Create compile options
+    const options = CompileOptions{
+        .file_path = file_path,
+        .source_content = source_content,
+        .stop_on_first_error = stop_on_first_error,
+        .max_errors = max_errors,
+        .enable_warnings = enable_warnings,
+        .output_format = output_format,
+        .target = target,
+    };
 
-    if (log_level == .Verbose or log_level == .Debug or log_level == .All) {
-        stdout_file.print("\n=== Processing file: {s} ===\n", .{file_path}) catch {};
-    }
-
-    // Initialize lexer
-
-    var lexer = root.Lexing.Lexer.init(allocator);
-    defer lexer.deinit();
-
-    // Add file and tokenize
-    lexer.addFile(file_name, file_content_copy);
-
-    // Check for lexer errors
-    if (lexer.files.items.len > 0 and lexer.files.items[0].hasErrorTokens) {
-        stderr_file.print("Lexer errors found in file: {s}\n", .{file_path}) catch {};
-
-        // Print error tokens
-        for (lexer.files.items[0].tokens.items) |token| {
-            if (token.kind == .ErrorToken) {
-                const error_msg = lexer.files.items[0].fmtLexorErrorToken(token, allocator) catch "Error formatting error message";
-                defer allocator.free(error_msg);
-                stderr_file.print("{s}\n", .{error_msg}) catch {};
-            }
-        }
+    // Initialize compiler
+    var compiler = Compiler.init(allocator, options) catch |err| {
+        std.debug.print("Failed to initialize compiler: {}\n", .{err});
         return;
+    };
+    defer compiler.deinit();
+
+    // Compile
+    var result = compiler.compile() catch |err| {
+        std.debug.print("Compilation failed with error: {}\n", .{err});
+        return;
+    };
+    defer result.deinit(allocator);
+
+    // Print errors if any (but not for successful x64 compilations)
+    if (result.errors.errors.items.len > 0 and !(result.success and target == .zig_binary)) {
+        var buffer = std.ArrayList(u8).init(allocator);
+        defer buffer.deinit();
+        try compiler.formatErrors(&result, buffer.writer());
+        std.debug.print("{s}", .{buffer.items});
     }
 
-    // Show tokens if requested or in debug mode
-    if (show_tokens or mode == .debug) {
-        stdout_file.print("\n--- TOKENS ---\n", .{}) catch {};
-        if (lexer.files.items.len > 0) {
-            lexer.files.items[0].printTokens();
+    // Print generated code if successful
+    if (result.success and result.generated_code != null) {
+        switch (result.target) {
+            .javascript => {
+                std.debug.print("\nGenerated JavaScript:\n", .{});
+                std.debug.print("==========================================\n", .{});
+                std.debug.print("{s}\n", .{result.generated_code.?});
+                std.debug.print("==========================================\n", .{});
+            },
+            .zig_binary, .zig_object, .llvm_ir => {
+                std.debug.print("\nZIR backend result:\n", .{});
+                std.debug.print("==========================================\n", .{});
+                std.debug.print("{s}\n", .{result.generated_code.?});
+                std.debug.print("==========================================\n", .{});
+            },
         }
     }
 
-    // Add syntax analysis using our new simplified AST
-    if (show_syntax or mode == .debug) {
-        stdout_file.print("\n--- SYNTAX TREE ---\n", .{}) catch {};
-
-        if (lexer.files.items.len > 0) {
-            const tokens = lexer.files.items[0].tokens.items;
-
-            // Create AST parser
-            var parser = root.Ast.Parser.init(allocator, tokens);
-            defer parser.deinit(); // Properly clean up all allocated AST nodes
-
-            // Try parsing with error recovery for better error reporting
-            const ast = if (mode == .debug)
-                parser.parseWithRecovery()
-            else
-                parser.parse() catch |err| {
-                    stderr_file.print("Parse error: {}\n", .{err}) catch {};
-
-                    // Print detailed error information if available
-                    if (parser.hasErrors()) {
-                        stderr_file.print("\n--- DETAILED PARSE ERRORS ---\n", .{}) catch {};
-                        parser.printErrors();
-                    }
-                    return;
-                };
-
-            // Always check for and display parsing errors
-            if (parser.hasErrors()) {
-                stderr_file.print("\n--- PARSE ERRORS DETECTED ---\n", .{}) catch {};
-                parser.printErrors();
-
-                if (mode != .debug) {
-                    stderr_file.print("Use 'debug' mode for error recovery and continued parsing.\n", .{}) catch {};
-                    return;
-                }
-            }
-
-            // Print the AST
-            stdout_file.print("AST parsed with {} statements\n", .{ast.block.statements.len}) catch {};
-            if (mode == .debug or !parser.hasErrors()) {
-                root.Ast.Parser.printAst(ast, 0);
-            }
-        } else {
-            stdout_file.print("No tokens available for parsing\n", .{}) catch {};
-        }
+    // Print compilation statistics if requested
+    if (show_stats) {
+        const stats = compiler.getCompilationStats(&result);
+        std.debug.print("\nCompilation Statistics:\n", .{});
+        std.debug.print("  Total AST nodes: {d}\n", .{stats.total_nodes});
+        std.debug.print("  Phase completed: {s}\n", .{@tagName(stats.phase_completed)});
+        std.debug.print("  Success: {}\n", .{stats.success});
     }
 
-    // TODO: Add semantic analysis here when implemented
-    if (show_semantic or mode == .debug) {
-        stdout_file.print("\n--- SEMANTIC ANALYSIS (TODO) ---\n", .{}) catch {};
-        stdout_file.print("Semantic analysis not yet implemented\n", .{}) catch {};
-    }
-
-    // Process based on mode
-    switch (mode) {
-        .build => {
-            if (log_level == .Verbose or log_level == .Debug or log_level == .All) {
-                stdout_file.print("Build completed successfully for: {s}\n", .{file_path}) catch {};
-            }
-        },
-        .run => {
-            if (log_level == .Verbose or log_level == .Debug or log_level == .All) {
-                stdout_file.print("Run completed for: {s}\n", .{file_path}) catch {};
-            }
-            // TODO: Add actual execution logic here
-            stdout_file.print("Execution not yet implemented\n", .{}) catch {};
-        },
-        .debug => {
-            stdout_file.print("Debug analysis completed for: {s}\n", .{file_path}) catch {};
-        },
+    // Exit with appropriate code
+    if (!result.success) {
+        std.process.exit(1);
     }
 }
 
-const HelpMessage =
-    \\Usage: howl <command> [options] [files...] 
-    \\
-    \\Commands:
-    \\  help          Show this help message
-    \\  version       Show the version number 
-    \\              
-    \\  build <files> Build the specified .howl files
-    \\  run <files>   Build and run the specified .howl files
-    \\  debug <files> Run the howl-compiler in debug mode on specified files
-    \\                  this is very verbose and meant for debugging the compiler
-    \\
-    \\  lsp           Start the language server (not yet implemented)
-    \\  fmt           Format the project (not yet implemented)
-    \\
-    \\Examples:
-    \\  howl build main.howl
-    \\  howl run --tokens main.howl
-    \\  howl debug --tokens --syntax main.howl
-    \\                
-    \\Debug flags:
-    \\  --tokens      Print the tokenizer output
-    \\  --syntax      Print syntax tree (not yet implemented)
-    \\  --semantic    Print semantic analysis output (not yet implemented)
-    \\
-    \\General flags:
-    \\  --log <level> Set the log level
-    \\                Values: Default, Silent, Verbose, Debug, All 
-;
-const SubCommand = enum {
-    help,
-    version,
-    build,
-    run,
-    lsp,
-    debug,
-};
+test "simple test" {
+    var list = std.ArrayList(i32).init(std.testing.allocator);
+    defer list.deinit(); // Try commenting this out and see if zig detects the memory leak!
+    try list.append(42);
+    try std.testing.expectEqual(@as(i32, 42), list.pop());
+}
 
-const LogLevel = enum {
-    Default,
-    Silent,
-    Verbose,
-    Debug,
-    All,
-};
+test "use other module" {
+    try std.testing.expectEqual(@as(i32, 150), root.add(100, 50));
+}
+
+test "fuzz example" {
+    const Context = struct {
+        fn testOne(context: @This(), input: []const u8) anyerror!void {
+            _ = context;
+            // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
+            try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
+        }
+    };
+    try std.testing.fuzz(Context{}, Context.testOne, .{});
+}

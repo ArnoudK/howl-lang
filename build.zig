@@ -39,10 +39,18 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Create a module for the LSP server
+    const lsp_mod = b.createModule(.{
+        .root_source_file = b.path("src/lsp_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Modules can depend on one another using the `std.Build.Module.addImport` function.
     // This is what allows Zig source code to use `@import("foo")` where 'foo' is not a
     // file path. In this case, we set up `exe_mod` to import `lib_mod`.
     exe_mod.addImport("howl_lang_lib", lib_mod);
+    lsp_mod.addImport("howl_lang_lib", lib_mod);
 
     // Now, we will create a static library based on the module we created above.
     // This creates a `std.Build.Step.Compile`, which is the build step responsible
@@ -65,10 +73,17 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
+    // Create the LSP server executable
+    const lsp_exe = b.addExecutable(.{
+        .name = "howl_lsp",
+        .root_module = lsp_mod,
+    });
+
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).
     b.installArtifact(exe);
+    b.installArtifact(lsp_exe);
 
     // This *creates* a Run step in the build graph, to be executed when another
     // step is evaluated that depends on it. The next line below will establish
@@ -92,6 +107,17 @@ pub fn build(b: *std.Build) void {
     // This will evaluate the `run` step rather than the default, which is "install".
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
+
+    // Create run step for LSP server
+    const run_lsp_cmd = b.addRunArtifact(lsp_exe);
+    run_lsp_cmd.step.dependOn(b.getInstallStep());
+    
+    if (b.args) |args| {
+        run_lsp_cmd.addArgs(args);
+    }
+    
+    const run_lsp_step = b.step("lsp", "Run the LSP server");
+    run_lsp_step.dependOn(&run_lsp_cmd.step);
 
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.

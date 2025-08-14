@@ -1,0 +1,448 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Howl",
+  "scopeName": "source.howl",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#match"
+    },
+    {
+      "include": "#for-loop"
+    },
+    {
+      "include": "#typed-constants"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#functions"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#identifiers"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.documentation.howl",
+          "begin": "///",
+          "end": "$",
+          "captures": {
+            "0": {
+              "name": "punctuation.definition.comment.howl"
+            }
+          }
+        },
+        {
+          "name": "comment.line.double-slash.howl",
+          "begin": "//",
+          "end": "$",
+          "captures": {
+            "0": {
+              "name": "punctuation.definition.comment.howl"
+            }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.howl",
+          "match": "\\b(if|else|elif|while|for|in|loop|break|continue|return|match|case|default)\\b"
+        },
+        {
+          "name": "keyword.declaration.howl",
+          "match": "\\b(fn|struct|enum|type)\\b"
+        },
+        {
+          "name": "keyword.control.import.howl",
+          "match": "@import"
+        },
+        {
+          "name": "keyword.other.howl",
+          "match": "\\b(pub|priv|static|extern|async|await|defer|unsafe|ref|move|copy)\\b"
+        },
+        {
+          "name": "constant.language.boolean.howl",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.null.howl",
+          "match": "\\b(null|undefined|none)\\b"
+        },
+        {
+          "name": "keyword.operator.new.howl",
+          "match": "\\b(new|delete)\\b"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "name": "meta.declaration.constant.howl",
+          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(::)\\s*",
+          "captures": {
+            "1": {
+              "name": "variable.other.constant.howl"
+            },
+            "2": {
+              "name": "keyword.operator.declaration.howl"
+            }
+          }
+        },
+        {
+          "name": "meta.declaration.typed.howl",
+          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(:)\\s*([a-zA-Z0-9_]+)\\s*(:)",
+          "captures": {
+            "1": {
+              "name": "variable.other.howl"
+            },
+            "2": {
+              "name": "keyword.operator.declaration.howl"
+            },
+            "3": {
+              "name": "support.type.primitive.howl"
+            },
+            "4": {
+              "name": "keyword.operator.declaration.howl"
+            }
+          }
+        },
+        {
+          "name": "meta.declaration.parameter.howl",
+          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(:)\\s*([a-zA-Z0-9_]+)(?!\\s*:)",
+          "captures": {
+            "1": {
+              "name": "variable.parameter.howl"
+            },
+            "2": {
+              "name": "keyword.operator.declaration.howl"
+            },
+            "3": {
+              "name": "support.type.primitive.howl"
+            }
+          }
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.howl",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.howl",
+              "match": "\\\\([\"\\\\/bfnrt]|u[0-9a-fA-F]{4})"
+            },
+            {
+              "name": "invalid.illegal.unrecognized-string-escape.howl",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.howl",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "name": "constant.character.escape.howl",
+              "match": "\\\\(['\\\\bfnrt]|u[0-9a-fA-F]{4})"
+            },
+            {
+              "name": "invalid.illegal.unrecognized-string-escape.howl",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.backtick.howl",
+          "begin": "`",
+          "end": "`",
+          "patterns": [
+            {
+              "name": "constant.character.escape.howl",
+              "match": "\\\\[`\\\\]"
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.howl",
+          "match": "\\b\\d+\\.\\d+([eE][+-]?\\d+)?[fF]?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.decimal.howl",
+          "match": "\\b\\d+([eE][+-]?\\d+)?[uUlL]*\\b"
+        },
+        {
+          "name": "constant.numeric.integer.hexadecimal.howl",
+          "match": "\\b0[xX][0-9a-fA-F]+[uUlL]*\\b"
+        },
+        {
+          "name": "constant.numeric.integer.binary.howl",
+          "match": "\\b0[bB][01]+[uUlL]*\\b"
+        },
+        {
+          "name": "constant.numeric.integer.octal.howl",
+          "match": "\\b0[oO][0-7]+[uUlL]*\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.howl",
+          "match": "=>"
+        },
+        {
+          "name": "keyword.operator.pipe.howl",
+          "match": "\\|>"
+        },
+        {
+          "name": "meta.pipe.capture.howl",
+          "match": "\\|>\\s*\\|([a-zA-Z_][a-zA-Z0-9_]*)\\|",
+          "captures": {
+            "1": {
+              "name": "variable.parameter.howl"
+            }
+          }
+        },
+        {
+          "name": "keyword.operator.range.exclusive.howl",
+          "match": "\\.\\.<"
+        },
+        {
+          "name": "keyword.operator.range.inclusive.howl",
+          "match": "\\.\\.="
+        },
+        {
+          "name": "keyword.operator.range.howl",
+          "match": "\\.\\.(?![<=>])"
+        },
+        {
+          "name": "keyword.operator.arithmetic.howl",
+          "match": "[+\\-*/%]"
+        },
+        {
+          "name": "keyword.operator.comparison.howl",
+          "match": "(==|!=|<=|>=)"
+        },
+        {
+          "name": "keyword.operator.comparison.greater.howl",
+          "match": "(?<![=|])>(?!=)"
+        },
+        {
+          "name": "keyword.operator.comparison.less.howl", 
+          "match": "(?<!\\.\\.)<(?!=)"
+        },
+        {
+          "name": "keyword.operator.logical.howl",
+          "match": "\\b(and|or)\\b"
+        },
+        {
+          "name": "keyword.operator.logical.not.howl",
+          "match": "\\b(not)\\b"
+        },
+        {
+          "name": "keyword.operator.null.coalescing.howl",
+          "match": "\\b(orelse)\\b"
+        },
+        {
+          "name": "keyword.operator.bitwise.howl",
+          "match": "\\b(bXor|bOr|bAnd|bNot)\\b"
+        },
+        {
+          "name": "keyword.operator.bitwise.shift.howl",
+          "match": "\\b(bShL|bShR)\\b"
+        },
+        {
+          "name": "keyword.operator.bitwise.rotate.howl",
+          "match": "\\b(bRotL|bRotR)\\b"
+        },
+        {
+          "name": "keyword.operator.assignment.howl",
+          "match": "(:=|\\+=|-=|\\*=|/=|%=|(?<![<>=!])=(?!=|>))"
+        },
+        {
+          "name": "keyword.operator.arrow.return.howl",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.member.howl",
+          "match": "\\."
+        }
+      ]
+    },
+    "match": {
+      "patterns": [
+        {
+          "name": "keyword.operator.declaration.howl",
+          "match": "^\\s*\\|"
+        },
+        {
+          "name": "constant.language.wildcard.howl",
+          "match": "\\b_\\b"
+        }
+      ]
+    },
+    "for-loop": {
+      "patterns": [
+        {
+          "name": "meta.for-loop.howl",
+          "begin": "\\b(for)\\s*\\(",
+          "end": "\\)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.howl"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#operators"
+            },
+            {
+              "include": "#numbers"
+            },
+            {
+              "include": "#identifiers"
+            }
+          ]
+        },
+        {
+          "name": "meta.for-capture.howl",
+          "match": "\\|([a-zA-Z_][a-zA-Z0-9_]*)\\|",
+          "captures": {
+            "1": {
+              "name": "variable.parameter.howl"
+            }
+          }
+        }
+      ]
+    },
+    "typed-constants": {
+      "patterns": [
+        {
+          "name": "meta.constant.typed.howl",
+          "match": "\\b([A-Z_][A-Z0-9_]*)\\s*:\\s*([a-zA-Z0-9_]+)\\s*:",
+          "captures": {
+            "1": {
+              "name": "constant.other.howl"
+            },
+            "2": {
+              "name": "support.type.primitive.howl"
+            }
+          }
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.definition.howl",
+          "match": "\\b(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.howl"
+            },
+            "2": {
+              "name": "entity.name.function.howl"
+            }
+          }
+        },
+        {
+          "name": "entity.name.function.call.howl",
+          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.howl"
+            }
+          }
+        },
+        {
+          "name": "entity.name.builtin.call",
+          "match": "\\b(@[a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.builtin.howl"
+            }
+          }
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.howl",
+          "match": "\\b(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|f32|f64|bool|char|str|string|void|never|usize|isize|any)\\b"
+        },
+        {
+          "name": "entity.name.type.struct.howl",
+          "match": "\\b(struct)\\s+([A-Z][a-zA-Z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.howl"
+            },
+            "2": {
+              "name": "entity.name.type.howl"
+            }
+          }
+        },
+        {
+          "name": "entity.name.type.enum.howl",
+          "match": "\\b(enum)\\s+([A-Z][a-zA-Z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.howl"
+            },
+            "2": {
+              "name": "entity.name.type.howl"
+            }
+          }
+        },
+        {
+          "name": "entity.name.type.howl",
+          "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    },
+    "identifiers": {
+      "patterns": [
+        {
+          "name": "variable.other.constant.howl",
+          "match": "\\b[A-Z][A-Z0-9_]*\\b"
+        },
+        {
+          "name": "variable.other.howl",
+          "match": "\\b[a-z_][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    }
+  }
+}

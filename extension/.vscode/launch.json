@@ -1,0 +1,13 @@
+{
+  "type": "extensionHost",
+  "request": "launch",
+  "name": "Run Extension",
+  "runtimeExecutable": "${execPath}",
+  "args": [
+    "--extensionDevelopmentPath=${workspaceFolder}"
+  ],
+  "outFiles": [
+    "${workspaceFolder}/out/**/*.js"
+  ],
+  "preLaunchTask": "npm: compile"
+}

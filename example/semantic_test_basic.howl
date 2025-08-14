@@ -1,0 +1,24 @@
+// Basic semantic analysis test for Howl
+// Tests: constants, functions, type inference
+
+// Constants with type inference
+name :: "Howl Language"
+version :: 1
+pi :: 3.14159
+
+// Function declarations
+pub greet :: fn(name: string) string {
+    return "Hello, " + name
+}
+
+pub add :: fn(a: i32, b: i32) i32 {
+    return a + b
+}
+
+// Variable declarations with type inference
+result :: add(5, 10)
+message :: greet("World")
+
+// Type-annotated variables
+count: i32 :: 42
+temperature: f32 :: 98.6

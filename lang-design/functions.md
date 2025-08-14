@@ -19,7 +19,7 @@ Point :: struct {
     x, y: isize,
 }
 
-// Method with self parameter  
+// Method with self parameter
 distance :: fn(self, other: Point) isize {
     dx := self.x - other.x
     dy := self.y - other.y
@@ -127,11 +127,11 @@ Functions can be passed as parameters and returned from other functions:
 map :: fn(items: []i32, transform: fn(i32) i32) []i32 {
     result := std.ArrayList(i32).init()
     defer result.deinit()
-    
+
     for item in items {
         result.append(transform(item))
     }
-    
+
     return result.toOwnedSlice()
 }
 
@@ -185,6 +185,20 @@ square := fn(x: i32) i32 => x * x
 is_even := fn(n: i32) bool => n % 2 == 0
 ```
 
+#### Compile time function
+
+Functions can also be compile time only:
+
+````rust
+comptimeFib :: comp fn (n: i64) i64 {
+    a : i64 = 0
+    b : i64 = 1 
+    
+    
+}
+
+```
+
 ### Functions in Data Structures
 
 Functions are normal values, so they work naturally in arrays and structs:
@@ -203,10 +217,10 @@ Calculator :: struct {
 // Simple assignment
 calc := Calculator{
     .add = add,
-    .subtract = subtract, 
+    .subtract = subtract,
     .multiply = multiply,
 }
-```
+````
 
 ### Closures and Capture
 
@@ -251,7 +265,7 @@ Reference methods as function values using simple assignment:
 Point :: struct {
     x, y: i32,
 }
-    
+
 distance_from_origin :: fn(self: Point) f64 {
     return std.math.sqrt(self.x * self.x + self.y * self.y)
 }

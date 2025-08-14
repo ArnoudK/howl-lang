@@ -1,0 +1,47 @@
+// std/mem module - Memory management utilities
+
+// Copy memory from source to destination
+copy :: fn(dest: *u8, src: *const u8, n: usize) {
+    @memcpy(dest, src, n)
+    return
+}
+
+// Set memory to a specific value
+set :: fn(dest: *u8, value: u8, n: usize) {
+    @memset(dest, value, n)
+    return
+}
+
+// Compare two memory regions
+compare :: fn(a: *const u8, b: *const u8, n: usize) -> i32 {
+    // TODO: Implement memory comparison
+    return 0
+}
+
+// Zero out memory
+zero :: fn(dest: *u8, n: usize) {
+    @memset(dest, 0, n)
+    return
+}
+
+// Allocate memory (simplified interface)
+alloc :: fn(size: usize) -> *u8 {
+    // TODO: Implement memory allocation
+    return @intCast(*u8, 0)
+}
+
+// Free allocated memory
+free :: fn(ptr: *u8) {
+    // TODO: Implement memory deallocation
+    return
+}
+
+// Get the size of a type at compile time
+sizeOf :: fn(T: type) -> usize {
+    return @sizeOf(T)
+}
+
+// Get the alignment of a type at compile time
+alignOf :: fn(T: type) -> usize {
+    return @alignOf(T)
+}

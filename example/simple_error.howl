@@ -1,0 +1,4 @@
+pub errorFunc :: fn(x: i64) void {
+    result := x + 42
+    return result
+}

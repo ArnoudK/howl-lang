@@ -231,3 +231,11 @@ order_status :: match status {
 }
 
 ```
+
+### Nested expressions
+
+```rust
+
+result :: match status {
+    
+}
