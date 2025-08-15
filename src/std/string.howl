@@ -1,0 +1,76 @@
+// Standard String Library for Howl
+// Cross-platform string manipulation using compile-time code generation
+
+// String length
+extern fn length(str: string) -> i32 {
+    match @compile.target {
+        .c => @compile.insert("return strlen(str);"),
+        .javascript => @compile.insert("return str.length;")
+    }
+}
+
+// String comparison
+extern fn equals(str1: string, str2: string) -> bool {
+    match @compile.target {
+        .c => @compile.insert("return strcmp(str1, str2) == 0;"),
+        .javascript => @compile.insert("return str1 === str2;")
+    }
+}
+
+// String searching
+extern fn contains(str: string, search: string) -> bool {
+    match @compile.target {
+        .c => @compile.insert("return strstr(str, search) != NULL;"),
+        .javascript => @compile.insert("return str.includes(search);")
+    }
+}
+
+// String modification
+extern fn toUpperCase(str: string) -> string {
+    match @compile.target {
+        .c => @compile.insert(
+            "size_t len = strlen(str);\n" +
+            "char *result = malloc(len + 1);\n" +
+            "for (size_t i = 0; i < len; i++) {\n" +
+            "    result[i] = toupper(str[i]);\n" +
+            "}\n" +
+            "result[len] = '\\0';\n" +
+            "return result;"
+        ),
+        .javascript => @compile.insert("return str.toUpperCase();")
+    }
+}
+
+extern fn toLowerCase(str: string) -> string {
+    match @compile.target {
+        .c => @compile.insert(
+            "size_t len = strlen(str);\n" +
+            "char *result = malloc(len + 1);\n" +
+            "for (size_t i = 0; i < len; i++) {\n" +
+            "    result[i] = tolower(str[i]);\n" +
+            "}\n" +
+            "result[len] = '\\0';\n" +
+            "return result;"
+        ),
+        .javascript => @compile.insert("return str.toLowerCase();")
+    }
+}
+
+// String conversion
+extern fn fromInt(value: i32) -> string {
+    match @compile.target {
+        .c => @compile.insert(
+            "char *result = malloc(32);\n" +
+            "sprintf(result, \"%d\", value);\n" +
+            "return result;"
+        ),
+        .javascript => @compile.insert("return String(value);")
+    }
+}
+
+extern fn toInt(str: string) -> i32 {
+    match @compile.target {
+        .c => @compile.insert("return atoi(str);"),
+        .javascript => @compile.insert("return parseInt(str, 10) || 0;")
+    }
+}

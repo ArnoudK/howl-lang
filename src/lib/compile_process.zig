@@ -2,15 +2,13 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const ErrorSystem = @import("error_system.zig");
 const ErrorFormatter = @import("error_formatter.zig");
-const Lexer = @import("lexer.zig");
+const Lexer = @import("lexer_enhanced.zig");
 const ParserModule = @import("parser.zig");
 const Token = @import("token.zig").Token;
 const SemanticAnalyzer = @import("semantic_analyzer.zig").SemanticAnalyzer;
 const JSCodegen = @import("codegen_js.zig");
-const ZirGenerator = @import("codegen_zir_real.zig");
-
-// Legacy imports for compatibility
-const Lexer_Legacy = @import("./lexer.zig").Lexer;
+const NativeCodegen = @import("codegen_native.zig");
+const CCodegen = @import("codegen_c.zig");
 
 // ============================================================================
 // Compilation Process Manager
@@ -24,10 +22,8 @@ pub const CompilePhase = enum {
 };
 
 pub const CompileTarget = enum {
+    c,
     javascript,
-    zig_binary,
-    zig_object,
-    llvm_ir,
 };
 
 pub const CompileResult = struct {
@@ -39,7 +35,9 @@ pub const CompileResult = struct {
     target: CompileTarget,
 
     pub fn deinit(self: *CompileResult, allocator: std.mem.Allocator) void {
-        // Error messages are freed by arena allocator in compile(), so no cleanup needed
+        // Clean up error collector
+        self.errors.deinit();
+
         if (self.generated_code) |code| {
             allocator.free(code);
         }
@@ -53,7 +51,7 @@ pub const CompileOptions = struct {
     max_errors: usize = 50,
     enable_warnings: bool = true,
     output_format: OutputFormat = .colored_text,
-    target: CompileTarget = .javascript,
+    target: CompileTarget = .c,
 
     pub const OutputFormat = enum {
         colored_text,
@@ -101,11 +99,8 @@ pub const Compiler = struct {
     // ============================================================================
 
     pub fn compile(self: *Compiler) !CompileResult {
-        // Use arena allocator for temporary error messages during compilation
-        var error_arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer error_arena.deinit();
-        
-        var errors = ErrorSystem.ErrorCollector.init(error_arena.allocator());
+        // Use main allocator for error messages so they persist after compilation
+        var errors = ErrorSystem.ErrorCollector.init(self.allocator);
         errors.max_errors = self.options.max_errors;
 
         var result = CompileResult{
@@ -177,34 +172,25 @@ pub const Compiler = struct {
         if (ast_root) |root| {
             if (semantic_analyzer) |*analyzer| {
                 defer analyzer.deinit();
-                
+
                 switch (self.options.target) {
-                    .javascript => {
-                        result.generated_code = try self.generateJavaScript(root, analyzer, &result.errors);
+                    .c => {
+                        // Use the C backend
+                        const executable_result = try self.generateCExecutable(root, analyzer, &result.errors);
+                        result.generated_code = executable_result;
                     },
-                    .zig_binary, .zig_object, .llvm_ir => {
-                        // Generate real ZIR instead of custom ZIR
-                        var real_zir = try self.generateRealZir(root, analyzer, &result.errors);
-                        defer {
-                            // Clean up ZIR memory properly
-                            real_zir.instructions.deinit(self.allocator);
-                            self.allocator.free(real_zir.string_bytes);
-                            self.allocator.free(real_zir.extra);
-                        }
-                        
-                        // Compile ZIR to native binary if target is zig_binary
-                        if (self.options.target == .zig_binary) {
-                            try self.compileRealZirToBinary(real_zir, &result.errors);
-                            result.generated_code = try self.allocator.dupe(u8, "/* Binary compiled successfully from real ZIR */");
-                        }
+                    .javascript => {
+                        // Use JavaScript backend if available
+                        const js_result = try self.generateJavaScript(root, analyzer, &result.errors);
+                        result.generated_code = js_result;
                     },
                 }
             }
         }
 
         // Set final result
-        // For x64 targets, success is determined by whether the binary was created
-        if (self.options.target == .zig_binary) {
+        // For native targets, success is determined by whether the binary was created
+        if (self.options.target == .c or self.options.target == .javascript) {
             // Check if the binary was successfully created
             std.fs.cwd().access("howl_output", .{}) catch {
                 result.success = false;
@@ -226,7 +212,7 @@ pub const Compiler = struct {
             .current = 0,
             .arena = &self.arena,
             .errors = errors,
-            .source_map = null,
+            .source_map = &self.source_map, // Pass the source map instead of null
             .file_path = self.options.file_path,
             .panic_mode = false,
             .in_recovery = false,
@@ -266,7 +252,7 @@ pub const Compiler = struct {
 
     fn generateJavaScript(self: *Compiler, root_node: ast.NodeId, analyzer: *const SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) ![]const u8 {
         _ = errors; // TODO: Use this for codegen error reporting
-        
+
         const js_code = JSCodegen.generateJS(
             self.allocator,
             &self.arena,
@@ -290,172 +276,64 @@ pub const Compiler = struct {
         return self.generateJavaScript(root_node, analyzer, errors);
     }
 
-    fn generateRealZir(self: *Compiler, root_node: ast.NodeId, analyzer: *const SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) !std.zig.Zir {
+    // fn generateRealZir(self: *Compiler, root_node: ast.NodeId, analyzer: *const SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) !std.zig.Zir {
+    //     _ = errors; // TODO: Use this for codegen error reporting
+    //
+    //     var zir_generator = ZirGenerator.ZirGenerator.init(self.allocator, &self.arena, analyzer);
+    //     defer zir_generator.deinit();
+    //
+    //     const zir = zir_generator.generate(root_node) catch |err| {
+    //         switch (err) {
+    //             error.OutOfMemory => return err,
+    //             else => {
+    //                 // TODO: Report codegen errors properly
+    //                 // For now return an empty ZIR structure
+    //                 var empty_instructions = std.MultiArrayList(std.zig.Zir.Inst){};
+    //                 var empty_string_bytes = [_]u8{0};
+    //                 var empty_extra = [_]u32{0, 0};
+    //                 return std.zig.Zir{
+    //                     .instructions = empty_instructions.toOwnedSlice(),
+    //                     .string_bytes = empty_string_bytes[0..],
+    //                     .extra = empty_extra[0..],
+    //                 };
+    //             },
+    //         }
+    //     };
+
+    //     return zir;
+    // }
+
+    fn generateNativeExecutable(self: *Compiler, root_node: ast.NodeId, analyzer: *const SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) ![]const u8 {
         _ = errors; // TODO: Use this for codegen error reporting
-        
-        var zir_generator = ZirGenerator.ZirGenerator.init(self.allocator, &self.arena, analyzer);
-        defer zir_generator.deinit();
-        
-        const zir = zir_generator.generate(root_node) catch |err| {
+
+        var native_codegen = NativeCodegen.NativeCodegen.init(self.allocator, &self.arena, analyzer);
+        defer native_codegen.deinit();
+
+        const result = native_codegen.generate(root_node) catch |err| {
             switch (err) {
                 error.OutOfMemory => return err,
                 else => {
                     // TODO: Report codegen errors properly
-                    // For now return an empty ZIR structure
-                    var empty_instructions = std.MultiArrayList(std.zig.Zir.Inst){};
-                    var empty_string_bytes = [_]u8{0};
-                    var empty_extra = [_]u32{0, 0};
-                    return std.zig.Zir{
-                        .instructions = empty_instructions.toOwnedSlice(),
-                        .string_bytes = empty_string_bytes[0..],
-                        .extra = empty_extra[0..],
-                    };
+                    return try self.allocator.dupe(u8, "/* Native executable generation failed */");
                 },
             }
         };
 
-        return zir;
+        return result;
     }
 
-    fn compileRealZirToBinary(self: *Compiler, zir: std.zig.Zir, errors: *ErrorSystem.ErrorCollector) !void {
-        _ = errors; // TODO: Use for error reporting
-        
-        std.debug.print("ZIR generation successful. Instructions: {}\n", .{zir.instructions.len});
-        std.debug.print("String bytes: {}\n", .{zir.string_bytes.len});
-        std.debug.print("Extra data: {}\n", .{zir.extra.len});
-        
-        // Use Zig's compilation infrastructure to compile ZIR to machine code
-        try self.compileZirInProcess(zir);
-    }
-    
-    fn compileZirInProcess(self: *Compiler, zir: std.zig.Zir) !void {
-        // For now, let's use a different approach
-        // Since ZIR compilation is complex, we'll create a minimal wrapper
-        // that interprets the ZIR instructions and generates the results
-        
-        std.debug.print("Interpreting ZIR instructions...\n", .{});
-        
-        // This is a simplified ZIR interpreter that executes the program logic
-        try self.interpretZir(zir);
-        
-        // Create a simple "binary" that just contains the interpreted output
-        const output_filename = "howl_output";
-        try self.createSimulatedBinary(output_filename);
-        
-        std.debug.print("✓ Binary compiled successfully from ZIR: {s}\n", .{output_filename});
-        std.debug.print("✓ Binary executed successfully\n", .{});
-        std.debug.print("✓ Binary saved as: {s}\n", .{output_filename});
-    }
-    
-    fn interpretZir(self: *Compiler, zir: std.zig.Zir) !void {
-        // This is a simplified ZIR interpreter
-        // In a real implementation, this would be much more complex
-        
-        var variables = std.HashMap([]const u8, i64, std.hash_map.StringContext, 80).init(self.allocator);
-        defer variables.deinit();
-        
-        // Actually interpret the ZIR instructions
-        for (zir.instructions.items(.tag), 0..) |tag, i| {
-            switch (tag) {
-                .int => {
-                    // Handle integer literals
-                    const data = zir.instructions.items(.data)[i];
-                    _ = data; // For now, just acknowledge we found an integer
-                },
-                .str => {
-                    // Handle string literals  
-                    const data = zir.instructions.items(.data)[i];
-                    _ = data; // For now, just acknowledge we found a string
-                },
-                else => {
-                    // Handle other instruction types as needed
-                },
-            }
-        }
-        
-        // For now, since our ZIR interpreter is basic, let's execute what we know the program should do
-        // Based on the Howl source: Hello World, match expression, and loop
-        
-        // This should print Hello, World!
-        std.debug.print("Hello, World!\n", .{});
-        
-        // This should print the match result (42 > 40)
-        std.debug.print("Number is greater than 40\n", .{});
-        
-        // This should print loop values 0-9
-        var a: i64 = 0;
-        for (0..10) |i| {
-            std.debug.print("{}\n", .{i});
-            a += @intCast(i);
-        }
-        
-        // This should print the accumulated sum
-        std.debug.print("accum: {}\n", .{a});
-    }
-    
-    fn createSimulatedBinary(self: *Compiler, filename: []const u8) !void {
-        // Create a simple executable script that outputs the same results as the Howl program
-        const script_content = 
-            \\#!/bin/sh
-            \\echo "Hello, World!"
-            \\echo "Number is greater than 40"
-            \\echo "0"
-            \\echo "1"
-            \\echo "2"
-            \\echo "3"
-            \\echo "4"
-            \\echo "5"
-            \\echo "6"
-            \\echo "7"
-            \\echo "8"
-            \\echo "9"
-            \\echo "accum: 45"
-        ;
-        
-        // Write the script
-        try std.fs.cwd().writeFile(.{ .sub_path = filename, .data = script_content });
-        
-        // Make it executable
-        const file = try std.fs.cwd().openFile(filename, .{});
-        defer file.close();
-        try file.chmod(0o755);
-        
-        _ = self;
-    }
+    fn generateCExecutable(self: *Compiler, root_node: ast.NodeId, analyzer: *const SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) ![]const u8 {
+        _ = errors; // TODO: Use this for codegen error reporting
 
-    // TODO: Fix ZIR serialization - currently disabled due to MultiArrayList.Slice serialization issues
-    // fn serializeZir(self: *Compiler, zir: std.zig.Zir) ![]u8 {
-    //     // Serialize ZIR to Zig's binary format
-    //     var buffer = std.ArrayList(u8).init(self.allocator);
-    //     errdefer buffer.deinit();
-    //     
-    //     // Write ZIR header
-    //     const header = std.zig.Zir.Header{
-    //         .instructions_len = @intCast(zir.instructions.len),
-    //         .string_bytes_len = @intCast(zir.string_bytes.len),
-    //         .extra_len = @intCast(zir.extra.len),
-    //         .stat_inode = 0,
-    //         .stat_size = 0,
-    //         .stat_mtime = 0,
-    //     };
-    //     
-    //     try buffer.writer().writeStruct(header);
-    //     
-    //     // Write instructions
-    //     // Convert MultiArrayList.Slice to bytes manually
-    //     for (0..zir.instructions.len) |i| {
-    //         const inst = zir.instructions.get(i);
-    //         try buffer.writer().writeStruct(inst);
-    //     }
-    //     
-    //     // Write string bytes
-    //     try buffer.writer().writeAll(zir.string_bytes);
-    //     
-    //     // Write extra data
-    //     try buffer.writer().writeAll(std.mem.sliceAsBytes(zir.extra));
-    //     
-    //     return buffer.toOwnedSlice();
-    // }
+        var c_codegen = CCodegen.CCodegen.init(self.allocator, &self.arena, analyzer);
+        defer c_codegen.deinit();
+
+        const result = c_codegen.generate(root_node) catch |err| {
+            return err;
+        };
+
+        return result;
+    }
 
     // ============================================================================
     // Error Reporting and Output

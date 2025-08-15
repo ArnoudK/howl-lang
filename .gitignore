@@ -34,3 +34,5 @@ test_*.sh
 howl
 howl-new
 zir_tests/
+lib/clang
+fil-c

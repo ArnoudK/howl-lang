@@ -90,13 +90,16 @@ pub const AstArena = struct {
         switch (node.data) {
             .call_expr => |*call| call.args.deinit(),
             .function_decl => |*func| func.params.deinit(),
+            .extern_fn_decl => |*extern_fn| extern_fn.params.deinit(),
             .struct_decl => |*struct_decl| struct_decl.fields.deinit(),
             .block => |*block| block.statements.deinit(),
             .match_expr => |*match| match.arms.deinit(),
+            .match_compile_expr => |*match_compile| match_compile.arms.deinit(),
             .struct_init => |*struct_init| struct_init.fields.deinit(),
             .array_init => |*arr| arr.elements.deinit(),
             .struct_type_expr => |*struct_type| struct_type.fields.deinit(),
             .for_expr => |*for_expr| for_expr.captures.deinit(),
+            .generic_type_expr => |*generic_type| generic_type.type_params.deinit(),
             else => {}, // No cleanup needed for other node types
         }
     }
@@ -248,7 +251,9 @@ pub const PrimitiveType = union(enum) {
     f32: void,
     f64: void,
     char: void,
-    string: void,
+    str: void,     // Readonly string (const char*)
+    strb: void,    // StringBuilder (mutable string builder)
+    string: void,  // Legacy string type (kept for compatibility)
     void: void,
     type: void,    // The 'type' type for compile-time type manipulation
     noreturn: void, // Type for functions that never return
@@ -525,6 +530,31 @@ pub const MatchArm = struct {
     source_loc: SourceLoc,
 };
 
+// Compile-time match arms for target-specific codegen
+pub const CompileMatchArm = struct {
+    target: CompileTarget,
+    body: NodeId, // Block containing compile-time generation code
+    source_loc: SourceLoc,
+};
+
+pub const CompileTarget = enum {
+    c,
+    javascript,
+    
+    pub fn fromString(str: []const u8) ?CompileTarget {
+        if (std.mem.eql(u8, str, "c")) return .c;
+        if (std.mem.eql(u8, str, "js") or std.mem.eql(u8, str, "javascript")) return .javascript;
+        return null;
+    }
+    
+    pub fn toString(self: CompileTarget) []const u8 {
+        return switch (self) {
+            .c => "c",
+            .javascript => "javascript",
+        };
+    }
+};
+
 // ============================================================================
 // Modern AST Node Definition
 // ============================================================================
@@ -576,6 +606,12 @@ pub const AstNode = struct {
             params: std.ArrayList(Parameter),
             return_type: ?NodeId,
             body: NodeId,
+        },
+        extern_fn_decl: struct {
+            name: []const u8,
+            params: std.ArrayList(Parameter),
+            return_type: ?NodeId,
+            compile_time_body: NodeId, // Block containing compile-time code generation
         },
         struct_decl: struct {
             name: []const u8,
@@ -639,6 +675,18 @@ pub const AstNode = struct {
             type_params: std.ArrayList(NodeId), // e.g., [T] from "List(T)"
         },
         
+        // Compile-time constructs
+        compile_target_expr: struct {
+            // Evaluates to current compilation target (.c, .js, .wasm, etc.)
+        },
+        compile_insert_expr: struct {
+            code: []const u8, // Raw code to insert during codegen
+        },
+        match_compile_expr: struct {
+            target_expr: NodeId, // Usually @compile.target
+            arms: std.ArrayList(CompileMatchArm),
+        },
+        
         // Control statements
         return_stmt: struct {
             value: ?NodeId,
@@ -673,6 +721,9 @@ pub const AstNode = struct {
             .while_expr,
             .for_expr,
             .match_expr,
+            .match_compile_expr,
+            .compile_target_expr,
+            .compile_insert_expr,
             .block,
             .struct_init,
             .array_init,
@@ -685,6 +736,7 @@ pub const AstNode = struct {
         return switch (self.data) {
             .var_decl,
             .function_decl,
+            .extern_fn_decl,
             .struct_decl,
             .type_decl,
             .import_decl,
@@ -743,7 +795,7 @@ pub fn createErrorNode(arena: *AstArena, source_loc: SourceLoc, error_code: Erro
     return arena.createNode(node);
 }
 
-pub fn createStructDecl(arena: *AstArena, source_loc: SourceLoc, name: []const u8, fields: []Field, is_comptime: bool) !NodeId {
+pub fn createStructDecl(arena: *AstArena, source_loc: SourceLoc, name: []const u8, fields: std.ArrayList(Field), is_comptime: bool) !NodeId {
     const node = AstNode.init(.{ .struct_decl = .{ .name = name, .fields = fields, .is_comptime = is_comptime } }, source_loc);
     return arena.createNode(node);
 }
@@ -758,8 +810,28 @@ pub fn createTypeExpr(arena: *AstArena, source_loc: SourceLoc, base_type: NodeId
     return arena.createNode(node);
 }
 
-pub fn createStructTypeExpr(arena: *AstArena, source_loc: SourceLoc, fields: []Field) !NodeId {
+pub fn createStructTypeExpr(arena: *AstArena, source_loc: SourceLoc, fields: std.ArrayList(Field)) !NodeId {
     const node = AstNode.init(.{ .struct_type_expr = .{ .fields = fields } }, source_loc);
+    return arena.createNode(node);
+}
+
+pub fn createExternFnDecl(arena: *AstArena, source_loc: SourceLoc, name: []const u8, params: std.ArrayList(Parameter), return_type: ?NodeId, compile_time_body: NodeId) !NodeId {
+    const node = AstNode.init(.{ .extern_fn_decl = .{ .name = name, .params = params, .return_type = return_type, .compile_time_body = compile_time_body } }, source_loc);
+    return arena.createNode(node);
+}
+
+pub fn createCompileTargetExpr(arena: *AstArena, source_loc: SourceLoc) !NodeId {
+    const node = AstNode.init(.{ .compile_target_expr = .{} }, source_loc);
+    return arena.createNode(node);
+}
+
+pub fn createCompileInsertExpr(arena: *AstArena, source_loc: SourceLoc, code: []const u8) !NodeId {
+    const node = AstNode.init(.{ .compile_insert_expr = .{ .code = code } }, source_loc);
+    return arena.createNode(node);
+}
+
+pub fn createMatchCompileExpr(arena: *AstArena, source_loc: SourceLoc, target_expr: NodeId, arms: std.ArrayList(CompileMatchArm)) !NodeId {
+    const node = AstNode.init(.{ .match_compile_expr = .{ .target_expr = target_expr, .arms = arms } }, source_loc);
     return arena.createNode(node);
 }
 
@@ -808,6 +880,24 @@ pub const AstVisitor = struct {
                 }
                 if (var_decl.initializer) |init| {
                     try self.visit(arena, init);
+                }
+            },
+            .function_decl => |func_decl| {
+                if (func_decl.return_type) |ret_type| {
+                    try self.visit(arena, ret_type);
+                }
+                try self.visit(arena, func_decl.body);
+            },
+            .extern_fn_decl => |extern_fn| {
+                if (extern_fn.return_type) |ret_type| {
+                    try self.visit(arena, ret_type);
+                }
+                try self.visit(arena, extern_fn.compile_time_body);
+            },
+            .match_compile_expr => |match_compile| {
+                try self.visit(arena, match_compile.target_expr);
+                for (match_compile.arms.items) |arm| {
+                    try self.visit(arena, arm.body);
                 }
             },
             else => {}, // Leaf nodes

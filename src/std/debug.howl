@@ -1,35 +1,75 @@
-// std/debug module - Debugging utilities for Howl programs
+// std/debug module - Debugging utilities using compile-time code generation
 
-// Print a message to stdout
-print :: fn(message: str) {
-    // This function will be handled specially by the compiler
-    // JavaScript: console.log()
-    // ZIR: std.debug.print()
-    return
-}
-
-// Print formatted message with values
-printf :: fn(format: str, args: ...) {
-    // Formatted printing with variable arguments
-    return
-}
-
-// Assert that a condition is true, panic if false
-assert :: fn(condition: bool, message: str) {
-    if !condition {
-        @panic(message)
+// Enhanced debug print function - supports format specifiers and anonymous struct arguments
+// Usage: std.debug.print("{d:.2} {s:!>4}", .{3.141, "hi!"})
+extern fn print(format: string, args: struct{}) -> void {
+    match @compile.target {
+        .c => @compile.insert("/* Enhanced C debug print */"),
+        .javascript => @compile.insert("/* Enhanced JS debug print */")
     }
-    return
 }
 
-// Print debug information about a value
-dump :: fn(value: any) {
-    // Print detailed information about any value
-    return
+// Legacy single-value print functions for backward compatibility
+extern fn printInt(format: string, value: i32) -> void {
+    match @compile.target {
+        .c => @compile.insert("printf(format, value);"),
+        .javascript => @compile.insert("console.log(format.replace('{}', value));")
+    }
 }
 
-// Debugging breakpoint (no-op in release mode)
-breakpoint :: fn() {
-    // Insert debugger breakpoint
-    return
+// Float version of debug print (legacy)
+extern fn printFloat(format: string, value: f32) -> void {
+    match @compile.target {
+        .c => @compile.insert("printf(format, value);"),
+        .javascript => @compile.insert("console.log(format.replace('{}', value));")
+    }
+}
+
+// String version of debug print (legacy) 
+extern fn printString(format: string, value: string) -> void {
+    match @compile.target {
+        .c => @compile.insert("printf(format, value);"),
+        .javascript => @compile.insert("console.log(format.replace('{}', value));")
+    }
+}
+
+// Simple message print
+extern fn println(message: string) -> void {
+    match @compile.target {
+        .c => @compile.insert("printf(\"%s\\n\", message);"),
+        .javascript => @compile.insert("console.log(message);")
+    }
+}
+
+// Assert function - panic if condition is false
+extern fn assert(condition: bool, message: string) -> void {
+    match @compile.target {
+        .c => @compile.insert(
+            "if (!condition) {\n" +
+            "    fprintf(stderr, \"Assertion failed: %s\\n\", message);\n" +
+            "    exit(1);\n" +
+            "}"
+        ),
+        .javascript => @compile.insert(
+            "if (!condition) {\n" +
+            "    throw new Error(`Assertion failed: ${message}`);\n" +
+            "}"
+        )
+    }
+}
+
+// Print debug information about an integer value
+extern fn dump(value: i32) -> void {
+    match @compile.target {
+        .c => @compile.insert("printf(\"Debug dump: %d\\n\", value);"),
+        .javascript => @compile.insert("console.log('Debug dump:', value);")
+    }
+}
+
+// Debugging breakpoint
+extern fn breakpoint() -> void {
+    match @compile.target {
+        .c => @compile.insert("__builtin_debugtrap();"),
+        .javascript => @compile.insert("debugger;")
+    }
 }

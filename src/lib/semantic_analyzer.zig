@@ -71,6 +71,9 @@ pub const Symbol = struct {
     is_used: bool,
     comptime_value: ?ComptimeValue, // For compile-time constants and types
     
+    // Function-specific information
+    function_params: ?[]ast.Parameter, // Parameters for function symbols
+    
     const SymbolType = enum {
         variable,
         parameter,
@@ -362,6 +365,11 @@ pub const SemanticAnalyzer = struct {
             },
             
             .identifier => |ident| {
+                // Special case for error union types like "!void"
+                if (std.mem.eql(u8, ident.name, "!void")) {
+                    return ast.Type.initPrimitive(.{ .void = {} }, node.source_loc);
+                }
+                
                 if (self.current_scope.lookup(ident.name)) |symbol| {
                     // Mark symbol as used
                     var mutable_symbol = symbol;
@@ -379,8 +387,8 @@ pub const SemanticAnalyzer = struct {
                     }
                     
                     // Check for primitive types
-                    if (self.resolvePrimitiveType(ident.name)) |_| {
-                        return ast.Type.initPrimitive(.{ .type = {} }, node.source_loc);
+                    if (self.resolvePrimitiveType(ident.name)) |prim_type| {
+                        return ast.Type.initPrimitive(prim_type, node.source_loc);
                     }
                     
                     const msg = try std.fmt.allocPrint(
@@ -505,6 +513,11 @@ pub const SemanticAnalyzer = struct {
                 return null;
             },
             
+            .extern_fn_decl => {
+                // Extern function declarations don't have a type in expression context
+                return null;
+            },
+            
             .struct_decl => {
                 // Struct declarations represent the type itself
                 return ast.Type.initPrimitive(.{ .type = {} }, node.source_loc);
@@ -580,6 +593,21 @@ pub const SemanticAnalyzer = struct {
             
             .range_expr => |range_expr| {
                 return self.analyzeRangeExpression(range_expr, node.source_loc);
+            },
+            
+            .compile_target_expr => {
+                // @compile.target evaluates to the current compile target (as an enum-like value)
+                // For now, return a simple type
+                return ast.Type.initPrimitive(.{ .type = {} }, node.source_loc);
+            },
+            
+            .compile_insert_expr => {
+                // @compile.insert("code") doesn't return a value, it's a compile-time instruction
+                return ast.Type.initPrimitive(.{ .void = {} }, node.source_loc);
+            },
+            
+            .match_compile_expr => |match_compile| {
+                return self.analyzeMatchCompileExpression(match_compile, node.source_loc);
             },
         }
     }
@@ -816,7 +844,17 @@ pub const SemanticAnalyzer = struct {
                     }
                 }
                 
-                // Fall back to regular member access handling
+                // Fall back to method lookup for member expressions
+                // This handles cases like h.append(x) where h is a variable and append is a function
+                const object_type = try self.inferType(member.object);
+                if (object_type) |obj_type| {
+                    if (self.findMethodsForType(obj_type, member.field)) |method_symbol| {
+                        // Found a method! Return the method's return type
+                        return method_symbol.declared_type;
+                    }
+                }
+                
+                // No method found, report error
                 try self.reportError(
                     .invalid_function_call,
                     "Member expression is not callable",
@@ -836,6 +874,107 @@ pub const SemanticAnalyzer = struct {
         }
     }
     
+    /// Look for functions where the first parameter matches the given type
+    fn findMethodsForType(self: *SemanticAnalyzer, target_type: ast.Type, method_name: []const u8) ?Symbol {
+        // First check for built-in List methods
+        if (std.mem.eql(u8, method_name, "append")) {
+            // Create a dummy symbol for the append method
+            const default_loc = ast.SourceLoc{ 
+                .file_path = "<builtin>", 
+                .start_pos = 0, 
+                .end_pos = 0,
+                .line = 0, 
+                .column = 0 
+            };
+            const symbol = Symbol{
+                .name = "append",
+                .symbol_type = .function,
+                .declared_type = ast.Type.initPrimitive(.{ .void = {} }, default_loc),
+                .inferred_type = null,
+                .source_loc = default_loc,
+                .is_mutable = false,
+                .is_used = false,
+                .comptime_value = null,
+                .function_params = null,
+            };
+            return symbol;
+        }
+        
+        // Check if target type is a custom struct and look for methods in its definition
+        if (target_type.isCustomStruct()) {
+            const struct_name = target_type.data.custom_struct.name;
+            
+            // Look up the struct definition
+            if (self.struct_definitions.get(struct_name)) |struct_comptime_value| {
+                // Search through struct fields for methods
+                for (struct_comptime_value.struct_type.fields) |field| {
+                    if (std.mem.eql(u8, field.name, method_name)) {
+                        // Check if this field is a method (has function type)
+                        if (field.type_annotation) |type_node_id| {
+                            if (self.arena.getNode(type_node_id)) |type_node| {
+                                if (type_node.data == .identifier) {
+                                    const identifier = type_node.data.identifier;
+                                    if (std.mem.eql(u8, identifier.name, "fn")) {
+                                        // This is a method! Create a symbol for it
+                                        const symbol = Symbol{
+                                            .name = method_name,
+                                            .symbol_type = .function,
+                                            .declared_type = ast.Type.initPrimitive(.{ .i64 = {} }, target_type.source_loc), // TODO: proper return type
+                                            .inferred_type = null,
+                                            .source_loc = target_type.source_loc,
+                                            .is_mutable = false,
+                                            .is_used = false,
+                                            .comptime_value = null,
+                                            .function_params = null, // TODO: parse function parameters
+                                        };
+                                        return symbol;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        var scope: ?*Scope = self.current_scope;
+        
+        // Search through all scopes for functions
+        while (scope) |current_scope| {
+            var iterator = current_scope.symbols.iterator();
+            while (iterator.next()) |entry| {
+                const symbol = entry.value_ptr.*;
+                
+                // Only consider functions
+                if (symbol.symbol_type != .function) continue;
+                
+                // Skip if name doesn't match
+                if (!std.mem.eql(u8, symbol.name, method_name)) continue;
+                
+                // For now, assume any function with the right name could be a method
+                // This is a simplified implementation that we can improve later
+                return symbol;
+            }
+            scope = current_scope.parent;
+        }
+        
+        return null;
+    }
+    
+    /// Helper to get function parameters from a function symbol
+    fn getFunctionParameters(self: *SemanticAnalyzer, symbol: Symbol) ?[]ast.Parameter {
+        _ = self;
+        return symbol.function_params;
+    }
+    
+    /// Helper to get the type of a parameter
+    fn getParameterType(self: *SemanticAnalyzer, param: ast.Parameter) ?ast.Type {
+        if (param.type_annotation) |type_node| {
+            return self.inferType(type_node) catch null;
+        }
+        return null;
+    }
+
     fn checkMemberAccess(
         self: *SemanticAnalyzer,
         object_id: ast.NodeId,
@@ -924,9 +1063,14 @@ pub const SemanticAnalyzer = struct {
                     }
                 }
                 
+                // Field not found, check for methods
+                if (self.findMethodsForType(obj_type, field_name)) |method_symbol| {
+                    return method_symbol.declared_type;
+                }
+                
                 const msg = try std.fmt.allocPrint(
                     self.allocator,
-                    "Struct '{s}' has no field '{s}'",
+                    "Struct '{s}' has no field or method '{s}'",
                     .{ struct_info.name, field_name }
                 );
                 defer self.allocator.free(msg);
@@ -946,9 +1090,14 @@ pub const SemanticAnalyzer = struct {
                     }
                 }
                 
+                // Field not found, check for methods
+                if (self.findMethodsForType(obj_type, field_name)) |method_symbol| {
+                    return method_symbol.declared_type;
+                }
+                
                 const msg = try std.fmt.allocPrint(
                     self.allocator,
-                    "Struct '{s}' has no field '{s}'",
+                    "Struct '{s}' has no field or method '{s}'",
                     .{ custom_struct.name, field_name }
                 );
                 defer self.allocator.free(msg);
@@ -957,9 +1106,16 @@ pub const SemanticAnalyzer = struct {
             },
             
             else => {
+                // Before reporting an error, check if this could be a method call
+                // Look for functions where the first parameter matches the object type
+                if (self.findMethodsForType(obj_type, field_name)) |method_symbol| {
+                    // Found a method! Return the method's return type
+                    return method_symbol.declared_type;
+                }
+                
                 try self.reportError(
                     .invalid_member_access,
-                    "Member access is only supported on struct types",
+                    "Member access is only supported on struct types, or no matching method found",
                     source_loc
                 );
                 return null;
@@ -972,7 +1128,44 @@ pub const SemanticAnalyzer = struct {
         
         // Simple type compatibility - exact match for now
         if (a.data == .primitive and b.data == .primitive) {
-            return std.meta.eql(a.data.primitive, b.data.primitive);
+            // More flexible integer type compatibility
+            const a_prim = a.data.primitive;
+            const b_prim = b.data.primitive;
+            
+            // Exact match
+            if (std.meta.eql(a_prim, b_prim)) {
+                return true;
+            }
+            
+            // Integer type compatibility - allow any integer to match any other integer
+            const a_is_int = switch (a_prim) {
+                .i8, .i16, .i32, .i64, .u8, .u16, .u32, .u64, .isize, .usize => true,
+                else => false,
+            };
+            const b_is_int = switch (b_prim) {
+                .i8, .i16, .i32, .i64, .u8, .u16, .u32, .u64, .isize, .usize => true,
+                else => false,
+            };
+            
+            if (a_is_int and b_is_int) {
+                return true;
+            }
+            
+            // Float type compatibility
+            const a_is_float = switch (a_prim) {
+                .f32, .f64 => true,
+                else => false,
+            };
+            const b_is_float = switch (b_prim) {
+                .f32, .f64 => true,
+                else => false,
+            };
+            
+            if (a_is_float and b_is_float) {
+                return true;
+            }
+            
+            return false;
         }
         
         // Custom struct compatibility
@@ -1081,9 +1274,22 @@ pub const SemanticAnalyzer = struct {
                     }
                 }
                 
-                // Check for missing required fields
+                // Check for missing required fields (skip methods/functions)
                 for (struct_type.fields) |field_def| {
-                    if (!provided_fields.contains(field_def.name) and field_def.default_value == null) {
+                    // Skip methods - fields with function type or default values that are functions
+                    var is_method = false;
+                    if (field_def.type_annotation) |type_node_id| {
+                        if (self.arena.getNode(type_node_id)) |type_node| {
+                            if (type_node.data == .identifier) {
+                                const identifier = type_node.data.identifier;
+                                if (std.mem.eql(u8, identifier.name, "fn")) {
+                                    is_method = true;
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (!is_method and !provided_fields.contains(field_def.name) and field_def.default_value == null) {
                         const msg = try std.fmt.allocPrint(
                             self.allocator,
                             "Missing required field '{s}' in struct initialization",
@@ -1186,6 +1392,10 @@ pub const SemanticAnalyzer = struct {
                 return self.analyzeFunctionDeclaration(func_decl, node.source_loc);
             },
             
+            .extern_fn_decl => |extern_fn_decl| {
+                return self.analyzeExternFunctionDeclaration(extern_fn_decl, node.source_loc);
+            },
+            
             .struct_decl => |struct_decl| {
                 return self.analyzeStructDeclaration(struct_decl, node.source_loc);
             },
@@ -1281,6 +1491,7 @@ pub const SemanticAnalyzer = struct {
             .is_mutable = var_decl.is_mutable,
             .is_used = false,
             .comptime_value = null,
+            .function_params = null,
         };
         
         self.current_scope.declare(var_decl.name, symbol) catch |err| {
@@ -1311,8 +1522,36 @@ pub const SemanticAnalyzer = struct {
         defer self.exitScope();
         _ = func_scope;
         
-        // TODO: Process parameters and return type
-        const return_type = ast.Type.initPrimitive(.{ .void = {} }, source_loc);
+        // Process parameters
+        for (func_decl.params.items) |param| {
+            // Add parameter to function scope
+            var param_type: ?ast.Type = null;
+            if (param.type_annotation) |type_node| {
+                param_type = try self.inferType(type_node);
+            }
+            
+            const param_symbol = Symbol{
+                .name = param.name,
+                .symbol_type = .parameter,
+                .declared_type = param_type,
+                .inferred_type = null,
+                .source_loc = param.source_loc,
+                .is_mutable = false,
+                .is_used = false,
+                .comptime_value = null,
+                .function_params = null,
+            };
+            
+            try self.current_scope.declare(param.name, param_symbol);
+        }
+        
+        // Process return type
+        var return_type = ast.Type.initPrimitive(.{ .void = {} }, source_loc);
+        if (func_decl.return_type) |return_type_node| {
+            if (try self.inferType(return_type_node)) |inferred_return_type| {
+                return_type = inferred_return_type;
+            }
+        }
         
         // Set current function context
         const old_return_type = self.current_function_return_type;
@@ -1333,6 +1572,7 @@ pub const SemanticAnalyzer = struct {
             .is_mutable = false,
             .is_used = false,
             .comptime_value = null,
+            .function_params = func_decl.params.items, // Store parameters for method lookup
         };
             
             parent_scope.declare(func_decl.name, symbol) catch |err| {
@@ -1350,6 +1590,63 @@ pub const SemanticAnalyzer = struct {
                 }
             };
         }
+        
+        return return_type;
+    }
+    
+    fn analyzeExternFunctionDeclaration(
+        self: *SemanticAnalyzer,
+        extern_fn_decl: @TypeOf(@as(ast.AstNode, undefined).data.extern_fn_decl),
+        source_loc: ast.SourceLoc,
+    ) !?ast.Type {
+        // Process parameters (same as regular functions)
+        for (extern_fn_decl.params.items) |param| {
+            var param_type: ?ast.Type = null;
+            if (param.type_annotation) |type_node| {
+                param_type = try self.inferType(type_node);
+            }
+            // Note: extern function parameters aren't added to any scope since
+            // they're only used for compile-time code generation
+        }
+        
+        // Process return type
+        var return_type = ast.Type.initPrimitive(.{ .void = {} }, source_loc);
+        if (extern_fn_decl.return_type) |return_type_node| {
+            if (try self.inferType(return_type_node)) |inferred_return_type| {
+                return_type = inferred_return_type;
+            }
+        }
+        
+        // Analyze the compile-time body
+        _ = try self.analyzeNode(extern_fn_decl.compile_time_body);
+        
+        // Declare extern function symbol
+        const symbol = Symbol{
+            .name = extern_fn_decl.name,
+            .symbol_type = .function,
+            .declared_type = return_type,
+            .inferred_type = null,
+            .source_loc = source_loc,
+            .is_mutable = false,
+            .is_used = false,
+            .comptime_value = null,
+            .function_params = extern_fn_decl.params.items,
+        };
+        
+        self.current_scope.declare(extern_fn_decl.name, symbol) catch |err| {
+            switch (err) {
+                error.DuplicateSymbol => {
+                    const msg = try std.fmt.allocPrint(
+                        self.allocator,
+                        "Extern function '{s}' is already declared",
+                        .{extern_fn_decl.name}
+                    );
+                    defer self.allocator.free(msg);
+                    try self.reportError(.duplicate_declaration, msg, source_loc);
+                },
+                else => return err,
+            }
+        };
         
         return return_type;
     }
@@ -1390,6 +1687,7 @@ pub const SemanticAnalyzer = struct {
             .is_mutable = false,
             .is_used = false,
             .comptime_value = comptime_value,
+            .function_params = null,
         };
         
         self.current_scope.declare(struct_decl.name, symbol) catch |err| {
@@ -1450,6 +1748,7 @@ pub const SemanticAnalyzer = struct {
             .is_mutable = false,
             .is_used = false,
             .comptime_value = comptime_value,
+            .function_params = null,
         };
         
         self.current_scope.declare(type_decl.name, symbol) catch |err| {
@@ -1532,7 +1831,15 @@ pub const SemanticAnalyzer = struct {
     
     fn isVoid(self: *SemanticAnalyzer, typ: ast.Type) bool {
         _ = self;
-        return typ.data == .primitive and typ.data.primitive == .void;
+        return switch (typ.data) {
+            .primitive => |prim| prim == .void,
+            .error_union => |err_union| {
+                // For error unions like !void, check if the payload type is void
+                return err_union.payload_type.data == .primitive and 
+                       err_union.payload_type.data.primitive == .void;
+            },
+            else => false,
+        };
     }
     
     /// Analyze for loop expression with captures
@@ -1582,6 +1889,7 @@ pub const SemanticAnalyzer = struct {
                         .is_mutable = false,
                         .is_used = false, // Will be marked as used if accessed
                         .comptime_value = null,
+                        .function_params = null,
                     };
                     
                     self.current_scope.declare(capture.name, symbol) catch |err| {
@@ -1647,6 +1955,30 @@ pub const SemanticAnalyzer = struct {
             }},
             .source_loc = source_loc,
         };
+    }
+    
+    /// Analyze compile-time match expression (match @compile.target)
+    fn analyzeMatchCompileExpression(
+        self: *SemanticAnalyzer,
+        match_compile: @TypeOf(@as(ast.AstNode, undefined).data.match_compile_expr),
+        source_loc: ast.SourceLoc,
+    ) !?ast.Type {
+        // Verify the target expression is @compile.target
+        _ = try self.inferType(match_compile.target_expr);
+        
+        // Analyze each arm's body
+        var result_type: ?ast.Type = null;
+        for (match_compile.arms.items) |arm| {
+            const arm_type = try self.inferType(arm.body);
+            
+            // For now, just use the first arm's type as the result type
+            // TODO: Proper type unification of all arms
+            if (result_type == null) {
+                result_type = arm_type;
+            }
+        }
+        
+        return result_type orelse ast.Type.initPrimitive(.{ .void = {} }, source_loc);
     }
     
     /// Check if a type is numeric (integer or float)

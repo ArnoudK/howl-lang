@@ -21,7 +21,6 @@ pub const Lsp = @import("lib/lsp.zig");
 pub const LspServer = @import("lib/lsp_server.zig");
 
 // Export legacy modules for backward compatibility
-pub const Lexer = @import("lib/lexer.zig");
 pub const LexerEnhanced = @import("lib/lexer_enhanced.zig");
 pub const SemanticErrors = @import("lib/semantic_errors.zig");
 

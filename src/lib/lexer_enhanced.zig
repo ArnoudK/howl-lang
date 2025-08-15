@@ -444,12 +444,26 @@ pub const LexerFile = struct {
                 },
                 // Add other token cases here...
                 '+' => {
-                    try self.tokens.append(Token{ .Plus = .{ .pos = self.tokenize_state.current_pos } });
-                    self.advance();
+                    if (self.tokenize_state.next_char == '=') {
+                        // Handle addition assignment operator (+=)
+                        try self.tokens.append(Token{ .PlusAssign = .{ .pos = self.tokenize_state.current_pos } });
+                        self.advance(); // skip '+'
+                        self.advance(); // skip '='
+                    } else {
+                        try self.tokens.append(Token{ .Plus = .{ .pos = self.tokenize_state.current_pos } });
+                        self.advance();
+                    }
                 },
                 '-' => {
-                    try self.tokens.append(Token{ .Minus = .{ .pos = self.tokenize_state.current_pos } });
-                    self.advance();
+                    if (self.tokenize_state.next_char == '=') {
+                        // Handle subtraction assignment operator (-=)
+                        try self.tokens.append(Token{ .MinusAssign = .{ .pos = self.tokenize_state.current_pos } });
+                        self.advance(); // skip '-'
+                        self.advance(); // skip '='
+                    } else {
+                        try self.tokens.append(Token{ .Minus = .{ .pos = self.tokenize_state.current_pos } });
+                        self.advance();
+                    }
                 },
                 '*' => {
                     try self.tokens.append(Token{ .Asterisk = .{ .pos = self.tokenize_state.current_pos } });

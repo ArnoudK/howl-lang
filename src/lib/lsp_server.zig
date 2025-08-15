@@ -3,6 +3,7 @@ const lsp = @import("lsp.zig");
 const CompileProcess = @import("compile_process.zig");
 const ErrorSystem = @import("error_system.zig");
 const ast = @import("ast.zig");
+const formatter = @import("formatter.zig");
 
 pub const DocumentStore = struct {
     documents: std.StringHashMap(Document),
@@ -102,7 +103,7 @@ pub const LspServer = struct {
                 .save = lsp.SaveOptions{ .includeText = false },
             },
             .completionProvider = lsp.CompletionOptions{
-                .triggerCharacters = null, // Simplified for now
+                .triggerCharacters = null,
                 .resolveProvider = false,
             },
             .hoverProvider = true,
@@ -110,8 +111,8 @@ pub const LspServer = struct {
             .referencesProvider = false,
             .documentSymbolProvider = false,
             .codeActionProvider = false,
-            .documentFormattingProvider = false,
-            .documentRangeFormattingProvider = false,
+            .documentFormattingProvider = true,
+            .documentRangeFormattingProvider = true,
             .renameProvider = false,
             .foldingRangeProvider = false,
             .workspaceSymbolProvider = false,
@@ -129,6 +130,10 @@ pub const LspServer = struct {
             try self.handleDefinition(request, writer);
         } else if (std.mem.eql(u8, request.method, "textDocument/completion")) {
             try self.handleCompletion(request, writer);
+        } else if (std.mem.eql(u8, request.method, "textDocument/formatting")) {
+            try self.handleDocumentFormatting(request, writer);
+        } else if (std.mem.eql(u8, request.method, "textDocument/rangeFormatting")) {
+            try self.handleDocumentRangeFormatting(request, writer);
         } else {
             try self.sendMethodNotFound(request, writer);
         }
@@ -174,9 +179,9 @@ pub const LspServer = struct {
     }
 
     fn handleInitialize(self: *LspServer, request: lsp.LspRequest, writer: anytype) !void {
-        // Create a compact capabilities response (no newlines or extra spaces)
+        // Create a compact capabilities response with enhanced completion support and formatting
         const capabilities_json = 
-            \\{"capabilities":{"textDocumentSync":{"openClose":true,"change":1},"completionProvider":{"triggerCharacters":["."]},"hoverProvider":true,"definitionProvider":true},"serverInfo":{"name":"Howl Language Server","version":"0.1.0"}}
+            \\{"capabilities":{"textDocumentSync":{"openClose":true,"change":1},"completionProvider":{"triggerCharacters":[".","@","{","}"],"resolveProvider":false},"hoverProvider":true,"definitionProvider":true,"documentFormattingProvider":true,"documentRangeFormattingProvider":true},"serverInfo":{"name":"Howl Language Server","version":"0.1.0"}}
         ;
 
         try self.sendJsonResponse(request.id, capabilities_json, writer);
@@ -247,25 +252,87 @@ pub const LspServer = struct {
     }
 
     fn handleCompletion(self: *LspServer, request: lsp.LspRequest, writer: anytype) !void {
-        // Enhanced completion list with Howl-specific keywords and constructs
-        const completion_json =
+        // Get context information from the request
+        var context_info = CompletionContext{};
+        if (request.params) |params| {
+            if (params.object.get("context")) |ctx| {
+                if (ctx.object.get("triggerCharacter")) |trigger| {
+                    context_info.trigger_character = trigger.string;
+                }
+            }
+            
+            // Try to get the document text to analyze context
+            if (params.object.get("textDocument")) |text_doc| {
+                if (text_doc.object.get("uri")) |uri_value| {
+                    context_info.uri = uri_value.string;
+                }
+            }
+            
+            if (params.object.get("position")) |pos| {
+                if (pos.object.get("line")) |line| {
+                    context_info.line = @intCast(line.integer);
+                }
+                if (pos.object.get("character")) |char| {
+                    context_info.character = @intCast(char.integer);
+                }
+            }
+        }
+
+        // Generate completions based on context
+        const completion_json = try self.generateCompletions(context_info);
+        try self.sendJsonResponse(request.id, completion_json, writer);
+    }
+    
+    const CompletionContext = struct {
+        trigger_character: ?[]const u8 = null,
+        uri: ?[]const u8 = null,
+        line: u32 = 0,
+        character: u32 = 0,
+    };
+    
+    fn generateCompletions(self: *LspServer, context: CompletionContext) ![]const u8 {
+        _ = self;
+        
+        // Check if we're completing after a dot (member access)
+        if (context.trigger_character) |trigger| {
+            if (std.mem.eql(u8, trigger, ".")) {
+                // Return std library completions and struct member access
+                return 
+                    \\[
+                    \\  {"label": "debug", "kind": 9, "detail": "std.debug module", "documentation": "Standard debug utilities", "insertText": "debug"},
+                    \\  {"label": "math", "kind": 9, "detail": "std.math module", "documentation": "Mathematical functions", "insertText": "math"},
+                    \\  {"label": "mem", "kind": 9, "detail": "std.mem module", "documentation": "Memory utilities", "insertText": "mem"},
+                    \\  {"label": "fs", "kind": 9, "detail": "std.fs module", "documentation": "File system utilities", "insertText": "fs"},
+                    \\  {"label": "fmt", "kind": 9, "detail": "std.fmt module", "documentation": "Formatting utilities", "insertText": "fmt"},
+                    \\  {"label": "json", "kind": 9, "detail": "std.json module", "documentation": "JSON parsing and serialization", "insertText": "json"},
+                    \\  {"label": "net", "kind": 9, "detail": "std.net module", "documentation": "Networking utilities", "insertText": "net"},
+                    \\  {"label": "print", "kind": 3, "detail": "debug.print function", "documentation": "Enhanced debug print with format specifiers\\n\\nSupported format specifiers:\\n- {} - default formatting\\n- {d} - decimal integer\\n- {s} - string\\n- {f} - float\\n- {f:.2} - float with 2 decimal places\\n\\nExample: std.debug.print(\\\"{s}: {f:.2}\\\\n\\\", .{name, value})", "insertText": "print(\\\"$1\\\", .$2)$0", "insertTextFormat": 2}
+                    \\]
+                ;
+            }
+        }
+        
+        // Default completions for general context
+        return
             \\[
-            \\  {"label": "fn", "kind": 14, "detail": "function declaration", "documentation": "Define a function"},
-            \\  {"label": "let", "kind": 14, "detail": "mutable variable", "documentation": "Declare a mutable variable"},
-            \\  {"label": "const", "kind": 14, "detail": "constant declaration", "documentation": "Declare a constant"},
-            \\  {"label": "if", "kind": 14, "detail": "conditional statement", "documentation": "Conditional execution"},
+            \\  {"label": "fn", "kind": 14, "detail": "function declaration", "documentation": "Define a function\\n\\nSyntax: fn name(params) -> return_type { body }", "insertText": "fn $1($2) -> $3 {\\n    $0\\n}"},
+            \\  {"label": "let", "kind": 14, "detail": "mutable variable", "documentation": "Declare a mutable variable\\n\\nSyntax: let name = value;", "insertText": "let $1 = $0;"},
+            \\  {"label": "const", "kind": 14, "detail": "constant declaration", "documentation": "Declare a constant\\n\\nSyntax: const NAME = value;", "insertText": "const $1 = $0;"},
+            \\  {"label": "if", "kind": 14, "detail": "conditional statement", "documentation": "Conditional execution", "insertText": "if $1 {\\n    $0\\n}"},
             \\  {"label": "else", "kind": 14, "detail": "else clause", "documentation": "Alternative execution path"},
-            \\  {"label": "while", "kind": 14, "detail": "while loop", "documentation": "While loop construct"},
-            \\  {"label": "for", "kind": 14, "detail": "for loop", "documentation": "For loop construct"},
+            \\  {"label": "while", "kind": 14, "detail": "while loop", "documentation": "While loop construct", "insertText": "while $1 {\\n    $0\\n}"},
+            \\  {"label": "for", "kind": 14, "detail": "for loop", "documentation": "For loop construct\\n\\nSyntax: for item in collection { body }", "insertText": "for $1 in $2 {\\n    $0\\n}"},
             \\  {"label": "in", "kind": 14, "detail": "in operator", "documentation": "Used in for..in loops"},
-            \\  {"label": "match", "kind": 14, "detail": "pattern matching", "documentation": "Pattern matching construct"},
-            \\  {"label": "return", "kind": 14, "detail": "return statement", "documentation": "Return from function"},
+            \\  {"label": "match", "kind": 14, "detail": "pattern matching", "documentation": "Pattern matching construct", "insertText": "match $1 {\\n    $2 => $0\\n}"},
+            \\  {"label": "return", "kind": 14, "detail": "return statement", "documentation": "Return from function", "insertText": "return $0;"},
             \\  {"label": "break", "kind": 14, "detail": "break statement", "documentation": "Break from loop"},
             \\  {"label": "continue", "kind": 14, "detail": "continue statement", "documentation": "Continue to next iteration"},
-            \\  {"label": "struct", "kind": 22, "detail": "struct type", "documentation": "Define a struct type"},
-            \\  {"label": "enum", "kind": 22, "detail": "enum type", "documentation": "Define an enum type"},
-            \\  {"label": "type", "kind": 22, "detail": "type alias", "documentation": "Define a type alias"},
-            \\  {"label": "@import", "kind": 3, "detail": "import directive", "documentation": "Import a module"},
+            \\  {"label": "struct", "kind": 22, "detail": "struct type", "documentation": "Define a struct type\\n\\nSyntax: struct Name { fields }", "insertText": "struct $1 {\\n    $0\\n}"},
+            \\  {"label": "enum", "kind": 22, "detail": "enum type", "documentation": "Define an enum type", "insertText": "enum $1 {\\n    $0\\n}"},
+            \\  {"label": "type", "kind": 22, "detail": "type alias", "documentation": "Define a type alias", "insertText": "type $1 = $0;"},
+            \\  {"label": "@import", "kind": 3, "detail": "import directive", "documentation": "Import a module", "insertText": "@import(\\\"$1\\\")"},
+            \\  {"label": "std", "kind": 9, "detail": "standard library", "documentation": "The Howl standard library\\n\\nContains modules like debug, math, mem, fmt, etc.", "insertText": "std"},
+            \\  {"label": "std.debug.print", "kind": 3, "detail": "Enhanced debug print", "documentation": "Enhanced debug print with format specifiers and anonymous struct arguments\\n\\nFormat specifiers:\\n- {} - default formatting\\n- {d} - decimal integer\\n- {s} - string\\n- {f} - float\\n- {f:.2} - float with precision\\n\\nExample: std.debug.print(\\\"{s}: {f:.2}\\\\n\\\", .{name, value})", "insertText": "std.debug.print(\\\"$1\\\", .$2)$0", "insertTextFormat": 2},
             \\  {"label": "string", "kind": 22, "detail": "string type", "documentation": "String type"},
             \\  {"label": "u32", "kind": 22, "detail": "unsigned 32-bit integer", "documentation": "32-bit unsigned integer type"},
             \\  {"label": "i32", "kind": 22, "detail": "signed 32-bit integer", "documentation": "32-bit signed integer type"},
@@ -277,11 +344,10 @@ pub const LspServer = struct {
             \\  {"label": "..<", "kind": 24, "detail": "exclusive range", "documentation": "Exclusive end range operator"},
             \\  {"label": "..=", "kind": 24, "detail": "inclusive range", "documentation": "Inclusive end range operator"},
             \\  {"label": "|>", "kind": 24, "detail": "pipe operator", "documentation": "Function composition pipe"},
-            \\  {"label": "=>", "kind": 24, "detail": "arrow operator", "documentation": "Pattern match arrow"}
+            \\  {"label": "=>", "kind": 24, "detail": "arrow operator", "documentation": "Pattern match arrow"},
+            \\  {"label": ".{}", "kind": 15, "detail": "anonymous struct", "documentation": "Anonymous struct literal for function arguments\\n\\nExample: .{arg1, arg2, arg3}", "insertText": ".{$0}"}
             \\]
         ;
-
-        try self.sendJsonResponse(request.id, completion_json, writer);
     }
 
     fn publishDiagnostics(self: *LspServer, uri: []const u8, writer: anytype) !void {
@@ -331,6 +397,80 @@ pub const LspServer = struct {
         }
 
         try writer.print(",\"error\":{s}}}", .{error_json});
+    }
+
+    fn handleDocumentFormatting(self: *LspServer, request: lsp.LspRequest, writer: anytype) !void {
+        // Extract document URI from request
+        var uri: []const u8 = "";
+        var document_text: []const u8 = "";
+        
+        if (request.params) |params| {
+            if (params.object.get("textDocument")) |text_doc| {
+                if (text_doc.object.get("uri")) |uri_value| {
+                    uri = uri_value.string;
+                }
+            }
+        }
+
+        // Try to get document text from our document store
+        if (self.documents.getDocument(uri)) |doc| {
+            document_text = doc.text;
+        } else {
+            // If document not found in store, try to read from file system
+            const file_path = uriToFilePath(self.allocator, uri) catch {
+                try self.sendJsonResponse(request.id, "null", writer);
+                return;
+            };
+            defer self.allocator.free(file_path);
+
+            document_text = std.fs.cwd().readFileAlloc(self.allocator, file_path, 1024 * 1024) catch {
+                try self.sendJsonResponse(request.id, "null", writer);
+                return;
+            };
+            defer self.allocator.free(document_text);
+        }
+
+        // Parse formatting options from request
+        var options = formatter.FormatterOptions{};
+        if (request.params) |params| {
+            if (params.object.get("options")) |fmt_options| {
+                if (fmt_options.object.get("tabSize")) |tab_size| {
+                    options.indent_size = @intCast(tab_size.integer);
+                }
+                if (fmt_options.object.get("insertSpaces")) |insert_spaces| {
+                    options.use_tabs = !insert_spaces.bool;
+                }
+            }
+        }
+
+        // Format the document
+        const format_result = formatter.formatCode(self.allocator, document_text, options) catch {
+            try self.sendJsonResponse(request.id, "null", writer);
+            return;
+        };
+        defer format_result.deinit(self.allocator);
+
+        if (!format_result.success) {
+            try self.sendJsonResponse(request.id, "null", writer);
+            return;
+        }
+
+        // Create text edit for the entire document
+        var response_buffer: [8192]u8 = undefined;
+        const response_json = std.fmt.bufPrint(&response_buffer, 
+            \\[{{"range":{{"start":{{"line":0,"character":0}},"end":{{"line":999999,"character":999999}}}},"newText":"{s}"}}]
+        , .{format_result.formatted_code}) catch {
+            try self.sendJsonResponse(request.id, "null", writer);
+            return;
+        };
+
+        try self.sendJsonResponse(request.id, response_json, writer);
+    }
+
+    fn handleDocumentRangeFormatting(self: *LspServer, request: lsp.LspRequest, writer: anytype) !void {
+        // For now, range formatting will format the entire document
+        // In a more sophisticated implementation, this would format only the specified range
+        try self.handleDocumentFormatting(request, writer);
     }
 };
 

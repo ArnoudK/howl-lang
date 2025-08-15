@@ -1,73 +1,114 @@
-// std/math module - Mathematical functions and constants
-
-// Mathematical constants
-PI: f64 : 3.14159265358979323846
-E: f64 : 2.71828182845904523536
-TAU: f64 : 6.28318530717958647692
+// Standard Math Library for Howl
+// Cross-platform mathematical operations using compile-time code generation
 
 // Basic arithmetic functions
-abs :: fn(x: f64) -> f64 {
-    return if x < 0.0 { -x } else { x }
+extern fn abs(x: i32) -> i32 {
+    match @compile.target {
+        .c => @compile.insert("return abs(x);"),
+        .javascript => @compile.insert("return Math.abs(x);")
+    }
 }
 
-min :: fn(a: f64, b: f64) -> f64 {
-    return if a < b { a } else { b }
+extern fn fabs(x: f32) -> f32 {
+    match @compile.target {
+        .c => @compile.insert("return fabsf(x);"),
+        .javascript => @compile.insert("return Math.abs(x);")
+    }
 }
 
-max :: fn(a: f64, b: f64) -> f64 {
-    return if a > b { a } else { b }
+// Power and root functions
+extern fn pow(base: f32, exp: f32) -> f32 {
+    match @compile.target {
+        .c => @compile.insert("return powf(base, exp);"),
+        .javascript => @compile.insert("return Math.pow(base, exp);")
+    }
 }
 
-// Power function
-pow :: fn(base: f64, exponent: f64) -> f64 {
-    // TODO: Implement power function
-    return base
-}
-
-// Square root
-sqrt :: fn(x: f64) -> f64 {
-    // TODO: Implement square root
-    return x
+extern fn sqrt(x: f32) -> f32 {
+    match @compile.target {
+        .c => @compile.insert("return sqrtf(x);"),
+        .javascript => @compile.insert("return Math.sqrt(x);")
+    }
 }
 
 // Trigonometric functions
-sin :: fn(x: f64) -> f64 {
-    // TODO: Implement sine
-    return x
+extern fn sin(x: f32) -> f32 {
+    match @compile.target {
+        .c => @compile.insert("return sinf(x);"),
+        .javascript => @compile.insert("return Math.sin(x);")
+    }
 }
 
-cos :: fn(x: f64) -> f64 {
-    // TODO: Implement cosine
-    return x
+extern fn cos(x: f32) -> f32 {
+    match @compile.target {
+        .c => @compile.insert("return cosf(x);"),
+        .javascript => @compile.insert("return Math.cos(x);")
+    }
 }
 
-tan :: fn(x: f64) -> f64 {
-    // TODO: Implement tangent
-    return x
-}
-
-// Logarithmic functions
-log :: fn(x: f64) -> f64 {
-    // Natural logarithm
-    return x
-}
-
-log10 :: fn(x: f64) -> f64 {
-    // Base-10 logarithm
-    return x
+extern fn tan(x: f32) -> f32 {
+    match @compile.target {
+        .c => @compile.insert("return tanf(x);"),
+        .javascript => @compile.insert("return Math.tan(x);")
+    }
 }
 
 // Rounding functions
-floor :: fn(x: f64) -> f64 {
-    return @truncate(f64, x)
+extern fn floor(x: f32) -> f32 {
+    match @compile.target {
+        .c => @compile.insert("return floorf(x);"),
+        .javascript => @compile.insert("return Math.floor(x);")
+    }
 }
 
-ceil :: fn(x: f64) -> f64 {
-    // TODO: Implement ceiling
-    return x
+extern fn ceil(x: f32) -> f32 {
+    match @compile.target {
+        .c => @compile.insert("return ceilf(x);"),
+        .javascript => @compile.insert("return Math.ceil(x);")
+    }
 }
 
-round :: fn(x: f64) -> f64 {
-    // TODO: Implement rounding
-    return x
+extern fn round(x: f32) -> f32 {
+    match @compile.target {
+        .c => @compile.insert("return roundf(x);"),
+        .javascript => @compile.insert("return Math.round(x);")
+    }
+}
+
+// Min/Max functions
+extern fn min(a: f32, b: f32) -> f32 {
+    match @compile.target {
+        .c => @compile.insert("return fminf(a, b);"),
+        .javascript => @compile.insert("return Math.min(a, b);")
+    }
+}
+
+extern fn max(a: f32, b: f32) -> f32 {
+    match @compile.target {
+        .c => @compile.insert("return fmaxf(a, b);"),
+        .javascript => @compile.insert("return Math.max(a, b);")
+    }
+}
+
+// Random numbers
+extern fn random() -> f32 {
+    match @compile.target {
+        .c => @compile.insert("return (float)rand() / RAND_MAX;"),
+        .javascript => @compile.insert("return Math.random();")
+    }
+}
+
+// Mathematical constants as functions
+extern fn pi() -> f32 {
+    match @compile.target {
+        .c => @compile.insert("return 3.14159265358979323846f;"),
+        .javascript => @compile.insert("return Math.PI;")
+    }
+}
+
+extern fn e() -> f32 {
+    match @compile.target {
+        .c => @compile.insert("return 2.71828182845904523536f;"),
+        .javascript => @compile.insert("return Math.E;")
+    }
 }

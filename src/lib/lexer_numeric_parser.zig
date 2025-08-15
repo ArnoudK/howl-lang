@@ -1,5 +1,5 @@
 const std = @import("std");
-const LexerFile = @import("./lexer.zig").LexerFile;
+const LexerFile = @import("./lexer_enhanced.zig").LexerFile;
 const Token = @import("./token.zig").Token;
 
 pub const NumericParseError = error{

@@ -21,7 +21,7 @@ pub const ErrorFormatter = struct {
             .allocator = allocator,
             .use_colors = true,
             .show_line_numbers = true,
-            .max_context_lines = 3,
+            .max_context_lines = 5,  // Increased from 3 to 5 for more context
         };
     }
     
@@ -120,13 +120,16 @@ pub const ErrorFormatter = struct {
         // Calculate the width needed for line numbers
         const max_line_width = std.fmt.count("{d}", .{end_line});
         
+        // Add a separator line above the context for clarity
         try writer.print("   |\n", .{});
         
         // Show context lines before the error
         var current_line = start_line;
         while (current_line < line_num) : (current_line += 1) {
             const line_text = source_map.getLineText(current_line);
-            try self.formatContextLine(writer, current_line, line_text, max_line_width, false);
+            if (line_text.len > 0) { // Only show non-empty lines
+                try self.formatContextLine(writer, current_line, line_text, max_line_width, false);
+            }
         }
         
         // Show the error line with highlighting
@@ -144,6 +147,7 @@ pub const ErrorFormatter = struct {
             try self.formatContextLine(writer, current_line, line_text, max_line_width, false);
         }
         
+        // Add a separator line below the context for clarity
         try writer.print("   |\n", .{});
     }
     
@@ -189,11 +193,15 @@ pub const ErrorFormatter = struct {
         defer self.allocator.free(pointer_prefix);
         
         // Calculate spaces before the caret
-        const spaces_before = err.span.column - 1;
+        const spaces_before = if (err.span.column > 0) err.span.column - 1 else 0;
         const span_length = if (err.span.end_pos > err.span.start_pos) 
             err.span.end_pos - err.span.start_pos 
         else 
             1;
+        
+        // Cap span length to reasonable size to avoid super long underlines
+        const max_span_length = 50;
+        const actual_span_length = @min(span_length, max_span_length);
         
         try writer.print("{s}", .{pointer_prefix});
         
@@ -202,13 +210,13 @@ pub const ErrorFormatter = struct {
             try writer.print(" ", .{});
         }
         
-        // Write the pointer(s)
+        // Write the pointer(s) with color
         try self.writeColored(writer, err.severity, "");
-        if (span_length == 1) {
+        if (actual_span_length == 1) {
             try writer.print("^", .{});
         } else {
             try writer.print("^", .{});
-            for (1..span_length) |_| {
+            for (1..actual_span_length) |_| {
                 try writer.print("~", .{});
             }
         }
@@ -217,6 +225,11 @@ pub const ErrorFormatter = struct {
         // Add the error message on the same line if it's short
         if (err.message.len < 50) {
             try writer.print(" {s}", .{err.message});
+        }
+        
+        // If the error span was truncated, indicate it
+        if (span_length > max_span_length) {
+            try writer.print(" (span truncated)", .{});
         }
         
         try writer.print("\n", .{});

@@ -1,0 +1,14 @@
+add :: fn (x: i32, y: i32) i32 {
+    return x + y
+}
+
+main :: fn () !void {
+    result := add(10, 20)
+    
+    // std.debug.print mapping to printf - works!
+    std.debug.print("Basic message", .{})
+    std.debug.print("Format conversion: {d} and {s}", .{})
+    
+    // Regular function calls work
+    sum := add(5, 3)
+}

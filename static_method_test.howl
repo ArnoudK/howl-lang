@@ -1,0 +1,10 @@
+MyStruct :: struct {
+    x : u32,
+    y : i32,
+    total :: fn (self: MyStruct) i64 { 
+        return self.x + self.y
+    }
+}
+
+s :: .MyStruct{ .x = 123, .y = -123 }
+t2 :: MyStruct.total(s)

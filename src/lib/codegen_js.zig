@@ -77,6 +77,10 @@ pub const JSCodegen = struct {
             .generic_type_expr => |generic| try self.generateGenericTypeExpr(generic),
             .return_stmt => |ret| try self.generateReturnStmt(ret),
             .import_decl => |import_decl| try self.generateImportDecl(import_decl),
+            .extern_fn_decl => |extern_fn| try self.generateExternFnDecl(extern_fn),
+            .compile_target_expr => try self.generateCompileTargetExpr(),
+            .compile_insert_expr => |insert| try self.generateCompileInsertExpr(insert),
+            .match_compile_expr => |match_expr| try self.generateMatchCompileExpr(match_expr),
             else => {
                 // Handle unsupported nodes with comments
                 try self.writeFormatted("/* Unsupported AST node: {s} */", .{@tagName(node.data)});
@@ -571,13 +575,21 @@ pub const JSCodegen = struct {
         }
         
         // Two arguments: format string and anonymous struct
-        // Generate: "format string" + variable + ""
         if (args.items.len == 2) {
             const first_arg = args.items[0];  // Should be string literal
             const second_arg = args.items[1]; // Should be .{variable}
             
-            // Generate the first argument (format string)
-            try self.generateNode(first_arg);
+            // Get the format string content
+            const format_node = self.arena.getNodeConst(first_arg);
+            var format_string: []const u8 = "";
+            if (format_node) |fmt_node| {
+                if (fmt_node.data == .literal) {
+                    const literal = fmt_node.data.literal;
+                    if (literal == .string) {
+                        format_string = literal.string.value;
+                    }
+                }
+            }
             
             // Check if second argument is an anonymous struct
             const arg_node = self.arena.getNodeConst(second_arg);
@@ -589,14 +601,9 @@ pub const JSCodegen = struct {
                         if (callee_n.data == .identifier) {
                             const callee_ident = callee_n.data.identifier;
                             if (std.mem.eql(u8, callee_ident.name, "__anonymous_struct")) {
-                                // Convert .{variable} to string concatenation
-                                try self.write(" + ");
-                                for (arg_call.args.items, 0..) |struct_arg, j| {
-                                    if (j > 0) try self.write(" + ");
-                                    try self.generateNode(struct_arg);
-                                }
-                                try self.write(" + \"\"");
-                                try self.write(",)");
+                                // Process format string with variables
+                                try self.generateFormattedString(format_string, arg_call.args.items);
+                                try self.write(")");
                                 return;
                             }
                         }
@@ -605,11 +612,158 @@ pub const JSCodegen = struct {
             }
             
             // If not anonymous struct, treat as regular argument
+            try self.generateNode(first_arg);
             try self.write(", ");
             try self.generateNode(second_arg);
         }
         
         try self.write(")");
+    }
+
+    // Enhanced method to generate formatted strings with proper format specifier handling
+    fn generateFormattedString(self: *JSCodegen, format_string: []const u8, args: []ast.NodeId) !void {
+        // Check if there are any format specifiers at all
+        var has_format_specs = false;
+        for (format_string) |char| {
+            if (char == '{') {
+                has_format_specs = true;
+                break;
+            }
+        }
+        
+        // If no format specifiers, just output the string as-is
+        if (!has_format_specs) {
+            try self.write("\"");
+            for (format_string) |char| {
+                if (char == '"') {
+                    try self.write("\\\"");
+                } else if (char == '\n') {
+                    try self.write("\\n");
+                } else if (char == '\t') {
+                    try self.write("\\t");
+                } else if (char == '\r') {
+                    try self.write("\\r");
+                } else if (char == '\\') {
+                    try self.write("\\\\");
+                } else {
+                    try self.output.append(char);
+                }
+            }
+            try self.write("\"");
+            return;
+        }
+        
+        // Process format string with variables
+        var arg_index: usize = 0;
+        var i: usize = 0;
+        var is_first_part = true;
+        
+        var current_text = std.ArrayList(u8).init(self.allocator);
+        defer current_text.deinit();
+        
+        while (i < format_string.len) {
+            if (format_string[i] == '{' and i + 1 < format_string.len) {
+                // Found a format specifier
+                var end_pos = i + 1;
+                while (end_pos < format_string.len and format_string[end_pos] != '}') {
+                    end_pos += 1;
+                }
+                
+                if (end_pos < format_string.len and arg_index < args.len) {
+                    // Output the current text part if any
+                    if (current_text.items.len > 0) {
+                        if (!is_first_part) try self.write(" + ");
+                        try self.write("\"");
+                        for (current_text.items) |char| {
+                            if (char == '"') {
+                                try self.write("\\\"");
+                            } else if (char == '\n') {
+                                try self.write("\\n");
+                            } else if (char == '\t') {
+                                try self.write("\\t");
+                            } else if (char == '\r') {
+                                try self.write("\\r");
+                            } else if (char == '\\') {
+                                try self.write("\\\\");
+                            } else {
+                                try self.output.append(char);
+                            }
+                        }
+                        try self.write("\"");
+                        is_first_part = false;
+                        current_text.clearRetainingCapacity();
+                    }
+                    
+                    // Output the variable
+                    if (!is_first_part) try self.write(" + ");
+                    
+                    const format_spec = format_string[i + 1..end_pos];
+                    try self.generateVariableWithFormat(args[arg_index], format_spec);
+                    
+                    is_first_part = false;
+                    arg_index += 1;
+                    i = end_pos + 1; // Skip past '}'
+                } else {
+                    // Malformed format spec, just add the character
+                    try current_text.append(format_string[i]);
+                    i += 1;
+                }
+            } else {
+                try current_text.append(format_string[i]);
+                i += 1;
+            }
+        }
+        
+        // Add any remaining text part
+        if (current_text.items.len > 0) {
+            if (!is_first_part) try self.write(" + ");
+            try self.write("\"");
+            for (current_text.items) |char| {
+                if (char == '"') {
+                    try self.write("\\\"");
+                } else if (char == '\n') {
+                    try self.write("\\n");
+                } else if (char == '\t') {
+                    try self.write("\\t");
+                } else if (char == '\r') {
+                    try self.write("\\r");
+                } else if (char == '\\') {
+                    try self.write("\\\\");
+                } else {
+                    try self.output.append(char);
+                }
+            }
+            try self.write("\"");
+        }
+        
+        // If we had no parts at all, output empty string
+        if (is_first_part) {
+            try self.write("\"\"");
+        }
+    }
+    
+    // Generate a variable with optional format specification
+    fn generateVariableWithFormat(self: *JSCodegen, var_node_id: ast.NodeId, format_spec: []const u8) !void {
+        if (format_spec.len == 0 or std.mem.eql(u8, format_spec, "d") or std.mem.eql(u8, format_spec, "s")) {
+            // Basic format specifiers - just output the variable
+            try self.generateNode(var_node_id);
+        } else if (std.mem.startsWith(u8, format_spec, "f:")) {
+            // Float format with precision like "f:.2"
+            const precision_part = format_spec[2..];
+            if (std.mem.startsWith(u8, precision_part, ".")) {
+                const precision_str = precision_part[1..];
+                try self.generateNode(var_node_id);
+                try self.write(".toFixed(");
+                try self.write(precision_str);
+                try self.write(")");
+            } else {
+                // Default case for malformed f: spec
+                try self.generateNode(var_node_id);
+            }
+        } else {
+            // Default case - just output the variable
+            try self.generateNode(var_node_id);
+        }
     }
 
     fn generateMemberExpr(self: *JSCodegen, member: anytype) !void {
@@ -1211,6 +1365,273 @@ pub const JSCodegen = struct {
     pub fn generateTypeAnnotation(self: *JSCodegen, howl_type: ast.Type) !void {
         const js_type = try self.howlTypeToJS(howl_type);
         try self.writeFormatted(": {s}", .{js_type});
+    }
+
+    // ========== NEW COMPILE-TIME SYSTEM SUPPORT ==========
+    
+    fn generateExternFnDecl(self: *JSCodegen, extern_fn: anytype) !void {
+        // Generate JavaScript implementation using compile-time evaluation
+        const fn_name = extern_fn.name;
+        
+        // Generate the function signature
+        try self.writeFormatted("function {s}(", .{fn_name});
+        
+        // Generate parameters
+        for (extern_fn.params.items, 0..) |param, i| {
+            if (i > 0) try self.write(", ");
+            try self.write(param.name);
+        }
+        try self.write(") {\n");
+        
+        self.indent_level += 1;
+        
+        // Process the function body using compile-time evaluation
+        try self.generateNode(extern_fn.compile_time_body);
+        
+        self.indent_level -= 1;
+        try self.writeLine("}");
+    }
+    
+    fn generateCompileTargetExpr(self: *JSCodegen) !void {
+        try self.write("\"javascript\"");
+    }
+    
+    fn generateCompileInsertExpr(self: *JSCodegen, insert: anytype) !void {
+        // For JavaScript target, evaluate and insert the code directly
+        // Generate raw JavaScript code insertion
+        try self.writeFormatted("{s}", .{insert.code});
+    }
+    
+    fn generateMatchCompileExpr(self: *JSCodegen, match_expr: anytype) !void {
+        // Find the arm that matches JavaScript target
+        for (match_expr.arms.items) |arm| {
+            if (arm.target == .javascript) {
+                // Generate the body for JavaScript target
+                try self.generateNode(arm.body);
+                break;
+            }
+        }
+        
+        // If no JavaScript case found, generate empty code or comment
+        try self.write("/* No JavaScript implementation found */");
+    }
+    
+    fn evaluateComptimeExpression(self: *JSCodegen, expr_id: ast.NodeId) anyerror!void {
+        const node = self.arena.getNodeConst(expr_id) orelse return;
+        
+        switch (node.data) {
+            .literal => |literal| {
+                switch (literal) {
+                    .string => |str_lit| {
+                        // For string literals in @compile.insert, output the raw JavaScript code
+                        try self.write(str_lit.value);
+                    },
+                    else => try self.generateLiteral(literal),
+                }
+            },
+            .binary_expr => |binary| {
+                // Handle string concatenation for building JavaScript code
+                if (binary.op == .add) {
+                    try self.evaluateComptimeExpression(binary.left);
+                    try self.evaluateComptimeExpression(binary.right);
+                } else {
+                    try self.generateBinaryExpr(binary);
+                }
+            },
+            else => try self.generateNode(expr_id),
+        }
+    }
+    
+    // Enhanced format generation function for advanced debug.print support in JavaScript
+    fn generateJSFormatCode(self: *JSCodegen, format_string: []const u8, args_node_id: ast.NodeId) ![]const u8 {
+        var result = std.ArrayList(u8).init(self.allocator);
+        defer result.deinit();
+        
+        // Parse format string and convert to JavaScript template literals or formatted output
+        const args_node = self.arena.getNodeConst(args_node_id);
+        
+        if (args_node) |node| {
+            switch (node.data) {
+                .struct_init => |struct_init| {
+                    // Generate JavaScript template literal or formatted console.log
+                    try result.appendSlice("console.log(");
+                    
+                    // Convert format string
+                    const converted = try self.convertHowlFormatToJS(format_string, struct_init.fields.items.len);
+                    defer self.allocator.free(converted);
+                    
+                    try result.appendSlice("'");
+                    try result.appendSlice(converted);
+                    try result.appendSlice("'");
+                    
+                    // Add arguments
+                    for (struct_init.fields.items, 0..) |field_init, index| {
+                        try result.appendSlice(", ");
+                        
+                        const value_node = self.arena.getNodeConst(field_init.value);
+                        if (value_node) |val_node| {
+                            switch (val_node.data) {
+                                .literal => |lit| {
+                                    switch (lit) {
+                                        .string => |s| {
+                                            try result.appendSlice("'");
+                                            try result.appendSlice(s.value);
+                                            try result.appendSlice("'");
+                                        },
+                                        .integer => |i| {
+                                            try result.writer().print("{d}", .{i.value});
+                                        },
+                                        .float => |f| {
+                                            try result.writer().print("{d}", .{f.value});
+                                        },
+                                        .boolean => |b| {
+                                            try result.appendSlice(if (b.value) "true" else "false");
+                                        },
+                                        else => try result.appendSlice("undefined"),
+                                    }
+                                },
+                                .identifier => |id| try result.appendSlice(id.name),
+                                else => try result.appendSlice("unknownValue"),
+                            }
+                        } else {
+                            try result.appendSlice("null");
+                        }
+                        _ = index; // suppress unused variable warning
+                    }
+                    
+                    try result.appendSlice(")");
+                },
+                else => {
+                    try result.appendSlice("console.log('Invalid arguments')");
+                },
+            }
+        } else {
+            try result.appendSlice("console.log('No arguments')");
+        }
+        
+        return try self.allocator.dupe(u8, result.items);
+    }
+    
+    // Convert Howl format string to JavaScript format
+    fn convertHowlFormatToJS(self: *JSCodegen, howl_format: []const u8, arg_count: usize) ![]const u8 {
+        var result = std.ArrayList(u8).init(self.allocator);
+        defer result.deinit();
+        
+        var placeholder_index: usize = 0;
+        var i: usize = 0;
+        
+        while (i < howl_format.len) {
+            if (howl_format[i] == '{' and i + 1 < howl_format.len) {
+                // Find the end of the format specifier
+                var end_pos = i + 1;
+                while (end_pos < howl_format.len and howl_format[end_pos] != '}') {
+                    end_pos += 1;
+                }
+                
+                if (end_pos < howl_format.len and placeholder_index < arg_count) {
+                    const format_spec = howl_format[i + 1..end_pos];
+                    
+                    // Convert format specifier to JavaScript format
+                    const js_format = try self.convertJSFormatSpec(format_spec, placeholder_index);
+                    try result.appendSlice(js_format);
+                    
+                    placeholder_index += 1;
+                    i = end_pos + 1; // Skip past '}'
+                } else {
+                    // Malformed or too many placeholders, just copy literally
+                    try result.append(howl_format[i]);
+                    i += 1;
+                }
+            } else if (howl_format[i] == '\\' and i + 1 < howl_format.len) {
+                // Handle escape sequences
+                const next_char = howl_format[i + 1];
+                switch (next_char) {
+                    'n' => try result.appendSlice("\\n"),
+                    't' => try result.appendSlice("\\t"),
+                    'r' => try result.appendSlice("\\r"),
+                    '\\' => try result.appendSlice("\\\\"),
+                    '\'' => try result.appendSlice("\\'"),
+                    else => {
+                        try result.append(howl_format[i]);
+                        try result.append(next_char);
+                    },
+                }
+                i += 2;
+            } else if (howl_format[i] == '\'') {
+                // Escape single quotes
+                try result.appendSlice("\\'");
+                i += 1;
+            } else {
+                try result.append(howl_format[i]);
+                i += 1;
+            }
+        }
+        
+        return try self.allocator.dupe(u8, result.items);
+    }
+    
+    // Convert individual format specification for JavaScript
+    fn convertJSFormatSpec(self: *JSCodegen, spec: []const u8, arg_index: usize) ![]const u8 {
+        var result = std.ArrayList(u8).init(self.allocator);
+        defer result.deinit();
+        
+        if (spec.len == 0) {
+            // Default format - just use template literal syntax
+            try result.writer().print("${{}}", .{});
+            return try self.allocator.dupe(u8, result.items);
+        }
+        
+        // Split on ':' if present
+        var type_part = spec;
+        var format_part: []const u8 = "";
+        
+        if (std.mem.indexOf(u8, spec, ":")) |colon_pos| {
+            type_part = spec[0..colon_pos];
+            format_part = spec[colon_pos + 1..];
+        }
+        
+        // Handle type specifiers
+        if (std.mem.eql(u8, type_part, "d")) {
+            // Integer format
+            if (format_part.len == 0) {
+                try result.writer().print("${{}}", .{});
+            } else {
+                // For complex integer formatting, use helper function
+                try result.writer().print("${{formatInt(arguments[{}], '{s}')}}", .{ arg_index, format_part });
+            }
+        } else if (std.mem.eql(u8, type_part, "s")) {
+            // String format
+            if (format_part.len == 0) {
+                try result.writer().print("${{}}", .{});
+            } else {
+                // For complex string formatting, use helper function
+                try result.writer().print("${{formatString(arguments[{}], '{s}')}}", .{ arg_index, format_part });
+            }
+        } else if (std.mem.eql(u8, type_part, "f")) {
+            // Float format
+            if (format_part.len == 0) {
+                try result.writer().print("${{}}", .{});
+            } else if (std.mem.startsWith(u8, format_part, ".")) {
+                // Handle precision specifier
+                const precision_str = format_part[1..];
+                if (std.mem.eql(u8, precision_str, "2")) {
+                    try result.writer().print("${{arguments[{}].toFixed(2)}}", .{arg_index});
+                } else if (std.mem.eql(u8, precision_str, "1")) {
+                    try result.writer().print("${{arguments[{}].toFixed(1)}}", .{arg_index});
+                } else if (std.mem.eql(u8, precision_str, "3")) {
+                    try result.writer().print("${{arguments[{}].toFixed(3)}}", .{arg_index});
+                } else {
+                    try result.writer().print("${{arguments[{}].toFixed(2)}}", .{arg_index}); // Default precision
+                }
+            } else {
+                try result.writer().print("${{}}", .{});
+            }
+        } else {
+            // Default case
+            try result.writer().print("${{}}", .{});
+        }
+        
+        return try self.allocator.dupe(u8, result.items);
     }
 };
 

@@ -9,12 +9,12 @@ pub main :: fn() !void {
     e :: PI + d
     f :: [1, 2, 3]
     g := 0
-    for (f) |h| {
-        g += h
-    }
-
+       for (f) |h| {
+            g += h
+       }
+    
     std.debug.print("The value of g is: {}\n", .{g})
 
-    std.debug.print("The result of c is: ", .{c})
+    std.debug.print("The result of c is: {}\n", .{c})
     return
 }
