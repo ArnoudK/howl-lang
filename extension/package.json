@@ -1,8 +1,8 @@
 {
   "name": "howl-language-support",
   "displayName": "Howl Language Support",
-  "description": "Language support for the Howl programming language with LSP integration",
-  "version": "0.1.0",
+  "description": "Enhanced language support for Howl programming language with advanced LSP features, autocomplete, and integrated compiler",
+  "version": "0.2.0",
   "publisher": "howl-lang",
   "repository": {
     "type": "git",
@@ -18,7 +18,14 @@
     "howl",
     "language",
     "lsp",
-    "syntax highlighting"
+    "syntax highlighting",
+    "autocomplete",
+    "debug.print",
+    "format specifiers",
+    "compiler integration",
+    "formatter",
+    "code formatting",
+    "trailing commas"
   ],
   "main": "./out/extension.js",
   "activationEvents": [
@@ -57,8 +64,8 @@
       "properties": {
         "howl.lsp.serverPath": {
           "type": "string",
-          "default": "howl_lsp",
-          "description": "Path to the Howl LSP server executable. If not absolute, will search in PATH."
+          "default": "howl",
+          "description": "Path to the Howl compiler executable (uses 'howl lsp' subcommand). If not absolute, will search in PATH and workspace zig-out/bin/."
         },
         "howl.lsp.trace.server": {
           "type": "string",
@@ -73,7 +80,52 @@
         "howl.lsp.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable/disable the Howl language server."
+          "description": "Enable/disable the Howl language server with enhanced autocomplete and format specifier support."
+        },
+        "howl.lsp.enableEnhancedCompletion": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable enhanced completion with format specifier documentation and anonymous struct support."
+        },
+        "howl.lsp.completionTriggers": {
+          "type": "array",
+          "default": [".", "@", "{", "}"],
+          "description": "Characters that trigger autocomplete. Includes support for std library access and struct literals."
+        },
+        "howl.formatter.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Howl code formatter."
+        },
+        "howl.formatter.indentSize": {
+          "type": "number",
+          "default": 4,
+          "description": "Number of spaces for indentation (ignored if using tabs)."
+        },
+        "howl.formatter.useTabs": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use tabs for indentation instead of spaces."
+        },
+        "howl.formatter.maxLineLength": {
+          "type": "number",
+          "default": 100,
+          "description": "Maximum line length for formatting."
+        },
+        "howl.formatter.trailingCommaThreshold": {
+          "type": "number",
+          "default": 3,
+          "description": "Number of items to trigger multi-line formatting (even without trailing comma)."
+        },
+        "howl.formatter.alwaysMultilineTrailingComma": {
+          "type": "boolean",
+          "default": true,
+          "description": "Always format multi-line when a trailing comma is present."
+        },
+        "howl.formatter.formatOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically format Howl files when saving."
         }
       }
     },
@@ -85,7 +137,27 @@
       },
       {
         "command": "howl.showOutputChannel",
-        "title": "Show Output Channel",
+        "title": "Show Output Channel",  
+        "category": "Howl"
+      },
+      {
+        "command": "howl.buildCurrentFile",
+        "title": "Build Current File",
+        "category": "Howl"
+      },
+      {
+        "command": "howl.runCurrentFile",
+        "title": "Run Current File",
+        "category": "Howl"
+      },
+      {
+        "command": "howl.formatDocument",
+        "title": "Format Document",
+        "category": "Howl"
+      },
+      {
+        "command": "howl.formatSelection",
+        "title": "Format Selection",
         "category": "Howl"
       }
     ]

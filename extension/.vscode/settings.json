@@ -1,0 +1,28 @@
+{
+    // Howl Language Server Configuration
+    "howl.lsp.enabled": true,
+    "howl.lsp.serverPath": "howl",
+    "howl.lsp.enableEnhancedCompletion": true,
+    "howl.lsp.completionTriggers": [".", "@", "{", "}"],
+    "howl.lsp.trace.server": "off",
+    
+    // Howl Formatter Configuration
+    "howl.formatter.enable": true,
+    "howl.formatter.formatOnSave": true,
+    "howl.formatter.indentSize": 4,
+    "howl.formatter.useTabs": false,
+    "howl.formatter.maxLineLength": 100,
+    "howl.formatter.trailingCommaThreshold": 3,
+    "howl.formatter.alwaysMultilineTrailingComma": true,
+    
+    // VS Code Editor Settings for Howl
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "howl-lang.howl-language-support",
+    "[howl]": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "howl-lang.howl-language-support",
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true,
+        "editor.detectIndentation": false
+    }
+}

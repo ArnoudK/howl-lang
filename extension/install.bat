@@ -5,7 +5,7 @@ echo 🐺 Installing Howl Language Support for VS Code...
 
 REM Set the VS Code extensions directory for Windows
 set "VSCODE_EXTENSIONS_DIR=%USERPROFILE%\.vscode\extensions"
-set "EXTENSION_DIR=%VSCODE_EXTENSIONS_DIR%\howl-language-support-0.1.0"
+set "EXTENSION_DIR=%VSCODE_EXTENSIONS_DIR%\howl-language-support-0.2.0"
 
 echo 📁 Installing to: %EXTENSION_DIR%
 
@@ -39,7 +39,10 @@ echo 2. Open a .howl file
 echo 3. The extension should activate automatically
 echo.
 echo 🔧 Configuration:
-echo - Set 'howl.lsp.serverPath' to point to your howl_lsp.exe
+echo - Set 'howl.lsp.serverPath' to point to your howl.exe (uses 'howl lsp')
+echo - Enable 'howl.lsp.enableEnhancedCompletion' for smart autocomplete
+echo - Try typing 'std.debug.print' to see format specifier help
+echo - Use Command Palette → 'Howl: Build Current File' to compile
 echo - Check 'Howl: Show Output Channel' if you encounter issues
 echo.
 echo 🎉 Happy coding with Howl!

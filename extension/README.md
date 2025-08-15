@@ -1,12 +1,20 @@
 # Howl Language Support for VS Code
 
-This extension provides comprehensive language support for the Howl programming language, including syntax highlighting, language server integration, and intelligent code features.
+This extension provides comprehensive language support for the Howl programming language, including enhanced syntax highlighting, integrated language server with advanced autocomplete, and built-in compiler commands.
 
 ## Features
 
-- **Syntax Highlighting**: Full syntax highlighting for Howl language constructs
-- **Language Server Protocol (LSP)**: Integrated language server for real-time error reporting and code intelligence
-- **Auto-completion**: Intelligent code completion for keywords and language constructs
+- **Enhanced Syntax Highlighting**: Full syntax highlighting for Howl language constructs
+- **Advanced Language Server Protocol (LSP)**: Integrated language server with intelligent autocomplete
+- **Advanced Code Formatting**: Intelligent code formatter with trailing comma support
+- **Format on Save**: Automatic code formatting when saving files
+- **Smart Auto-completion**: 
+  - Context-aware completions for `std.debug.print` with format specifier documentation
+  - Anonymous struct syntax support (`.{arg1, arg2}`)
+  - Standard library module completions
+  - Format specifier help (`{d}`, `{s}`, `{f:.2}`, etc.)
+- **Enhanced Debug.Print Support**: Rich autocomplete for format strings and precision specifiers
+- **Integrated Build/Run Commands**: Built-in commands to compile and execute Howl files
 - **Error Diagnostics**: Real-time error reporting and syntax validation
 - **Code Navigation**: Support for go-to-definition and hover information
 - **Bracket Matching**: Auto-closing brackets and intelligent indentation
@@ -17,9 +25,9 @@ This extension provides comprehensive language support for the Howl programming 
 ### Method 1: Install from VS Code Extension Directory
 
 1. Copy the entire `extension` folder to your VS Code extensions directory:
-   - **Windows**: `%USERPROFILE%\.vscode\extensions\howl-language-support-0.1.0`
-   - **macOS**: `~/.vscode/extensions/howl-language-support-0.1.0`
-   - **Linux**: `~/.vscode/extensions/howl-language-support-0.1.0`
+   - **Windows**: `%USERPROFILE%\.vscode\extensions\howl-language-support-0.2.0`
+   - **macOS**: `~/.vscode/extensions/howl-language-support-0.2.0`
+   - **Linux**: `~/.vscode/extensions/howl-language-support-0.2.0`
 
 2. Restart VS Code
 
@@ -38,7 +46,7 @@ This extension provides comprehensive language support for the Howl programming 
 
 3. Install the generated `.vsix` file:
    ```bash
-   code --install-extension howl-language-support-0.1.0.vsix
+   code --install-extension howl-language-support-0.2.0.vsix
    ```
 
 ### Method 3: Development Mode
@@ -49,17 +57,19 @@ This extension provides comprehensive language support for the Howl programming 
 
 ## Requirements
 
-### Howl Language Server
+### Howl Compiler
 
-The extension requires the Howl language server (`howl_lsp`) to be available. Make sure you have:
+The extension requires the Howl compiler (`howl`) to be available. Make sure you have:
 
-1. Built the Howl compiler with LSP support:
+1. Built the Howl compiler:
    ```bash
    cd /path/to/howl-lang
    zig build
    ```
 
-2. The `howl_lsp` executable should be in your PATH or in the `zig-out/bin/` directory of your Howl project.
+2. The `howl` executable should be in your PATH or in the `zig-out/bin/` directory of your Howl project.
+
+The extension now uses the integrated `howl lsp` subcommand instead of a separate `howl_lsp` executable.
 
 ## Configuration
 
@@ -67,21 +77,39 @@ The extension can be configured through VS Code settings:
 
 ```json
 {
-  "howl.lsp.serverPath": "howl_lsp",
+  "howl.lsp.serverPath": "howl",
   "howl.lsp.enabled": true,
-  "howl.lsp.trace.server": "off"
+  "howl.lsp.enableEnhancedCompletion": true,
+  "howl.lsp.completionTriggers": [".", "@", "{", "}"],
+  "howl.lsp.trace.server": "off",
+  "howl.formatter.enable": true,
+  "howl.formatter.formatOnSave": false,
+  "howl.formatter.indentSize": 4,
+  "howl.formatter.useTabs": false,
+  "howl.formatter.maxLineLength": 100,
+  "howl.formatter.trailingCommaThreshold": 3,
+  "howl.formatter.alwaysMultilineTrailingComma": true
 }
 ```
 
 ### Settings
 
-- `howl.lsp.serverPath`: Path to the Howl language server executable
-  - Default: `"howl_lsp"`
+- `howl.lsp.serverPath`: Path to the Howl compiler executable (uses `howl lsp` subcommand)
+  - Default: `"howl"`
   - Can be an absolute path or relative to workspace
-  - The extension will automatically look for `zig-out/bin/howl_lsp` in your workspace
+  - The extension will automatically look for `zig-out/bin/howl` in your workspace
 
-- `howl.lsp.enabled`: Enable/disable the language server
+- `howl.lsp.enabled`: Enable/disable the language server with enhanced features
   - Default: `true`
+
+- `howl.lsp.enableEnhancedCompletion`: Enable enhanced completion with format specifier documentation
+  - Default: `true`
+  - Provides rich autocomplete for `std.debug.print` format specifiers
+  - Includes anonymous struct syntax support
+
+- `howl.lsp.completionTriggers`: Characters that trigger autocomplete
+  - Default: `[".", "@", "{", "}"]`
+  - Supports std library access and struct literals
 
 - `howl.lsp.trace.server`: Trace communication with the language server
   - Options: `"off"`, `"messages"`, `"verbose"`
@@ -93,25 +121,144 @@ The extension provides the following commands:
 
 - `Howl: Restart Language Server` - Restart the language server
 - `Howl: Show Output Channel` - Show the language server output for debugging
+- `Howl: Build Current File` - Compile the current Howl file (JavaScript target)
+- `Howl: Run Current File` - Compile and run the current Howl file
+- `Howl: Format Document` - Format the entire document (`Ctrl+Shift+I`)
+- `Howl: Format Selection` - Format selected text (`Ctrl+K Ctrl+F`)
 
 Access these commands through the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`).
+
+## Code Formatting
+
+The extension includes an advanced code formatter with intelligent trailing comma support.
+
+### Formatting Commands
+
+| Command | Shortcut | Description |
+|---------|----------|-------------|
+| Format Document | `Ctrl+Shift+I` (`Cmd+Shift+I`) | Format the entire document |
+| Format Selection | `Ctrl+K Ctrl+F` (`Cmd+K Cmd+F`) | Format selected text |
+
+### Format on Save
+
+Enable automatic formatting when saving files:
+
+```json
+{
+  "howl.formatter.formatOnSave": true,
+  // OR use the general editor setting:
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "howl-lang.howl-language-support"
+}
+```
+
+### Trailing Comma Intelligence
+
+The formatter intelligently handles trailing commas with a special rule:
+
+> **🎯 Trailing Comma Rule**: When a trailing comma is present, all items are formatted on separate lines.
+
+#### Examples
+
+**Arrays:**
+```howl
+// Without trailing comma (stays compact):
+let colors = ["red", "green", "blue"];
+
+// With trailing comma (formats multi-line):
+let colors = [
+    "red",
+    "green",
+    "blue",
+];
+```
+
+**Struct Literals:**
+```howl
+// Without trailing comma (stays compact):
+let point = Point { x: 10, y: 20 };
+
+// With trailing comma (formats multi-line):
+let point = Point {
+    x: 10,
+    y: 20,
+    z: 30,
+};
+```
+
+**Function Parameters:**
+```howl
+// Without trailing comma (stays compact):
+fn add(a: i32, b: i32) -> i32 { return a + b; }
+
+// With trailing comma (formats multi-line):
+fn complex_calc(
+    first: i32,
+    second: f64,
+    third: string,
+    fourth: bool,
+) -> i32 {
+    return 42;
+}
+```
+
+### Formatter Configuration
+
+Customize the formatter behavior with these settings:
+
+- `howl.formatter.enable` (boolean, default: `true`): Enable/disable the formatter
+- `howl.formatter.formatOnSave` (boolean, default: `false`): Auto-format on save
+- `howl.formatter.indentSize` (number, default: `4`): Spaces for indentation
+- `howl.formatter.useTabs` (boolean, default: `false`): Use tabs instead of spaces
+- `howl.formatter.maxLineLength` (number, default: `100`): Maximum line length
+- `howl.formatter.trailingCommaThreshold` (number, default: `3`): Item count to trigger multi-line
+- `howl.formatter.alwaysMultilineTrailingComma` (boolean, default: `true`): Force multi-line with trailing commas
+
+## Enhanced Autocomplete Features
+
+### Debug.Print Format Specifiers
+
+When typing `std.debug.print`, the extension provides rich documentation for format specifiers:
+
+- `{}` - Default formatting
+- `{d}` - Decimal integer  
+- `{s}` - String
+- `{f}` - Float
+- `{f:.2}` - Float with 2 decimal places
+- `{f:.N}` - Float with N decimal places
+
+### Anonymous Struct Support
+
+Smart completion for anonymous struct arguments:
+- Type `.{` to get anonymous struct completion
+- Shows examples like `.{arg1, arg2, arg3}`
+
+### Standard Library Completions
+
+Context-aware completions when typing `std.`:
+- `debug` - Debug utilities with enhanced print function
+- `math` - Mathematical functions
+- `mem` - Memory utilities
+- `fmt` - Formatting utilities
+- And more...
 
 ## Usage
 
 1. Open a `.howl` file in VS Code
 2. The extension will automatically activate and start the language server
 3. You should see syntax highlighting immediately
-4. Error diagnostics will appear as you type (if the language server is running)
-5. Use `Ctrl+Space` for code completion
+4. Type `std.debug.print` to see enhanced autocomplete with format documentation
+5. Use `Ctrl+Space` for general code completion
+6. Use Command Palette commands to build/run files
 
 ## Troubleshooting
 
 ### Language Server Not Starting
 
-1. Check that `howl_lsp` is in your PATH:
+1. Check that `howl` is in your PATH:
    ```bash
-   which howl_lsp  # On macOS/Linux
-   where howl_lsp  # On Windows
+   which howl  # On macOS/Linux
+   where howl  # On Windows
    ```
 
 2. Verify the server path in settings:
@@ -123,16 +270,35 @@ Access these commands through the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P
    - Run command: `Howl: Show Output Channel`
    - Look for error messages
 
+4. Test the LSP manually:
+   ```bash
+   howl lsp  # Should start the language server
+   ```
+
 ### Extension Not Activating
 
 1. Ensure you have a `.howl` file open
 2. Check the VS Code extension view to confirm the extension is installed and enabled
 3. Try restarting VS Code
 
-### Syntax Highlighting Issues
+### Missing Enhanced Completions
 
-1. Verify the file has a `.howl` extension
-2. Try manually setting the language: `Ctrl+Shift+P` → "Change Language Mode" → "Howl"
+1. Ensure `howl.lsp.enableEnhancedCompletion` is set to `true`
+2. Check that you're using the latest version of the Howl compiler
+3. Restart the language server with `Howl: Restart Language Server`
+
+### Formatter Issues
+
+1. Check that `howl.formatter.enable` is set to `true`
+2. Verify the Howl compiler supports formatting: `howl fmt --help`
+3. Check that the file is saved as a `.howl` file
+4. For format-on-save issues, verify the default formatter is set correctly:
+   ```json
+   {
+     "editor.defaultFormatter": "howl-lang.howl-language-support"
+   }
+   ```
+5. Try manual formatting first (`Ctrl+Shift+I`) to verify the formatter works
 
 ## Development
 
@@ -178,10 +344,20 @@ The extension automatically associates with `.howl` files. If you need to manual
 
 ## Known Issues
 
-- Language server features are currently basic and will be enhanced over time
 - Icon files are placeholders and will be replaced with proper graphics
 
 ## Release Notes
+
+### 0.2.0
+
+- **Major Update**: Integrated with new `howl lsp` command structure
+- **Enhanced Autocomplete**: Smart completions for `std.debug.print` with format specifier documentation
+- **Anonymous Struct Support**: Rich completion for `.{arg1, arg2}` syntax
+- **Advanced Code Formatting**: Intelligent formatter with trailing comma support
+- **Format on Save**: Automatic formatting when saving files
+- **Build/Run Commands**: Integrated commands to compile and execute Howl files
+- **Improved LSP Integration**: Better error handling and configuration options
+- **Standard Library Completions**: Context-aware completions for std modules
 
 ### 0.1.0
 
