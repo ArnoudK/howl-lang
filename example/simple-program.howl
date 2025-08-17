@@ -1,20 +1,9 @@
-std :: @import("std")
-
-pub main :: fn() !void {
+std :: import("std")
+main :: fn () void {
     PI : f32 : 3.14159
-    a := 1
-    b := 2
-    c :: a + b
-    d : i32 = 4
-    e :: PI + d
-    f :: [1, 2, 3]
-    g := 0
-       for (f) |h| {
-            g += h
-       }
-    
-    std.debug.print("The value of g is: {}\n", .{g})
+    e :: PI + 3
+    f :: if (e > 5)  "greater" else "lesser"
 
-    std.debug.print("The result of c is: {}\n", .{c})
-    return
+    std.debug.print("Result: {s}\n", .{f})
+
 }

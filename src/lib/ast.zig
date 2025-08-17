@@ -92,6 +92,7 @@ pub const AstArena = struct {
             .function_decl => |*func| func.params.deinit(),
             .extern_fn_decl => |*extern_fn| extern_fn.params.deinit(),
             .struct_decl => |*struct_decl| struct_decl.fields.deinit(),
+            .enum_decl => |*enum_decl| enum_decl.members.deinit(),  // Fix memory leak!
             .block => |*block| block.statements.deinit(),
             .match_expr => |*match| match.arms.deinit(),
             .match_compile_expr => |*match_compile| match_compile.arms.deinit(),
@@ -149,6 +150,7 @@ pub const BinaryOp = enum {
     div,
     mod,
     power,
+    concat, // String concatenation (++)
     
     // Bitwise
     bit_and,
@@ -172,7 +174,7 @@ pub const BinaryOp = enum {
             .bit_xor => 7,
             .bit_and => 8,
             .shl, .shr => 9,
-            .add, .sub => 10,
+            .add, .sub, .concat => 10,
             .mul, .div, .mod => 11,
             .power => 12,
             .range, .pipe => 13,
@@ -189,8 +191,8 @@ pub const BinaryOp = enum {
     pub fn toString(self: BinaryOp) []const u8 {
         return switch (self) {
             .assign => "=",
-            .logical_or => "||",
-            .logical_and => "&&",
+            .logical_or => "or",
+            .logical_and => "and",
             .eq => "==",
             .ne => "!=",
             .lt => "<",
@@ -201,13 +203,14 @@ pub const BinaryOp = enum {
             .sub => "-",
             .mul => "*",
             .div => "/",
-            .mod => "%",
+            .mod => "mod",
             .power => "**",
-            .bit_and => "&",
-            .bit_or => "|",
-            .bit_xor => "^",
-            .shl => "<<",
-            .shr => ">>",
+            .concat => "++",
+            .bit_and => "bAnd",
+            .bit_or => "bOr",
+            .bit_xor => "bXor",
+            .shl => "bShiftLeft",
+            .shr => "bShiftRight",
             .range => "..",
             .pipe => "|>",
         };
@@ -275,6 +278,10 @@ pub const Type = struct {
             name: []const u8,
             fields: []Field,
         },
+        @"enum": struct {
+            name: []const u8,
+            members: []EnumMember,
+        },
         function: struct {
             param_types: []Type,
             return_type: *Type,
@@ -318,6 +325,13 @@ pub const Type = struct {
         };
     }
 
+    pub fn initEnum(name: []const u8, members: []EnumMember, source_loc: SourceLoc) Type {
+        return Type{
+            .data = .{ .@"enum" = .{ .name = name, .members = members } },
+            .source_loc = source_loc,
+        };
+    }
+
     pub fn isType(self: Type) bool {
         return switch (self.data) {
             .primitive => |p| p == .type,
@@ -331,6 +345,10 @@ pub const Type = struct {
 
     pub fn isCustomStruct(self: Type) bool {
         return self.data == .custom_struct;
+    }
+
+    pub fn isEnum(self: Type) bool {
+        return self.data == .@"enum";
     }
 
     pub fn isPrimitive(self: Type) bool {
@@ -359,6 +377,16 @@ pub const Type = struct {
 
     pub fn isNumeric(self: Type) bool {
         return self.isInteger() or self.isFloat();
+    }
+
+    pub fn isString(self: Type) bool {
+        return switch (self.data) {
+            .primitive => |p| switch (p) {
+                .str => true,
+                else => false,
+            },
+            else => false,
+        };
     }
 
     pub fn toString(self: Type, allocator: std.mem.Allocator) ![]const u8 {
@@ -420,6 +448,9 @@ pub const Literal = union(enum) {
     },
     bool_true: void,
     bool_false: void,
+    enum_member: struct {
+        name: []const u8, // Member name without the dot (e.g., "c", "javascript")
+    },
 
     pub fn fromToken(token: Token) ?Literal {
         return switch (token) {
@@ -471,6 +502,7 @@ pub const Literal = union(enum) {
             .char => |c| try std.fmt.allocPrint(allocator, "'{c}'", .{c.value}),
             .bool_true => try allocator.dupe(u8, "true"),
             .bool_false => try allocator.dupe(u8, "false"),
+            .enum_member => |member| try std.fmt.allocPrint(allocator, ".{s}", .{member.name}),
         };
     }
 };
@@ -483,6 +515,12 @@ pub const Field = struct {
     name: []const u8,
     type_annotation: ?NodeId,
     default_value: ?NodeId,
+    source_loc: SourceLoc,
+};
+
+pub const EnumMember = struct {
+    name: []const u8,
+    value: ?NodeId, // Optional explicit value (e.g., foo = 42)
     source_loc: SourceLoc,
 };
 
@@ -510,6 +548,7 @@ pub const MatchPattern = union(enum) {
     literal: Literal,
     identifier: []const u8,
     wildcard: void, // _
+    enum_member: []const u8, // .member (inferred enum member)
     range: struct {
         start: NodeId,
         end: NodeId,
@@ -617,6 +656,10 @@ pub const AstNode = struct {
             name: []const u8,
             fields: std.ArrayList(Field),
             is_comptime: bool,
+        },
+        enum_decl: struct {
+            name: []const u8,
+            members: std.ArrayList(EnumMember),
         },
         type_decl: struct {
             name: []const u8,

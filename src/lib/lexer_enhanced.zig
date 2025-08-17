@@ -28,7 +28,7 @@ pub const Lexer = struct {
             .source_maps = std.StringHashMap(SourceMap).init(allocator),
         };
     }
-    
+
     pub fn deinit(self: *Lexer) void {
         var file_iterator = self.files.iterator();
         while (file_iterator.next()) |entry| {
@@ -37,7 +37,7 @@ pub const Lexer = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.files.deinit();
-        
+
         var source_map_iterator = self.source_maps.iterator();
         while (source_map_iterator.next()) |entry| {
             entry.value_ptr.deinit();
@@ -45,31 +45,31 @@ pub const Lexer = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.source_maps.deinit();
-        
+
         self.error_collector.deinit();
     }
-    
+
     pub fn addFile(self: *Lexer, file_path: []const u8, file_content: []const u8) !void {
         // Create source map for error reporting
         const source_map = try SourceMap.init(self.allocator, file_content);
         try self.source_maps.put(try self.allocator.dupe(u8, file_path), source_map);
-        
+
         // Create lexer file
         const lexer_file = LexerFile.init(self.allocator, self, file_path, file_content);
         try self.files.put(try self.allocator.dupe(u8, file_path), lexer_file);
     }
-    
+
     pub fn tokenizeAll(self: *Lexer) !void {
         var iterator = self.files.iterator();
         while (iterator.next()) |entry| {
             try entry.value_ptr.tokenize();
         }
     }
-    
+
     pub fn hasErrors(self: *const Lexer) bool {
         return self.error_collector.hasErrors();
     }
-    
+
     pub fn printErrors(self: *const Lexer, writer: anytype) !void {
         const formatter = ErrorFormatter.init(self.allocator);
         try formatter.formatErrors(&self.error_collector, &self.source_maps, writer);
@@ -94,54 +94,54 @@ pub const CompileError = struct {
 };
 
 pub const keywords = std.StaticStringMap(Token).initComptime(.{
-        .{ "pub", Token{ .Pub = .{ .pos = 0 } } },
-        .{ "for", Token{ .For = .{ .pos = 0 } } },
-        .{ "if", Token{ .If = .{ .pos = 0 } } },
-        .{ "else", Token{ .Else = .{ .pos = 0 } } },
-        .{ "match", Token{ .Match = .{ .pos = 0 } } },
-        .{ "i8", Token{ .I8 = .{ .pos = 0 } } },
-        .{ "i16", Token{ .I16 = .{ .pos = 0 } } },
-        .{ "i32", Token{ .I32 = .{ .pos = 0 } } },
-        .{ "i64", Token{ .I64 = .{ .pos = 0 } } },
-        .{ "i128", Token{ .I128 = .{ .pos = 0 } } },
-        .{ "u8", Token{ .U8 = .{ .pos = 0 } } },
-        .{ "u16", Token{ .U16 = .{ .pos = 0 } } },
-        .{ "u32", Token{ .U32 = .{ .pos = 0 } } },
-        .{ "u64", Token{ .U64 = .{ .pos = 0 } } },
-        .{ "u128", Token{ .U128 = .{ .pos = 0 } } },
-        .{ "f8", Token{ .F8 = .{ .pos = 0 } } },
-        .{ "f16", Token{ .F16 = .{ .pos = 0 } } },
-        .{ "f32", Token{ .F32 = .{ .pos = 0 } } },
-        .{ "f64", Token{ .F64 = .{ .pos = 0 } } },
-        .{ "str", Token{ .Str = .{ .pos = 0 } } },
-        .{ "strb", Token{ .StrB = .{ .pos = 0 } } },
-        .{ "bool", Token{ .Bool = .{ .pos = 0 } } },
-        .{ "void", Token{ .Void = .{ .pos = 0 } } },
-        .{ "Some", Token{ .Some = .{ .pos = 0 } } },
-        .{ "None", Token{ .None = .{ .pos = 0 } } },
-        .{ "Type", Token{ .Type = .{ .pos = 0 } } },
-        .{ "error", Token{ .Error = .{ .pos = 0 } } },
-        .{ "true", Token{ .True = .{ .pos = 0 } } },
-        .{ "false", Token{ .False = .{ .pos = 0 } } },
-        .{ "struct", Token{ .Struct = .{ .pos = 0 } } },
-        .{ "enum", Token{ .Enum = .{ .pos = 0 } } },
-        .{ "tag", Token{ .Tag = .{ .pos = 0 } } },
-        .{ "fn", Token{ .Fn = .{ .pos = 0 } } },
-        .{ "return", Token{ .Return = .{ .pos = 0 } } },
-        .{ "and", Token{ .And = .{ .pos = 0 } } },
-        .{ "or", Token{ .Or = .{ .pos = 0 } } },
-        .{ "not", Token{ .Not = .{ .pos = 0 } } },
-        .{ "bXor", Token{ .BitwiseXor = .{ .pos = 0 } } },
-        .{ "bAnd", Token{ .BitwiseAnd = .{ .pos = 0 } } },
-        .{ "bOr", Token{ .BitwiseOr = .{ .pos = 0 } } },
-        .{ "bNot", Token{ .BitwiseNot = .{ .pos = 0 } } },
-        .{ "bToggle", Token{ .BitwiseToggle = .{ .pos = 0 } } },
-        .{ "bShiftLeft", Token{ .BitwiseShiftLeft = .{ .pos = 0 } } },
-        .{ "bShiftRight", Token{ .BitwiseShiftRight = .{ .pos = 0 } } },
-        .{ "bRotLeft", Token{ .BitwiseRotateLeft = .{ .pos = 0 } } },
-        .{ "bRotRight", Token{ .BitwiseRotateRight = .{ .pos = 0 } } },
-        .{ "mod", Token{ .Modulo = .{ .pos = 0 } } },
-        .{ "rem", Token{ .Remainder = .{ .pos = 0 } } },
+    .{ "pub", Token{ .Pub = .{ .pos = 0 } } },
+    .{ "for", Token{ .For = .{ .pos = 0 } } },
+    .{ "if", Token{ .If = .{ .pos = 0 } } },
+    .{ "else", Token{ .Else = .{ .pos = 0 } } },
+    .{ "match", Token{ .Match = .{ .pos = 0 } } },
+    .{ "i8", Token{ .I8 = .{ .pos = 0 } } },
+    .{ "i16", Token{ .I16 = .{ .pos = 0 } } },
+    .{ "i32", Token{ .I32 = .{ .pos = 0 } } },
+    .{ "i64", Token{ .I64 = .{ .pos = 0 } } },
+    .{ "i128", Token{ .I128 = .{ .pos = 0 } } },
+    .{ "u8", Token{ .U8 = .{ .pos = 0 } } },
+    .{ "u16", Token{ .U16 = .{ .pos = 0 } } },
+    .{ "u32", Token{ .U32 = .{ .pos = 0 } } },
+    .{ "u64", Token{ .U64 = .{ .pos = 0 } } },
+    .{ "u128", Token{ .U128 = .{ .pos = 0 } } },
+    .{ "f8", Token{ .F8 = .{ .pos = 0 } } },
+    .{ "f16", Token{ .F16 = .{ .pos = 0 } } },
+    .{ "f32", Token{ .F32 = .{ .pos = 0 } } },
+    .{ "f64", Token{ .F64 = .{ .pos = 0 } } },
+    .{ "str", Token{ .Str = .{ .pos = 0 } } },
+    .{ "strb", Token{ .StrB = .{ .pos = 0 } } },
+    .{ "bool", Token{ .Bool = .{ .pos = 0 } } },
+    .{ "void", Token{ .Void = .{ .pos = 0 } } },
+    .{ "Some", Token{ .Some = .{ .pos = 0 } } },
+    .{ "None", Token{ .None = .{ .pos = 0 } } },
+    .{ "Type", Token{ .Type = .{ .pos = 0 } } },
+    .{ "error", Token{ .Error = .{ .pos = 0 } } },
+    .{ "true", Token{ .True = .{ .pos = 0 } } },
+    .{ "false", Token{ .False = .{ .pos = 0 } } },
+    .{ "struct", Token{ .Struct = .{ .pos = 0 } } },
+    .{ "enum", Token{ .Enum = .{ .pos = 0 } } },
+    .{ "tag", Token{ .Tag = .{ .pos = 0 } } },
+    .{ "fn", Token{ .Fn = .{ .pos = 0 } } },
+    .{ "return", Token{ .Return = .{ .pos = 0 } } },
+    .{ "and", Token{ .And = .{ .pos = 0 } } },
+    .{ "or", Token{ .Or = .{ .pos = 0 } } },
+    .{ "not", Token{ .Not = .{ .pos = 0 } } },
+    .{ "bXor", Token{ .BitwiseXor = .{ .pos = 0 } } },
+    .{ "bAnd", Token{ .BitwiseAnd = .{ .pos = 0 } } },
+    .{ "bOr", Token{ .BitwiseOr = .{ .pos = 0 } } },
+    .{ "bNot", Token{ .BitwiseNot = .{ .pos = 0 } } },
+    .{ "bToggle", Token{ .BitwiseToggle = .{ .pos = 0 } } },
+    .{ "bShiftLeft", Token{ .BitwiseShiftLeft = .{ .pos = 0 } } },
+    .{ "bShiftRight", Token{ .BitwiseShiftRight = .{ .pos = 0 } } },
+    .{ "bRotLeft", Token{ .BitwiseRotateLeft = .{ .pos = 0 } } },
+    .{ "bRotRight", Token{ .BitwiseRotateRight = .{ .pos = 0 } } },
+    .{ "mod", Token{ .Modulo = .{ .pos = 0 } } },
+    .{ "rem", Token{ .Remainder = .{ .pos = 0 } } },
 });
 
 const TokenizeState = struct {
@@ -194,19 +194,19 @@ pub const LexerFile = struct {
         }
         self.tokens.deinit();
     }
-    
+
     /// Report a lexer error with intelligent suggestions
     fn reportError(self: *LexerFile, code: ErrorCode, message: []const u8, pos: usize) !void {
         const source_map = self.lexer.source_maps.get(self.file_path) orelse return;
         const line_column = source_map.getLineColumn(pos);
-        
+
         const span = SourceSpan.single(
             self.file_path,
             pos,
             line_column.line,
             line_column.column,
         );
-        
+
         const err = try self.lexer.error_collector.createAndAddError(
             code,
             .lexer,
@@ -214,7 +214,7 @@ pub const LexerFile = struct {
             message,
             span,
         );
-        
+
         // Add context-specific suggestions
         switch (code) {
             .invalid_character => {
@@ -291,7 +291,13 @@ pub const LexerFile = struct {
             try self.reportError(.assertion_failed, message, 0);
             return;
         }
-        
+
+        if (self.file_content.len == 0) {
+            try self.tokens.append(Token{ .StartOfFile = .{ .pos = 0 } });
+            try self.tokens.append(Token{ .EOF = .{ .pos = 0 } });
+            return;
+        }
+
         self.tokenize_state.current_pos = 0;
         self.tokenize_state.char = if (self.file_content.len > 0) self.file_content[0] else 0;
         self.tokenize_state.next_pos = if (self.file_content.len > 1) 1 else 0;
@@ -301,7 +307,7 @@ pub const LexerFile = struct {
 
         try self.tokens.append(Token{ .StartOfFile = .{ .pos = 0 } });
         const content_length = self.file_content.len;
-        
+
         // Safety counter to prevent infinite loops
         var iteration_count: usize = 0;
         const max_iterations = content_length * 10; // Allow 10x file length iterations
@@ -309,18 +315,14 @@ pub const LexerFile = struct {
         while (self.tokenize_state.current_pos < content_length) {
             iteration_count += 1;
             if (iteration_count > max_iterations) {
-                const message = try std.fmt.allocPrint(
-                    self.allocator,
-                    "lexer stuck in infinite loop at position {d}",
-                    .{self.tokenize_state.current_pos}
-                );
+                const message = try std.fmt.allocPrint(self.allocator, "lexer stuck in infinite loop at position {d}", .{self.tokenize_state.current_pos});
                 defer self.allocator.free(message);
                 try self.reportError(.invalid_character, message, self.tokenize_state.current_pos);
                 break;
             }
-            
+
             const old_pos = self.tokenize_state.current_pos;
-            
+
             switch (self.tokenize_state.char) {
                 '\n' => {
                     try self.tokens.append(Token{ .Newline = .{ .pos = self.tokenize_state.current_pos } });
@@ -361,14 +363,14 @@ pub const LexerFile = struct {
                             terminated = true;
                             break;
                         }
-                        
+
                         if (self.tokenize_state.char == '\\') {
                             // Handle escape sequences
                             self.advance();
                             if (self.tokenize_state.char == 0) {
                                 break; // Unterminated string
                             }
-                            
+
                             const escaped_char = switch (self.tokenize_state.char) {
                                 'n' => '\n',
                                 't' => '\t',
@@ -376,11 +378,7 @@ pub const LexerFile = struct {
                                 '\\' => '\\',
                                 '"' => '"',
                                 else => blk: {
-                                    const message = try std.fmt.allocPrint(
-                                        self.allocator,
-                                        "invalid escape sequence '\\{c}'",
-                                        .{self.tokenize_state.char}
-                                    );
+                                    const message = try std.fmt.allocPrint(self.allocator, "invalid escape sequence '\\{c}'", .{self.tokenize_state.char});
                                     defer self.allocator.free(message);
                                     try self.reportError(.invalid_escape_sequence, message, self.tokenize_state.current_pos - 1);
                                     break :blk self.tokenize_state.char; // Use the character as-is
@@ -449,6 +447,11 @@ pub const LexerFile = struct {
                         try self.tokens.append(Token{ .PlusAssign = .{ .pos = self.tokenize_state.current_pos } });
                         self.advance(); // skip '+'
                         self.advance(); // skip '='
+                    } else if (self.tokenize_state.next_char == '+') {
+                        // Handle string concatenation operator (++)
+                        try self.tokens.append(Token{ .PlusPlus = .{ .pos = self.tokenize_state.current_pos } });
+                        self.advance(); // skip first '+'
+                        self.advance(); // skip second '+'
                     } else {
                         try self.tokens.append(Token{ .Plus = .{ .pos = self.tokenize_state.current_pos } });
                         self.advance();
@@ -537,9 +540,10 @@ pub const LexerFile = struct {
                 '@' => {
                     // Handle at sign (used for attributes or special tokens)
                     // Check if this is @import
-                    if (self.tokenize_state.next_char == 'i' and 
-                        self.tokenize_state.current_pos + 6 < self.file_content.len and 
-                        std.mem.eql(u8, self.file_content[self.tokenize_state.current_pos+1..self.tokenize_state.current_pos+7], "import")) {
+                    if (self.tokenize_state.next_char == 'i' and
+                        self.tokenize_state.current_pos + 6 < self.file_content.len and
+                        std.mem.eql(u8, self.file_content[self.tokenize_state.current_pos + 1 .. self.tokenize_state.current_pos + 7], "import"))
+                    {
                         // Skip @import
                         try self.tokens.append(Token{ .Import = .{ .pos = self.tokenize_state.current_pos } });
                         self.advance(); // skip @
@@ -609,24 +613,16 @@ pub const LexerFile = struct {
                 },
                 else => {
                     // Invalid character
-                    const message = try std.fmt.allocPrint(
-                        self.allocator,
-                        "invalid character '{c}' (ASCII {d})",
-                        .{ self.tokenize_state.char, self.tokenize_state.char }
-                    );
+                    const message = try std.fmt.allocPrint(self.allocator, "invalid character '{c}' (ASCII {d})", .{ self.tokenize_state.char, self.tokenize_state.char });
                     defer self.allocator.free(message);
                     try self.reportError(.invalid_character, message, self.tokenize_state.current_pos);
                     self.advance(); // Skip invalid character and continue
                 },
             }
-            
+
             // Safety check: ensure we're making progress
             if (self.tokenize_state.current_pos == old_pos) {
-                const message = try std.fmt.allocPrint(
-                    self.allocator,
-                    "lexer failed to advance from position {d} (char: '{c}' ASCII {d})",
-                    .{ old_pos, self.tokenize_state.char, self.tokenize_state.char }
-                );
+                const message = try std.fmt.allocPrint(self.allocator, "lexer failed to advance from position {d} (char: '{c}' ASCII {d})", .{ old_pos, self.tokenize_state.char, self.tokenize_state.char });
                 defer self.allocator.free(message);
                 try self.reportError(.invalid_character, message, self.tokenize_state.current_pos);
                 self.advance(); // Force advance to prevent infinite loop
@@ -639,19 +635,19 @@ pub const LexerFile = struct {
     fn parseNumeric(self: *LexerFile) !void {
         // Simplified numeric parsing with error handling
         const start_pos = self.tokenize_state.current_pos;
-        
+
         // Basic integer parsing
         while (self.tokenize_state.char >= '0' and self.tokenize_state.char <= '9') {
             self.advance();
         }
-        
+
         // Check for decimal point
         if (self.tokenize_state.char == '.' and self.tokenize_state.next_char >= '0' and self.tokenize_state.next_char <= '9') {
             self.advance(); // skip '.'
             while (self.tokenize_state.char >= '0' and self.tokenize_state.char <= '9') {
                 self.advance();
             }
-            
+
             // Parse as float
             const num_str = self.file_content[start_pos..self.tokenize_state.current_pos];
             const parsed_float = std.fmt.parseFloat(f64, num_str) catch {
@@ -673,9 +669,10 @@ pub const LexerFile = struct {
 
         // Parse identifier characters
         while ((self.tokenize_state.char >= 'a' and self.tokenize_state.char <= 'z') or
-               (self.tokenize_state.char >= 'A' and self.tokenize_state.char <= 'Z') or
-               (self.tokenize_state.char >= '0' and self.tokenize_state.char <= '9') or
-               self.tokenize_state.char == '_') {
+            (self.tokenize_state.char >= 'A' and self.tokenize_state.char <= 'Z') or
+            (self.tokenize_state.char >= '0' and self.tokenize_state.char <= '9') or
+            self.tokenize_state.char == '_')
+        {
             self.advance();
         }
 

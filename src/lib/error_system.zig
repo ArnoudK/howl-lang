@@ -111,6 +111,7 @@ pub const ErrorCode = enum {
     return_type_mismatch,
     missing_return_value,
     binary_operation_type_error,
+    invalid_enum_value,  // Enum values must be in ascending order and compile-time constants
     compile_error,  // Triggered by @compileError builtin
     
     // Codegen errors
@@ -153,7 +154,8 @@ pub const ErrorCode = enum {
             .return_type_mismatch => "E206",
             .missing_return_value => "E207",
             .binary_operation_type_error => "E208",
-            .compile_error => "E209",
+            .invalid_enum_value => "E209",
+            .compile_error => "E210",
             .unsupported_operation => "E300",
             .target_specific_error => "E301",
             .file_not_found => "E400",
@@ -191,6 +193,7 @@ pub const ErrorCode = enum {
             .return_type_mismatch => "Return type mismatch",
             .missing_return_value => "Missing return value",
             .binary_operation_type_error => "Binary operation type error",
+            .invalid_enum_value => "Invalid enum value",
             .compile_error => "Compile-time error",
             .unsupported_operation => "Unsupported operation",
             .target_specific_error => "Target-specific error",

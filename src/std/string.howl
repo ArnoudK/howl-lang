@@ -2,7 +2,7 @@
 // Cross-platform string manipulation using compile-time code generation
 
 // String length
-extern fn length(str: string) -> i32 {
+ length :: fn(str: string)  i32 {
     match @compile.target {
         .c => @compile.insert("return strlen(str);"),
         .javascript => @compile.insert("return str.length;")
@@ -10,7 +10,7 @@ extern fn length(str: string) -> i32 {
 }
 
 // String comparison
-extern fn equals(str1: string, str2: string) -> bool {
+ equals :: fn(str1: string, str2: string)  bool {
     match @compile.target {
         .c => @compile.insert("return strcmp(str1, str2) == 0;"),
         .javascript => @compile.insert("return str1 === str2;")
@@ -18,7 +18,7 @@ extern fn equals(str1: string, str2: string) -> bool {
 }
 
 // String searching
-extern fn contains(str: string, search: string) -> bool {
+ contains :: fn(str: string, search: string)  bool {
     match @compile.target {
         .c => @compile.insert("return strstr(str, search) != NULL;"),
         .javascript => @compile.insert("return str.includes(search);")
@@ -26,30 +26,30 @@ extern fn contains(str: string, search: string) -> bool {
 }
 
 // String modification
-extern fn toUpperCase(str: string) -> string {
+ toUpperCase :: fn(str: string)  string {
     match @compile.target {
         .c => @compile.insert(
-            "size_t len = strlen(str);\n" +
-            "char *result = malloc(len + 1);\n" +
-            "for (size_t i = 0; i < len; i++) {\n" +
-            "    result[i] = toupper(str[i]);\n" +
-            "}\n" +
-            "result[len] = '\\0';\n" +
+            "size_t len = strlen(str);\n" ++
+            "char *result = malloc(len + 1);\n" ++
+            "for (size_t i = 0; i < len; i++) {\n" ++
+            "    result[i] = toupper(str[i]);\n" ++
+            "}\n" ++
+            "result[len] = '\\0';\n" ++
             "return result;"
         ),
         .javascript => @compile.insert("return str.toUpperCase();")
     }
 }
 
-extern fn toLowerCase(str: string) -> string {
+ toLowerCase :: fn(str: string)  string {
     match @compile.target {
         .c => @compile.insert(
-            "size_t len = strlen(str);\n" +
-            "char *result = malloc(len + 1);\n" +
-            "for (size_t i = 0; i < len; i++) {\n" +
-            "    result[i] = tolower(str[i]);\n" +
-            "}\n" +
-            "result[len] = '\\0';\n" +
+            "size_t len = strlen(str);\n" ++
+            "char *result = malloc(len + 1);\n" ++
+            "for (size_t i = 0; i < len; i++) {\n" ++
+            "    result[i] = tolower(str[i]);\n" ++
+            "}\n" ++
+            "result[len] = '\\0';\n" ++
             "return result;"
         ),
         .javascript => @compile.insert("return str.toLowerCase();")
@@ -57,18 +57,18 @@ extern fn toLowerCase(str: string) -> string {
 }
 
 // String conversion
-extern fn fromInt(value: i32) -> string {
+ fromInt :: fn(value: i32)  string {
     match @compile.target {
         .c => @compile.insert(
-            "char *result = malloc(32);\n" +
-            "sprintf(result, \"%d\", value);\n" +
+            "char *result = malloc(32);\n" ++
+            "sprintf(result, \"%d\", value);\n" ++
             "return result;"
         ),
         .javascript => @compile.insert("return String(value);")
     }
 }
 
-extern fn toInt(str: string) -> i32 {
+ toInt :: fn(str: string)  i32 {
     match @compile.target {
         .c => @compile.insert("return atoi(str);"),
         .javascript => @compile.insert("return parseInt(str, 10) || 0;")

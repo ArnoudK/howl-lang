@@ -67,6 +67,7 @@ pub const JSCodegen = struct {
             .var_decl => |var_decl| try self.generateVarDecl(var_decl),
             .function_decl => |func| try self.generateFunctionDecl(func),
             .struct_decl => |struct_decl| try self.generateStructDecl(struct_decl),
+            .enum_decl => |enum_decl| try self.generateEnumDecl(enum_decl),
             .if_expr => |if_expr| try self.generateIfExpr(if_expr),
             .while_expr => |while_expr| try self.generateWhileExpr(while_expr),
             .for_expr => |for_expr| try self.generateForExpr(for_expr),
@@ -81,6 +82,7 @@ pub const JSCodegen = struct {
             .compile_target_expr => try self.generateCompileTargetExpr(),
             .compile_insert_expr => |insert| try self.generateCompileInsertExpr(insert),
             .match_compile_expr => |match_expr| try self.generateMatchCompileExpr(match_expr),
+            .match_expr => |match_expr| try self.generateMatchExpr(match_expr),
             else => {
                 // Handle unsupported nodes with comments
                 try self.writeFormatted("/* Unsupported AST node: {s} */", .{@tagName(node.data)});
@@ -96,17 +98,30 @@ pub const JSCodegen = struct {
             .char => |char| try self.writeFormatted("\"{c}\"", .{char.value}),
             .bool_true => try self.write("true"),
             .bool_false => try self.write("false"),
+            .enum_member => |enum_member| {
+                // For enum members in JavaScript, we can use string literals or enum objects
+                try self.writeFormatted("\"{s}\"", .{enum_member.name});
+            },
         }
     }
 
     fn generateBinaryExpr(self: *JSCodegen, binary: anytype) anyerror!void {
-        try self.write("(");
-        try self.generateNode(binary.left);
-        try self.write(" ");
-        try self.write(self.binaryOpToJS(binary.op));
-        try self.write(" ");
-        try self.generateNode(binary.right);
-        try self.write(")");
+        // Special handling for string concatenation
+        if (binary.op == .concat) {
+            try self.write("(");
+            try self.generateNode(binary.left);
+            try self.write(" + ");
+            try self.generateNode(binary.right);
+            try self.write(")");
+        } else {
+            try self.write("(");
+            try self.generateNode(binary.left);
+            try self.write(" ");
+            try self.write(self.binaryOpToJS(binary.op));
+            try self.write(" ");
+            try self.generateNode(binary.right);
+            try self.write(")");
+        }
     }
 
     fn generateUnaryExpr(self: *JSCodegen, unary: anytype) !void {
@@ -869,43 +884,75 @@ pub const JSCodegen = struct {
         try self.writeLine("}");
     }
 
-    fn generateIfExpr(self: *JSCodegen, if_expr: anytype) !void {
-        try self.write("if (");
-        try self.generateNode(if_expr.condition);
-        try self.write(") ");
+    fn generateEnumDecl(self: *JSCodegen, enum_decl: anytype) !void {
+        // Generate JavaScript object for enum
+        try self.writeFormatted("const {s} = {{", .{enum_decl.name});
+        try self.writeLine("");
+        self.indent_level += 1;
         
-        // Handle then branch
-        const then_node = self.arena.getNodeConst(if_expr.then_branch) orelse return;
-        if (then_node.data == .block) {
-            try self.generateNode(if_expr.then_branch);
-        } else {
-            try self.write("{\n");
-            self.indent_level += 1;
+        for (enum_decl.members.items, 0..) |member, i| {
             try self.writeIndent();
-            try self.generateNode(if_expr.then_branch);
-            try self.write("\n");
-            self.indent_level -= 1;
-            try self.writeIndent();
-            try self.write("}");
-        }
-        
-        // Handle else branch
-        if (if_expr.else_branch) |else_branch| {
-            try self.write(" else ");
-            const else_node = self.arena.getNodeConst(else_branch) orelse return;
-            if (else_node.data == .block or else_node.data == .if_expr) {
-                try self.generateNode(else_branch);
+            if (member.value) |value_node| {
+                // Member has explicit value
+                try self.writeFormatted("{s}: ", .{member.name});
+                try self.generateNode(value_node);
             } else {
-                try self.write("{\n");
-                self.indent_level += 1;
-                try self.writeIndent();
-                try self.generateNode(else_branch);
-                try self.write("\n");
-                self.indent_level -= 1;
-                try self.writeIndent();
-                try self.write("}");
+                // No explicit value, use index
+                try self.writeFormatted("{s}: {d}", .{ member.name, i });
+            }
+            
+            if (i < enum_decl.members.items.len - 1) {
+                try self.writeLine(",");
+            } else {
+                try self.writeLine("");
             }
         }
+        
+        self.indent_level -= 1;
+        try self.writeLine("};");
+        
+        // Also generate reverse mapping for debugging
+        try self.writeFormatted("{s}._names = {{", .{enum_decl.name});
+        try self.writeLine("");
+        self.indent_level += 1;
+        
+        for (enum_decl.members.items, 0..) |member, i| {
+            try self.writeIndent();
+            if (member.value) |_| {
+                // For explicit values, we'd need to evaluate the expression
+                // For simplicity, we'll use the index for now
+                try self.writeFormatted("{d}: '{s}'", .{ i, member.name });
+            } else {
+                try self.writeFormatted("{d}: '{s}'", .{ i, member.name });
+            }
+            
+            if (i < enum_decl.members.items.len - 1) {
+                try self.writeLine(",");
+            } else {
+                try self.writeLine("");
+            }
+        }
+        
+        self.indent_level -= 1;
+        try self.writeLine("};");
+    }
+
+    fn generateIfExpr(self: *JSCodegen, if_expr: anytype) !void {
+        // For if expressions (ternary), generate: (condition ? then : else)
+        // This produces a more natural JavaScript ternary operator
+        try self.write("(");
+        try self.generateNode(if_expr.condition);
+        try self.write(" ? ");
+        try self.generateNode(if_expr.then_branch);
+        try self.write(" : ");
+        
+        if (if_expr.else_branch) |else_branch| {
+            try self.generateNode(else_branch);
+        } else {
+            try self.write("undefined");
+        }
+        
+        try self.write(")");
     }
 
     fn generateWhileExpr(self: *JSCodegen, while_expr: anytype) !void {
@@ -981,7 +1028,19 @@ pub const JSCodegen = struct {
             try self.write(") ");
         }
         
-        try self.generateNode(for_expr.body);
+        // Generate the body with proper block handling
+        const body_node = self.arena.getNode(for_expr.body);
+        if (body_node != null and body_node.?.data == .block) {
+            try self.generateFunctionBodyBlock(body_node.?.data.block);
+        } else {
+            try self.write("{\n");
+            self.indent_level += 1;
+            try self.writeIndent();
+            try self.generateNode(for_expr.body);
+            try self.write("\n");
+            self.indent_level -= 1;
+            try self.write("}");
+        }
     }
     
     /// Generate a range-based for loop
@@ -1025,7 +1084,19 @@ pub const JSCodegen = struct {
             try self.write("/* Range for loop with multiple captures not supported */ ");
         }
         
-        try self.generateNode(for_expr.body);
+        // Generate the body with proper block handling
+        const body_node = self.arena.getNode(for_expr.body);
+        if (body_node != null and body_node.?.data == .block) {
+            try self.generateFunctionBodyBlock(body_node.?.data.block);
+        } else {
+            try self.write("{\n");
+            self.indent_level += 1;
+            try self.writeIndent();
+            try self.generateNode(for_expr.body);
+            try self.write("\n");
+            self.indent_level -= 1;
+            try self.write("}");
+        }
     }
     
     /// Generate a range expression (when used standalone)
@@ -1103,7 +1174,7 @@ pub const JSCodegen = struct {
             
             // Check if this is a statement that needs a newline
             const needs_newline = switch (stmt_node.data) {
-                .var_decl, .function_decl, .struct_decl, .return_stmt => true,
+                .var_decl, .function_decl, .struct_decl, .enum_decl, .return_stmt => true,
                 .if_expr, .while_expr, .for_expr => true,
                 else => false,
             };
@@ -1140,7 +1211,7 @@ pub const JSCodegen = struct {
             
             // Check if this is a statement that needs a newline
             const needs_newline = switch (stmt_node.data) {
-                .var_decl, .function_decl, .struct_decl, .return_stmt => true,
+                .var_decl, .function_decl, .struct_decl, .enum_decl, .return_stmt => true,
                 .if_expr, .while_expr, .for_expr => true,
                 else => false,
             };
@@ -1260,6 +1331,7 @@ pub const JSCodegen = struct {
             .div => "/",
             .mod => "%",
             .power => "**",
+            .concat => "+", // String concatenation uses + in JS
             .bit_and => "&",
             .bit_or => "|",
             .bit_xor => "^",
@@ -1414,6 +1486,135 @@ pub const JSCodegen = struct {
         
         // If no JavaScript case found, generate empty code or comment
         try self.write("/* No JavaScript implementation found */");
+    }
+    
+    fn generateMatchExpr(self: *JSCodegen, match_expr: anytype) !void {
+        // Generate match expression as a JavaScript function
+        // that returns the appropriate value based on the pattern
+        
+        try self.write("(() => {\n");
+        self.indent_level += 1;
+        
+        // Generate a temporary variable to hold the matched expression
+        try self.writeIndent();
+        try self.write("const __match_value = ");
+        try self.generateNode(match_expr.expression);
+        try self.write(";\n");
+        
+        // Generate each match arm as an if-else chain
+        var first_arm = true;
+        for (match_expr.arms.items) |arm| {
+            try self.writeIndent();
+            
+            if (first_arm) {
+                try self.write("if (");
+                first_arm = false;
+            } else {
+                try self.write("} else if (");
+            }
+            
+            // Generate the pattern matching condition
+            try self.generateMatchPattern(arm.pattern);
+            try self.write(") {\n");
+            
+            self.indent_level += 1;
+            
+            // Check if the body is a block - if so, handle it differently
+            const arm_body_node = self.arena.getNodeConst(arm.body);
+            if (arm_body_node) |body_node| {
+                if (body_node.data == .block) {
+                    // For blocks, generate a special match block
+                    try self.generateMatchBlock(body_node.data.block);
+                } else {
+                    // For single expressions, use return statement
+                    try self.writeIndent();
+                    try self.write("return ");
+                    try self.generateNode(arm.body);
+                    try self.write(";\n");
+                }
+            } else {
+                // Fallback for null body
+                try self.writeIndent();
+                try self.write("return ");
+                try self.generateNode(arm.body);
+                try self.write(";\n");
+            }
+            
+            self.indent_level -= 1;
+        }
+        
+        // Close the if-else chain and the function
+        try self.writeIndent();
+        try self.write("}\n");
+        
+        // Add a default case if no wildcard pattern was found
+        // (This should be caught by semantic analysis, but just in case)
+        try self.writeIndent();
+        try self.write("throw new Error('Match expression did not handle all cases');\n");
+        
+        self.indent_level -= 1;
+        try self.writeIndent();
+        try self.write("})()");
+    }
+    
+    fn generateMatchPattern(self: *JSCodegen, pattern: ast.MatchPattern) !void {
+        switch (pattern) {
+            .wildcard => {
+                // Wildcard always matches
+                try self.write("true");
+            },
+            .literal => |literal| {
+                try self.write("__match_value === ");
+                try self.generateLiteral(literal);
+            },
+            .identifier => |_| {
+                // Variable binding - always matches, but in JS we just check true
+                // The actual binding would need more complex handling
+                try self.write("true");
+            },
+            .enum_member => |member_name| {
+                // For enum member patterns, check against the string representation
+                try self.writeFormatted("__match_value === \"{s}\"", .{member_name});
+            },
+            .range => {
+                // TODO: Implement range pattern matching
+                try self.write("/* Range pattern not implemented yet */");
+            },
+            .tuple => {
+                // TODO: Implement tuple pattern matching  
+                try self.write("/* Tuple pattern not implemented yet */");
+            },
+            .array => {
+                // TODO: Implement array pattern matching
+                try self.write("/* Array pattern not implemented yet */");
+            },
+            .guard => {
+                // TODO: Implement guard pattern matching
+                try self.write("/* Guard pattern not implemented yet */");
+            },
+        }
+    }
+    
+    fn generateMatchBlock(self: *JSCodegen, block: anytype) !void {
+        // Generate a block for use in match expressions
+        // The last statement should be a return statement
+        
+        for (block.statements.items, 0..) |stmt_id, index| {
+            const is_last = (index == block.statements.items.len - 1);
+            
+            try self.writeIndent();
+            
+            if (is_last) {
+                // Last statement should be a return
+                try self.write("return ");
+                try self.generateNode(stmt_id);
+                try self.write(";\n");
+            } else {
+                // Regular statements
+                try self.generateNode(stmt_id);
+                try self.write(";\n");
+            }
+        }
     }
     
     fn evaluateComptimeExpression(self: *JSCodegen, expr_id: ast.NodeId) anyerror!void {

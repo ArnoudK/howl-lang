@@ -96,6 +96,7 @@ pub const Token = union(enum) {
 
     // Operators and Punctuation
     Plus: BaseToken, // +
+    PlusPlus: BaseToken, // ++ (string concatenation)
     PlusAssign: BaseToken, // += (add and assign)
     PlusPercent: BaseToken, // +%  (add with overflow)
     Minus: BaseToken, // -
@@ -201,6 +202,7 @@ pub const Token = union(enum) {
             .ExclamationEquals => start_pos + 2, // !=
             .LessThanEquals => start_pos + 2, // <=
             .GreaterThanEquals => start_pos + 2, // >=
+            .PlusPlus => start_pos + 2, // ++
             .Arrow => start_pos + 2, // ->
             .DoubleArrow => start_pos + 2, // =>
             .DotDot => start_pos + 2, // ..

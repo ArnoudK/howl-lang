@@ -8,7 +8,7 @@ pi :: 3.14159
 
 // Function declarations
 pub greet :: fn(name: string) string {
-    return "Hello, " + name
+    return "Hello, " ++ name
 }
 
 pub add :: fn(a: i32, b: i32) i32 {

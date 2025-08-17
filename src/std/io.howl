@@ -2,46 +2,46 @@
 // Cross-platform I/O operations using compile-time code generation
 
 // Basic output functions
-extern fn print(text: string) -> void {
+ print :: fn (text: string)  void {
     match @compile.target {
-        .c => @compile.insert("printf(\"%s\", text);"),
-        .javascript => @compile.insert("process.stdout.write(text);")
+    |    .c => @compile.insert("printf(\"%s\", text);"),
+    |   .javascript => @compile.insert("process.stdout.write(text);")
     }
 }
 
-extern fn println(text: string) -> void {
+ println :: fn (text: string)  void {
     match @compile.target {
-        .c => @compile.insert("printf(\"%s\\n\", text);"),
-        .javascript => @compile.insert("console.log(text);")
+    |    .c => @compile.insert("printf(\"%s\\n\", text);"),
+    |   .javascript => @compile.insert("console.log(text);")
     }
 }
 
 // Formatted output using smart printf conversion
-extern fn printf(format: string, value: i32) -> void {
+ printf :: fn (format: string, value: i32)  void {
     match @compile.target {
-        .c => @compile.insert("printf(format, value);"),
-        .javascript => @compile.insert("console.log(format.replace('{}', value));")
+    |    .c => @compile.insert("printf(format, value);"),
+    |    .javascript => @compile.insert("console.log(format.replace('{}', value));")
     }
 }
 
-extern fn printfFloat(format: string, value: f32) -> void {
+ printfFloat :: fn (format: string, value: f32)  void {
     match @compile.target {
-        .c => @compile.insert("printf(format, value);"),
-        .javascript => @compile.insert("console.log(format.replace('{}', value));")
+    |   .c => @compile.insert("printf(format, value);"),
+    |    .javascript => @compile.insert("console.log(format.replace('{}', value));")
     }
 }
 
 // Error output
-extern fn error(message: string) -> void {
+ error :: fn (message: string)  void {
     match @compile.target {
-        .c => @compile.insert("fprintf(stderr, \"Error: %s\\n\", message);"),
-        .javascript => @compile.insert("console.error('Error:', message);")
+    |    .c => @compile.insert("fprintf(stderr, \"Error: %s\\n\", message);"),
+    |    .javascript => @compile.insert("console.error('Error:', message);")
     }
 }
 
-extern fn warning(message: string) -> void {
+ warning :: fn (message: string)  void {
     match @compile.target {
-        .c => @compile.insert("fprintf(stderr, \"Warning: %s\\n\", message);"),
-        .javascript => @compile.insert("console.warn('Warning:', message);")
+    |    .c => @compile.insert("fprintf(stderr, \"Warning: %s\\n\", message);"),
+    |    .javascript => @compile.insert("console.warn('Warning:', message);")
     }
 }

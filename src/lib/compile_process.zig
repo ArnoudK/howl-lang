@@ -7,7 +7,6 @@ const ParserModule = @import("parser.zig");
 const Token = @import("token.zig").Token;
 const SemanticAnalyzer = @import("semantic_analyzer.zig").SemanticAnalyzer;
 const JSCodegen = @import("codegen_js.zig");
-const NativeCodegen = @import("codegen_native.zig");
 const CCodegen = @import("codegen_c.zig");
 
 // ============================================================================
@@ -137,7 +136,8 @@ pub const Compiler = struct {
         };
         const tokens = lexer_file.tokens.items;
 
-        if (result.errors.hasErrors() and self.options.stop_on_first_error) {
+        // Check for errors after lexing - stop compilation if any errors exist
+        if (result.errors.hasErrors()) {
             return result;
         }
 
@@ -147,7 +147,8 @@ pub const Compiler = struct {
         result.phase_completed = .parsing;
         const ast_root = try self.parseTokens(tokens, &result.errors);
 
-        if (result.errors.hasErrors() and self.options.stop_on_first_error) {
+        // Check for errors after parsing - stop compilation if any errors exist
+        if (result.errors.hasErrors()) {
             return result;
         }
 
@@ -160,7 +161,8 @@ pub const Compiler = struct {
             semantic_analyzer = try self.performSemanticAnalysis(root, &result.errors);
         }
 
-        if (result.errors.hasErrors() and self.options.stop_on_first_error) {
+        // Check for errors after semantic analysis - stop compilation if any errors exist
+        if (result.errors.hasErrors()) {
             if (semantic_analyzer) |*analyzer| {
                 analyzer.deinit();
             }
@@ -189,17 +191,7 @@ pub const Compiler = struct {
         }
 
         // Set final result
-        // For native targets, success is determined by whether the binary was created
-        if (self.options.target == .c or self.options.target == .javascript) {
-            // Check if the binary was successfully created
-            std.fs.cwd().access("howl_output", .{}) catch {
-                result.success = false;
-                return result;
-            };
-            result.success = true;
-        } else {
-            result.success = !result.errors.hasErrors();
-        }
+        result.success = !result.errors.hasErrors();
         result.warnings = result.errors.warningCount();
 
         return result;
@@ -302,25 +294,6 @@ pub const Compiler = struct {
 
     //     return zir;
     // }
-
-    fn generateNativeExecutable(self: *Compiler, root_node: ast.NodeId, analyzer: *const SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) ![]const u8 {
-        _ = errors; // TODO: Use this for codegen error reporting
-
-        var native_codegen = NativeCodegen.NativeCodegen.init(self.allocator, &self.arena, analyzer);
-        defer native_codegen.deinit();
-
-        const result = native_codegen.generate(root_node) catch |err| {
-            switch (err) {
-                error.OutOfMemory => return err,
-                else => {
-                    // TODO: Report codegen errors properly
-                    return try self.allocator.dupe(u8, "/* Native executable generation failed */");
-                },
-            }
-        };
-
-        return result;
-    }
 
     fn generateCExecutable(self: *Compiler, root_node: ast.NodeId, analyzer: *const SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) ![]const u8 {
         _ = errors; // TODO: Use this for codegen error reporting

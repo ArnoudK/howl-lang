@@ -1,0 +1,7 @@
+// Test various error cases for better error reporting
+pub main :: fn() void {
+    a := 1 +    // Missing right operand
+    b := [1,, 3] // Extra comma
+    c := {  // Missing right brace
+    return
+}

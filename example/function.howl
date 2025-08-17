@@ -1,9 +1,7 @@
+myFunc :: fn() void {
 
-myFunc :: fn () void {
-    return
 }
+myFunc2 :: fn(i: isize) void {
+_ = i
 
-pub myFunc2 :: fn (i: isize) void {
-    _ = i
-    return
 }

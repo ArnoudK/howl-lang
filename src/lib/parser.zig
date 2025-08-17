@@ -477,11 +477,12 @@ pub const Parser = struct {
                 _ = self.advance();
             }
             
-            if (self.match(&[_]std.meta.Tag(Token){.Plus, .Minus})) {
+            if (self.match(&[_]std.meta.Tag(Token){.Plus, .Minus, .PlusPlus})) {
                 const source_loc = self.getCurrentSourceLoc();
                 const op: ast.BinaryOp = switch (self.previous()) {
                     .Plus => .add,
                     .Minus => .sub,
+                    .PlusPlus => .concat,
                     else => unreachable,
                 };
                 
@@ -748,7 +749,7 @@ pub const Parser = struct {
             return self.parseMatchExpression();
         }
 
-        // Handle anonymous struct literals .{...}
+        // Handle anonymous struct literals .{...} and enum member access .identifier
         if (self.match(&[_]std.meta.Tag(Token){.Dot})) {
             if (self.check(.LeftBrace)) {
                 _ = self.advance(); // consume {
@@ -788,9 +789,17 @@ pub const Parser = struct {
                 return self.arena.createNode(ast.AstNode.init(.{
                     .call_expr = .{ .callee = struct_name, .args = args }
                 }, source_loc));
+            } else if (self.check(.Identifier)) {
+                // Enum member access: .identifier
+                const member_token = self.advance();
+                const member_name = if (member_token == .Identifier) member_token.Identifier.value else "error";
+                
+                return ast.createLiteralExpr(self.arena, source_loc, ast.Literal{ 
+                    .enum_member = .{ .name = member_name } 
+                });
             } else {
-                // Just a dot, not followed by {, might be an error
-                try self.reportError(.unexpected_token, "Unexpected '.' not followed by '{'", source_loc);
+                // Just a dot, not followed by { or identifier, might be an error
+                try self.reportError(.unexpected_token, "Unexpected '.' not followed by '{' or identifier", source_loc);
                 return ast.createErrorNode(self.arena, source_loc, .unexpected_token, "Unexpected '.'");
             }
         }
@@ -937,18 +946,30 @@ pub const Parser = struct {
             _ = self.advance();
         }
         
-        // If we're at the end after skipping, create a dummy literal
+        // If we're at the end after skipping, don't create a dummy node - just return an error
         if (self.isAtEnd()) {
-            self.debugPrint("At end of tokens, returning dummy literal", .{});
-            return ast.createLiteralExpr(self.arena, self.getCurrentSourceLoc(), ast.Literal{ .integer = .{ .value = 0 } });
+            self.debugPrint("At end of tokens after skipping whitespace", .{});
+            return error.UnexpectedEndOfFile;
         }
         
-        // If we've skipped whitespace and now see a closing brace, this might be an empty block
-        // Return a no-op statement to avoid trying to parse the brace as an expression
+        // If we've skipped whitespace and now see a closing brace, don't create a dummy node 
         if (self.check(.RightBrace)) {
-            return ast.createLiteralExpr(self.arena, self.getCurrentSourceLoc(), ast.Literal{ .integer = .{ .value = 0 } });
+            self.debugPrint("Found unexpected closing brace after skipping whitespace", .{});
+            return error.UnexpectedToken;
         }
-
+        
+        // If we're at the end after skipping, don't create a dummy node - just return an error
+        if (self.isAtEnd()) {
+            self.debugPrint("At end of tokens after skipping whitespace", .{});
+            return error.UnexpectedEndOfFile;
+        }
+        
+        // If we've skipped whitespace and now see a closing brace, don't create a dummy node 
+        if (self.check(.RightBrace)) {
+            std.debug.print("parseStatement: Found unexpected closing brace after skipping whitespace\n", .{});
+            return error.UnexpectedToken;
+        }
+        
         // Handle return statements
         if (self.check(.Return)) {
             self.debugPrint("Found return statement, parsing return", .{});
@@ -1133,6 +1154,9 @@ pub const Parser = struct {
                         // Ensure newline after function declaration
                         try self.requireNewlineAfterStatement();
                         return func_result;
+                    } else if (self.check(.Enum)) {
+                        // Enum declaration: [pub] name :: enum { ... }
+                        return try self.parseEnumDeclaration(name, source_loc);
                     } else {
                         // Constant definition: name :: expression
                         const value = try self.parseExpression();
@@ -1625,6 +1649,107 @@ pub const Parser = struct {
         }, source_loc));
     }
 
+    fn parseEnumDeclaration(self: *Parser, name: []const u8, source_loc: ast.SourceLoc) !ast.NodeId {
+        // Consume the 'enum' token
+        _ = try self.consume(.Enum, .unexpected_token, "Expected 'enum'");
+        
+        // Require space after 'enum'
+        if (!self.isAtEnd() and !self.check(.Whitespace) and !self.check(.Newline)) {
+            try self.reportError(.missing_space_after_keyword, "Missing space after 'enum'", self.getCurrentSourceLoc());
+        }
+        
+        // Skip whitespace after enum
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
+        // Expect opening brace
+        _ = try self.consume(.LeftBrace, .unexpected_token, "Expected '{' after 'enum'");
+        
+        // Skip whitespace after opening brace
+        while (self.check(.Whitespace) or self.check(.Newline)) {
+            _ = self.advance();
+        }
+        
+        // Parse enum members
+        var members = std.ArrayList(ast.EnumMember).init(self.allocator);
+        
+        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            // Skip whitespace and newlines
+            while (self.check(.Whitespace) or self.check(.Newline)) {
+                _ = self.advance();
+            }
+            
+            if (self.check(.RightBrace)) break;
+            
+            // Parse enum member name
+            const member_token = try self.consume(.Identifier, .expected_identifier, "Expected enum member name");
+            const member_name = if (member_token == .Identifier) member_token.Identifier.value else "error";
+            const member_loc = self.getCurrentSourceLoc();
+            
+            // Skip whitespace after member name
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Check for explicit value assignment (= value)
+            var member_value: ?ast.NodeId = null;
+            if (self.check(.Equals)) {
+                _ = self.advance(); // consume =
+                
+                // Skip whitespace after =
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+                
+                member_value = try self.parseExpression();
+                
+                // Skip whitespace after value
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+            }
+            
+            try members.append(ast.EnumMember{
+                .name = member_name,
+                .value = member_value,
+                .source_loc = member_loc,
+            });
+            
+            // Skip whitespace after member
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Optional comma
+            if (self.check(.Comma)) {
+                _ = self.advance();
+                // Skip whitespace after comma
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+            }
+            
+            // Skip trailing newlines
+            while (self.check(.Newline)) {
+                _ = self.advance();
+            }
+        }
+        
+        // Expect closing brace
+        _ = try self.consume(.RightBrace, .unexpected_token, "Expected '}' after enum members");
+        
+        // Ensure newline after enum declaration
+        try self.requireNewlineAfterStatement();
+        
+        return self.arena.createNode(ast.AstNode.init(.{
+            .enum_decl = .{
+                .name = name,
+                .members = members,
+            }
+        }, source_loc));
+    }
+
     fn parseBlockStatement(self: *Parser) anyerror!ast.NodeId {
         const source_loc = self.getCurrentSourceLoc();
         var statements = std.ArrayList(ast.NodeId).init(self.allocator);
@@ -1645,7 +1770,11 @@ pub const Parser = struct {
                 break;
             }
             
-            const stmt = self.parseStatement() catch {
+            const stmt = self.parseStatement() catch |err| {
+                if (err == error.UnexpectedToken and self.check(.RightBrace)) {
+                    // This is expected - we've reached the end of the block
+                    break;
+                }
                 // Error recovery for block statements
                 try self.reportError(.unexpected_token, "Error parsing statement in block", self.getCurrentSourceLoc());
                 self.synchronize();
@@ -1694,6 +1823,11 @@ pub const Parser = struct {
             
             const stmt = self.parseStatement() catch |err| blk: {
                 self.debugPrint("parseStatement failed with error: {}, advancing", .{err});
+                // If parsing failed due to end of file or unexpected token, don't create dummy nodes
+                if (err == error.UnexpectedEndOfFile or err == error.UnexpectedToken) {
+                    self.debugPrint("Skipping dummy node creation for error: {}", .{err});
+                    continue; // Skip to next iteration without appending anything
+                }
                 // If statement parsing fails, try to recover by advancing
                 if (self.current == old_current and !self.isAtEnd()) {
                     try self.reportError(.unexpected_token, "Error parsing statement, skipping token", self.getCurrentSourceLoc());
@@ -1702,6 +1836,7 @@ pub const Parser = struct {
                 // Create an error node to continue parsing
                 break :blk ast.createErrorNode(self.arena, self.getCurrentSourceLoc(), .unexpected_token, "Failed to parse statement") catch unreachable;
             };
+            self.debugPrint("Parsed statement NodeId: {}, appending to statements", .{stmt});
             try statements.append(stmt);
             
             // Ensure we're making progress
@@ -1731,14 +1866,35 @@ pub const Parser = struct {
     fn parseIfExpression(self: *Parser) !ast.NodeId {
         const source_loc = self.getCurrentSourceLoc();
         
+        // Skip any whitespace after 'if'
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
         // Parse: if (condition) then_expr else else_expr
         _ = try self.consume(.LeftParen, .missing_closing_paren, "Expected '(' after 'if'");
         const condition = try self.parseExpression();
         _ = try self.consume(.RightParen, .missing_closing_paren, "Expected ')' after if condition");
         
+        // Skip whitespace before then_branch
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
         const then_branch = try self.parseExpression();
         
+        // Skip whitespace before 'else'
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
         _ = try self.consume(.Else, .unexpected_token, "Expected 'else' in if expression");
+        
+        // Skip whitespace before else_branch
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
         const else_branch = try self.parseExpression();
         
         return self.arena.createNode(ast.AstNode.init(.{
@@ -1770,6 +1926,11 @@ pub const Parser = struct {
             
             const pattern = try self.parseMatchPattern();
             
+            // Skip whitespace after pattern
+            while (self.check(.Whitespace) or self.check(.Newline)) {
+                _ = self.advance();
+            }
+            
             // Optional guard condition
             var guard: ?ast.NodeId = null;
             if (self.match(&[_]std.meta.Tag(Token){.If})) {
@@ -1777,7 +1938,17 @@ pub const Parser = struct {
             }
             
             _ = try self.consume(.DoubleArrow, .unexpected_token, "Expected '=>' after match pattern");
-            const body = try self.parseExpression();
+            
+            // Skip whitespace after '=>'
+            while (self.check(.Whitespace) or self.check(.Newline)) {
+                _ = self.advance();
+            }
+            
+            const body = if (self.check(.LeftBrace)) blk: {
+                _ = try self.consume(.LeftBrace, .missing_closing_brace, "Expected '{' at start of block");
+                break :blk try self.parseBlockStatement();
+            } else 
+                try self.parseExpression();
             
             try arms.append(ast.MatchArm{
                 .pattern = pattern,
@@ -1801,15 +1972,36 @@ pub const Parser = struct {
     }
 
     fn parseMatchPattern(self: *Parser) !ast.MatchPattern {
+        // Skip any whitespace
+        while (self.check(.Whitespace) or self.check(.Newline)) {
+            _ = self.advance();
+        }
+        
         // Handle wildcard pattern
         if (self.match(&[_]std.meta.Tag(Token){.Underscore})) {
             return ast.MatchPattern.wildcard;
         }
         
+        // Handle enum member pattern (.identifier)
+        if (self.match(&[_]std.meta.Tag(Token){.Dot})) {
+            if (self.match(&[_]std.meta.Tag(Token){.Identifier})) {
+                const token = self.previous();
+                if (token == .Identifier) {
+                    return ast.MatchPattern{ .enum_member = token.Identifier.value };
+                }
+            }
+            try self.reportError(.unexpected_token, "Expected identifier after '.' in match pattern", self.getCurrentSourceLoc());
+            return ast.MatchPattern.wildcard; // fallback
+        }
+        
         // Handle literal patterns  
-        if (self.check(.True) or self.check(.False) or self.check(.IntegerLiteral) or 
-           self.check(.FloatLiteral) or self.check(.StringLiteral) or self.check(.CharLiteral)) {
-            const token = self.advance();
+        if (self.match(&[_]std.meta.Tag(Token){.True}) or 
+           self.match(&[_]std.meta.Tag(Token){.False}) or 
+           self.match(&[_]std.meta.Tag(Token){.IntegerLiteral}) or 
+           self.match(&[_]std.meta.Tag(Token){.FloatLiteral}) or 
+           self.match(&[_]std.meta.Tag(Token){.StringLiteral}) or 
+           self.match(&[_]std.meta.Tag(Token){.CharLiteral})) {
+            const token = self.previous();
             if (ast.Literal.fromToken(token)) |literal| {
                 return ast.MatchPattern{ .literal = literal };
             }

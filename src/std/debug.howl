@@ -2,74 +2,74 @@
 
 // Enhanced debug print function - supports format specifiers and anonymous struct arguments
 // Usage: std.debug.print("{d:.2} {s:!>4}", .{3.141, "hi!"})
-extern fn print(format: string, args: struct{}) -> void {
+ print :: fn (format: string, args: struct{})  void {
     match @compile.target {
-        .c => @compile.insert("/* Enhanced C debug print */"),
-        .javascript => @compile.insert("/* Enhanced JS debug print */")
+    |    .c => @compile.insert("/* Enhanced C debug print */"),
+    |    .javascript => @compile.insert("/* Enhanced JS debug print */")
     }
 }
 
 // Legacy single-value print functions for backward compatibility
-extern fn printInt(format: string, value: i32) -> void {
+ printInt :: fn (format: string, value: i32)  void {
     match @compile.target {
-        .c => @compile.insert("printf(format, value);"),
-        .javascript => @compile.insert("console.log(format.replace('{}', value));")
+    |    .c => @compile.insert("printf(format, value);"),
+    |    .javascript => @compile.insert("console.log(format.replace('{}', value));")
     }
 }
 
 // Float version of debug print (legacy)
-extern fn printFloat(format: string, value: f32) -> void {
+ printFloat :: fn (format: string, value: f32)  void {
     match @compile.target {
-        .c => @compile.insert("printf(format, value);"),
-        .javascript => @compile.insert("console.log(format.replace('{}', value));")
+    |    .c => @compile.insert("printf(format, value);"),
+    |    .javascript => @compile.insert("console.log(format.replace('{}', value));")
     }
 }
 
 // String version of debug print (legacy) 
-extern fn printString(format: string, value: string) -> void {
+ printString :: fn (format: string, value: string)  void {
     match @compile.target {
-        .c => @compile.insert("printf(format, value);"),
-        .javascript => @compile.insert("console.log(format.replace('{}', value));")
+    |    .c => @compile.insert("printf(format, value);"),
+    |    .javascript => @compile.insert("console.log(format.replace('{}', value));")
     }
 }
 
 // Simple message print
-extern fn println(message: string) -> void {
+ println :: fn (message: string)  void {
     match @compile.target {
-        .c => @compile.insert("printf(\"%s\\n\", message);"),
-        .javascript => @compile.insert("console.log(message);")
+    |    .c => @compile.insert("printf(\"%s\\n\", message);"),
+    |    .javascript => @compile.insert("console.log(message);")
     }
 }
 
 // Assert function - panic if condition is false
-extern fn assert(condition: bool, message: string) -> void {
+ assert :: fn (condition: bool, message: string)  void {
     match @compile.target {
-        .c => @compile.insert(
-            "if (!condition) {\n" +
-            "    fprintf(stderr, \"Assertion failed: %s\\n\", message);\n" +
-            "    exit(1);\n" +
+    |    .c => @compile.insert(
+            "if (!condition) {\n" ++
+            "    fprintf(stderr, \"Assertion failed: %s\\n\", message);\n" ++
+            "    exit(1);\n" ++
             "}"
         ),
-        .javascript => @compile.insert(
-            "if (!condition) {\n" +
-            "    throw new Error(`Assertion failed: ${message}`);\n" +
+    |    .javascript => @compile.insert(
+            "if (!condition) {\n" ++
+            "    throw new Error(`Assertion failed: ${message}`);\n" ++
             "}"
         )
     }
 }
 
 // Print debug information about an integer value
-extern fn dump(value: i32) -> void {
+ dump :: fn (value: i32)  void {
     match @compile.target {
-        .c => @compile.insert("printf(\"Debug dump: %d\\n\", value);"),
-        .javascript => @compile.insert("console.log('Debug dump:', value);")
+    |   .c => @compile.insert("printf(\"Debug dump: %d\\n\", value);"),
+    |   .javascript => @compile.insert("console.log('Debug dump:', value);")
     }
 }
 
 // Debugging breakpoint
-extern fn breakpoint() -> void {
+ breakpoint :: fn ()  void {
     match @compile.target {
-        .c => @compile.insert("__builtin_debugtrap();"),
-        .javascript => @compile.insert("debugger;")
+    |   .c => @compile.insert("__builtin_debugtrap();"),
+    |    .javascript => @compile.insert("debugger;")
     }
 }

@@ -15,11 +15,18 @@ const CollectedType = struct {
     };
 };
 
+const Writer = std.ArrayList(u8).Writer;
+
 const CollectedStruct = struct {
     name: []const u8,
     fields: []const ast.Field,
     methods: std.ArrayList([]const u8), // Method names that belong to this struct
     is_comptime: bool,
+};
+
+const CollectedEnum = struct {
+    name: []const u8,
+    members: []const ast.EnumMember,
 };
 
 const CollectedFunction = struct {
@@ -33,6 +40,7 @@ const TypeCollection = struct {
     builtin_types: std.ArrayList([]const u8),
     custom_types: std.ArrayList(CollectedType),
     struct_types: std.ArrayList(CollectedStruct),
+    enum_types: std.ArrayList(CollectedEnum),
     allocator: std.mem.Allocator,
 
     fn init(allocator: std.mem.Allocator) TypeCollection {
@@ -41,6 +49,7 @@ const TypeCollection = struct {
             .builtin_types = std.ArrayList([]const u8).init(allocator),
             .custom_types = std.ArrayList(CollectedType).init(allocator),
             .struct_types = std.ArrayList(CollectedStruct).init(allocator),
+            .enum_types = std.ArrayList(CollectedEnum).init(allocator),
             .allocator = allocator,
         };
     }
@@ -50,22 +59,28 @@ const TypeCollection = struct {
         for (self.list_types.items) |type_name| {
             self.allocator.free(type_name);
         }
-        
-        // Free all allocated strings in builtin_types  
+
+        // Free all allocated strings in builtin_types
         for (self.builtin_types.items) |type_name| {
             self.allocator.free(type_name);
         }
-        
+
         // Free all allocated strings in struct_types
         for (self.struct_types.items) |struct_type| {
             self.allocator.free(struct_type.name);
             struct_type.methods.deinit();
         }
-        
+
+        // Free all allocated strings in enum_types
+        for (self.enum_types.items) |enum_type| {
+            self.allocator.free(enum_type.name);
+        }
+
         self.list_types.deinit();
         self.builtin_types.deinit();
         self.custom_types.deinit();
         self.struct_types.deinit();
+        self.enum_types.deinit();
     }
 
     fn hasListType(self: *const TypeCollection, type_name: []const u8) bool {
@@ -112,6 +127,25 @@ const TypeCollection = struct {
                 .is_comptime = struct_decl.is_comptime,
             };
             try self.struct_types.append(collected_struct);
+        }
+    }
+
+    fn hasEnumType(self: *const TypeCollection, enum_name: []const u8) bool {
+        for (self.enum_types.items) |enum_type| {
+            if (std.mem.eql(u8, enum_type.name, enum_name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn addEnumType(self: *TypeCollection, allocator: std.mem.Allocator, enum_decl: anytype) !void {
+        if (!self.hasEnumType(enum_decl.name)) {
+            const collected_enum = CollectedEnum{
+                .name = try allocator.dupe(u8, enum_decl.name),
+                .members = enum_decl.members.items,
+            };
+            try self.enum_types.append(collected_enum);
         }
     }
 };
@@ -167,19 +201,25 @@ pub const CCodegen = struct {
     }
 
     pub fn generate(self: *CCodegen, root_node_id: ast.NodeId) ![]u8 {
+        // Create output directory
+        std.fs.cwd().makeDir("howl-out") catch |err| switch (err) {
+            error.PathAlreadyExists => {}, // Directory already exists, continue
+            else => return err, // Other errors should be propagated
+        };
+
         // Generate C source code
         const c_source = try self.generateCSource(root_node_id);
-        defer self.allocator.free(c_source);
-
-        // Write the generated C source to a file
-        const temp_file_path = "howl_program.c";
+        
+        // Write the generated C source to a file in howl-out directory
+        const temp_file_path = "howl-out/howl_program.c";
         try std.fs.cwd().writeFile(.{ .sub_path = temp_file_path, .data = c_source });
 
         // Compile using filc compiler
-        const output_name = "howl_output";
+        const output_name = "howl-out/howl_output";
         try self.compileCFile(temp_file_path, output_name);
 
-        return try self.allocator.dupe(u8, "/* C executable compiled successfully */");
+        // Return the generated C source code so it can be displayed
+        return c_source;
     }
 
     fn generateCSource(self: *CCodegen, root_node_id: ast.NodeId) ![]u8 {
@@ -202,6 +242,7 @@ pub const CCodegen = struct {
         try writer.writeAll("// Function Declarations\n");
         try writer.writeAll("// ============================================================================\n\n");
         try self.generateCollectedFunctionDeclarations(writer);
+        try writer.writeAll("char* howl_string_concat(const char* left, const char* right);\n");
         try writer.writeAll("int main(void);\n\n");
 
         // Generate function implementations
@@ -209,6 +250,27 @@ pub const CCodegen = struct {
         try writer.writeAll("// Function Implementations\n");
         try writer.writeAll("// ============================================================================\n\n");
         try self.generateCollectedFunctionImplementations(writer, root_node_id);
+
+        // Generate string concatenation function implementation
+        try writer.writeAll("char* howl_string_concat(const char* left, const char* right) {\n");
+        try writer.writeAll("    if (left == NULL) left = \"\";\n");
+        try writer.writeAll("    if (right == NULL) right = \"\";\n");
+        try writer.writeAll("    \n");
+        try writer.writeAll("    size_t left_len = strlen(left);\n");
+        try writer.writeAll("    size_t right_len = strlen(right);\n");
+        try writer.writeAll("    size_t total_len = left_len + right_len + 1;\n");
+        try writer.writeAll("    \n");
+        try writer.writeAll("    char* result = malloc(total_len);\n");
+        try writer.writeAll("    if (result == NULL) {\n");
+        try writer.writeAll("        fprintf(stderr, \"Memory allocation failed for string concatenation\\n\");\n");
+        try writer.writeAll("        exit(1);\n");
+        try writer.writeAll("    }\n");
+        try writer.writeAll("    \n");
+        try writer.writeAll("    strcpy(result, left);\n");
+        try writer.writeAll("    strcat(result, right);\n");
+        try writer.writeAll("    \n");
+        try writer.writeAll("    return result;\n");
+        try writer.writeAll("}\n\n");
 
         // Generate main function implementation
         try self.generateMainBody(writer, root_node_id, 0);
@@ -246,6 +308,10 @@ pub const CCodegen = struct {
                 // Collect struct definition
                 try self.type_collection.addStructType(self.allocator, struct_decl);
                 // Note: struct methods are collected when we encounter function_decl with namespace
+            },
+            .enum_decl => |enum_decl| {
+                // Collect enum definition
+                try self.type_collection.addEnumType(self.allocator, enum_decl);
             },
             .var_decl => |var_decl| {
                 // Collect types used in variable declarations
@@ -387,7 +453,7 @@ pub const CCodegen = struct {
         var decl_buf = std.ArrayList(u8).init(self.allocator);
         defer decl_buf.deinit();
         const decl_writer = decl_buf.writer();
-        
+
         // Generate C function signature for extern function
         try self.generateCExternFunctionDeclaration(decl_writer, extern_fn_decl);
 
@@ -419,7 +485,7 @@ pub const CCodegen = struct {
     }
 
     // Basic header generation - just includes and basic types
-    fn generateBasicCHeader(self: *CCodegen, writer: anytype) !void {
+    fn generateBasicCHeader(self: *CCodegen, writer: Writer) !void {
         _ = self;
         try writer.writeAll("// Generated by Howl Language Compiler\n\n");
         try writer.writeAll("#include <stdio.h>\n");
@@ -446,8 +512,13 @@ pub const CCodegen = struct {
     }
 
     // Generate all collected types
-    fn generateCollectedTypes(self: *CCodegen, writer: anytype) !void {
-        // Generate struct types first (they might be dependencies)
+    fn generateCollectedTypes(self: *CCodegen, writer: Writer) !void {
+        // Generate enum types first (they might be dependencies)
+        for (self.type_collection.enum_types.items) |enum_type| {
+            try self.generateEnumImplementation(writer, enum_type);
+        }
+
+        // Generate struct types (they might be dependencies)
         for (self.type_collection.struct_types.items) |struct_type| {
             try self.generateStructImplementation(writer, struct_type);
         }
@@ -468,7 +539,7 @@ pub const CCodegen = struct {
         }
     }
 
-    fn generateListTypeImplementation(self: *CCodegen, writer: anytype, howl_type: []const u8) !void {
+    fn generateListTypeImplementation(self: *CCodegen, writer: Writer, howl_type: []const u8) !void {
         _ = self;
         const c_type = if (std.mem.eql(u8, howl_type, "i32")) "int32_t" else if (std.mem.eql(u8, howl_type, "f32")) "howl_f32_t" else "void*"; // fallback
 
@@ -528,7 +599,37 @@ pub const CCodegen = struct {
         try writer.writeAll("}\n\n");
     }
 
-    fn generateStructImplementation(self: *CCodegen, writer: anytype, struct_info: CollectedStruct) !void {
+    fn generateEnumImplementation(self: *CCodegen, writer: Writer, enum_info: CollectedEnum) !void {
+        _ = self; // suppress unused parameter warning
+
+        try writer.writeAll("// ============================================================================\n");
+        try writer.print("// Enum {s} Implementation\n", .{enum_info.name});
+        try writer.writeAll("// ============================================================================\n\n");
+
+        // Generate C enum definition
+        try writer.print("typedef enum {{\n", .{});
+
+        for (enum_info.members, 0..) |member, i| {
+            if (member.value) |_| {
+                // Member has explicit value - we'll need to evaluate it
+                // For now, just use the index as a simple fallback
+                try writer.print("    {s}_{s} = {d}", .{ enum_info.name, member.name, i });
+            } else {
+                // No explicit value, use automatic numbering
+                try writer.print("    {s}_{s}", .{ enum_info.name, member.name });
+            }
+
+            if (i < enum_info.members.len - 1) {
+                try writer.writeAll(",\n");
+            } else {
+                try writer.writeAll("\n");
+            }
+        }
+
+        try writer.print("}} {s};\n\n", .{enum_info.name});
+    }
+
+    fn generateStructImplementation(self: *CCodegen, writer: Writer, struct_info: CollectedStruct) !void {
         try writer.writeAll("// ============================================================================\n");
         try writer.print("// Struct {s} Implementation\n", .{struct_info.name});
         try writer.writeAll("// ============================================================================\n\n");
@@ -616,7 +717,7 @@ pub const CCodegen = struct {
         }
     }
 
-    fn generateCExternFunctionImplementation(self: *CCodegen, writer: anytype, extern_fn_decl: anytype) !void {
+    fn generateCExternFunctionImplementation(self: *CCodegen, writer: Writer, extern_fn_decl: anytype) !void {
         // Generate return type
         const return_type_str = if (extern_fn_decl.return_type) |return_type_node_id| blk: {
             const return_type_info = self.getNodeType(return_type_node_id);
@@ -644,13 +745,13 @@ pub const CCodegen = struct {
     }
 
     /// Evaluate the compile-time body of an extern function to generate C code
-    fn evaluateExternFunctionBody(self: *CCodegen, writer: anytype, extern_fn_decl: anytype) !void {
+    fn evaluateExternFunctionBody(self: *CCodegen, writer: Writer, extern_fn_decl: anytype) !void {
         // Traverse the compile-time body and execute @compile.insert directives
         try self.evaluateComptimeAST(writer, extern_fn_decl.compile_time_body, 1);
     }
 
     /// Evaluate compile-time AST expressions and generate appropriate C code
-    fn evaluateComptimeAST(self: *CCodegen, writer: anytype, node_id: ast.NodeId, depth: u32) !void {
+    fn evaluateComptimeAST(self: *CCodegen, writer: Writer, node_id: ast.NodeId, depth: u32) !void {
         const node = self.arena.getNodeConst(node_id) orelse return;
 
         switch (node.data) {
@@ -698,9 +799,9 @@ pub const CCodegen = struct {
     }
 
     /// Enhanced printf generation that automatically adds format specifiers
-    fn generateSmartPrintf(self: *CCodegen, writer: anytype, call_expr: anytype, depth: u32) !void {
+    fn generateSmartPrintf(self: *CCodegen, writer: Writer, call_expr: anytype, depth: u32) !void {
         for (0..depth) |_| try writer.writeAll("    ");
-        
+
         if (call_expr.args.items.len == 0) {
             try writer.writeAll("printf(\"\\n\");\n");
             return;
@@ -719,7 +820,7 @@ pub const CCodegen = struct {
         }
 
         const format_str = format_node.data.literal.string.value;
-        
+
         if (call_expr.args.items.len == 1) {
             // Just print the format string
             try writer.print("printf(\"{s}\");\n", .{format_str});
@@ -727,7 +828,7 @@ pub const CCodegen = struct {
             // Check if format string has placeholders
             const placeholder_count = std.mem.count(u8, format_str, "{}");
             const arg_count = call_expr.args.items.len - 1;
-            
+
             if (placeholder_count == 0 and arg_count > 0) {
                 // No placeholders but have arguments - add %d for each argument
                 try writer.print("printf(\"{s}\"", .{format_str});
@@ -740,7 +841,7 @@ pub const CCodegen = struct {
                 // Replace {} with %d and print
                 var modified_format = std.ArrayList(u8).init(self.allocator);
                 defer modified_format.deinit();
-                
+
                 var i: usize = 0;
                 while (i < format_str.len) {
                     if (i + 1 < format_str.len and format_str[i] == '{' and format_str[i + 1] == '}') {
@@ -751,7 +852,7 @@ pub const CCodegen = struct {
                         i += 1;
                     }
                 }
-                
+
                 try writer.print("printf(\"{s}\"", .{modified_format.items});
                 for (1..call_expr.args.items.len) |j| {
                     try writer.writeAll(", ");
@@ -762,7 +863,7 @@ pub const CCodegen = struct {
         }
     }
 
-    fn generateStructMethod(self: *CCodegen, writer: anytype, struct_name: []const u8, method: ast.Field) !void {
+    fn generateStructMethod(self: *CCodegen, writer: Writer, struct_name: []const u8, method: ast.Field) !void {
         _ = self; // TODO: Will be used for advanced method generation
 
         // Generate namespace method: StructName_methodName
@@ -807,7 +908,7 @@ pub const CCodegen = struct {
         return "void*"; // Fallback for complex types
     }
 
-    fn generateStringBuilderImplementation(self: *CCodegen, writer: anytype) !void {
+    fn generateStringBuilderImplementation(self: *CCodegen, writer: Writer) !void {
         _ = self;
         try writer.writeAll("// ============================================================================\n");
         try writer.writeAll("// StringBuilder Implementation - Mutable String Builder\n");
@@ -907,23 +1008,23 @@ pub const CCodegen = struct {
     }
 
     // Generate function declarations from collected functions
-    fn generateCollectedFunctionDeclarations(self: *CCodegen, writer: anytype) !void {
+    fn generateCollectedFunctionDeclarations(self: *CCodegen, writer: Writer) !void {
         for (self.function_collection.functions.items) |func| {
             try writer.writeAll(func.declaration);
         }
     }
 
     // Generate function implementations from collected functions
-    fn generateCollectedFunctionImplementations(self: *CCodegen, writer: anytype, root_node_id: ast.NodeId) !void {
+    fn generateCollectedFunctionImplementations(self: *CCodegen, writer: Writer, root_node_id: ast.NodeId) !void {
         // Now traverse again to generate actual implementations
         try self.generateAllFunctionImplementations(writer, root_node_id);
     }
 
-    fn generateAllFunctionDeclarations(self: *CCodegen, writer: anytype, node_id: ast.NodeId) !void {
+    fn generateAllFunctionDeclarations(self: *CCodegen, writer: Writer, node_id: ast.NodeId) !void {
         try self.collectFunctionDeclarations(writer, node_id);
     }
 
-    fn collectFunctionDeclarations(self: *CCodegen, writer: anytype, node_id: ast.NodeId) !void {
+    fn collectFunctionDeclarations(self: *CCodegen, writer: Writer, node_id: ast.NodeId) !void {
         const node = self.arena.getNodeConst(node_id) orelse return;
 
         switch (node.data) {
@@ -948,11 +1049,11 @@ pub const CCodegen = struct {
         }
     }
 
-    fn generateAllFunctionImplementations(self: *CCodegen, writer: anytype, node_id: ast.NodeId) !void {
+    fn generateAllFunctionImplementations(self: *CCodegen, writer: Writer, node_id: ast.NodeId) !void {
         try self.collectFunctionImplementations(writer, node_id);
     }
 
-    fn collectFunctionImplementations(self: *CCodegen, writer: anytype, node_id: ast.NodeId) !void {
+    fn collectFunctionImplementations(self: *CCodegen, writer: Writer, node_id: ast.NodeId) !void {
         const node = self.arena.getNodeConst(node_id) orelse return;
 
         switch (node.data) {
@@ -977,7 +1078,7 @@ pub const CCodegen = struct {
         }
     }
 
-    fn generateCFunctionDeclaration(self: *CCodegen, writer: anytype, func_decl: anytype) !void {
+    fn generateCFunctionDeclaration(self: *CCodegen, writer: Writer, func_decl: anytype) !void {
         // Generate return type
         const return_type_str = if (func_decl.return_type) |return_type_node_id| blk: {
             const return_type_info = self.getNodeType(return_type_node_id);
@@ -999,7 +1100,7 @@ pub const CCodegen = struct {
         try writer.writeAll(");\n");
     }
 
-    fn generateCExternFunctionDeclaration(self: *CCodegen, writer: anytype, extern_fn_decl: anytype) !void {
+    fn generateCExternFunctionDeclaration(self: *CCodegen, writer: Writer, extern_fn_decl: anytype) !void {
         // Generate return type
         const return_type_str = if (extern_fn_decl.return_type) |return_type_node_id| blk: {
             const return_type_info = self.getNodeType(return_type_node_id);
@@ -1021,7 +1122,7 @@ pub const CCodegen = struct {
         try writer.writeAll(");\n");
     }
 
-    fn generateCFunctionImplementation(self: *CCodegen, writer: anytype, func_decl: anytype) !void {
+    fn generateCFunctionImplementation(self: *CCodegen, writer: Writer, func_decl: anytype) !void {
         // Generate return type
         const return_type_str = if (func_decl.return_type) |return_type_node_id| blk: {
             const return_type_info = self.getNodeType(return_type_node_id);
@@ -1117,14 +1218,14 @@ pub const CCodegen = struct {
         return "int32_t"; // Default fallback when no type info available
     }
 
-    fn generateMainBody(self: *CCodegen, writer: anytype, node_id: ast.NodeId, indent_level: u32) !void {
+    fn generateMainBody(self: *CCodegen, writer: Writer, node_id: ast.NodeId, indent_level: u32) !void {
         _ = indent_level;
         try writer.writeAll("int main(void) {\n");
         try self.generateCFromAST(writer, node_id, 1);
         try writer.writeAll("}\n");
     }
 
-    fn generateCFromAST(self: *CCodegen, writer: anytype, node_id: ast.NodeId, indent_level: u32) !void {
+    fn generateCFromAST(self: *CCodegen, writer: Writer, node_id: ast.NodeId, indent_level: u32) !void {
         const node = self.arena.getNodeConst(node_id) orelse return;
 
         switch (node.data) {
@@ -1179,7 +1280,7 @@ pub const CCodegen = struct {
         }
     }
 
-    fn writeIndent(self: *CCodegen, writer: anytype, indent_level: u32) !void {
+    fn writeIndent(self: *CCodegen, writer: Writer, indent_level: u32) !void {
         _ = self;
         var i: u32 = 0;
         while (i < indent_level) : (i += 1) {
@@ -1187,7 +1288,7 @@ pub const CCodegen = struct {
         }
     }
 
-    fn generateCVariableDeclaration(self: *CCodegen, writer: anytype, var_decl: anytype, indent_level: u32) !void {
+    fn generateCVariableDeclaration(self: *CCodegen, writer: Writer, var_decl: anytype, indent_level: u32) !void {
         try self.writeIndent(writer, indent_level);
 
         // Determine the type
@@ -1207,6 +1308,7 @@ pub const CCodegen = struct {
                             .bool_true, .bool_false => "bool",
                             .string => "char*",
                             .char => "uint8_t",
+                            .enum_member => "int32_t", // Enums are represented as integers in C
                         };
                     },
                     .array_init => |array_init| {
@@ -1222,6 +1324,7 @@ pub const CCodegen = struct {
                                             .bool_true, .bool_false => "bool",
                                             .string => "char*",
                                             .char => "uint8_t",
+                                            .enum_member => "int32_t", // Enums are represented as integers in C
                                         };
                                     },
                                     else => c_type = "int32_t", // Fallback
@@ -1252,6 +1355,25 @@ pub const CCodegen = struct {
                                         c_type = "bool";
                                     } else if (std.mem.eql(u8, ident.name, "concat_message")) {
                                         c_type = "char*";
+                                    }
+                                },
+                                else => {},
+                            }
+                        }
+                    },
+                    .if_expr => |if_expr| {
+                        // Infer type from ternary expression by looking at the then_branch
+                        const then_node = self.arena.getNodeConst(if_expr.then_branch);
+                        if (then_node) |then_n| {
+                            switch (then_n.data) {
+                                .literal => |literal| {
+                                    switch (literal) {
+                                        .string => c_type = "const char*",
+                                        .integer => c_type = "int32_t",
+                                        .float => c_type = "howl_f32_t",
+                                        .bool_true, .bool_false => c_type = "bool",
+                                        .char => c_type = "uint8_t",
+                                        .enum_member => c_type = "int32_t",
                                     }
                                 },
                                 else => {},
@@ -1333,7 +1455,7 @@ pub const CCodegen = struct {
         try writer.writeAll(";\n");
     }
 
-    fn generateCCallExpression(self: *CCodegen, writer: anytype, call_expr: anytype, indent_level: u32) !void {
+    fn generateCCallExpression(self: *CCodegen, writer: Writer, call_expr: anytype, indent_level: u32) !void {
         try self.writeIndent(writer, indent_level);
 
         // Check if this is a stdlib function call
@@ -1367,7 +1489,7 @@ pub const CCodegen = struct {
         try writer.writeAll(";\n");
     }
 
-    fn generateCReturnStatement(self: *CCodegen, writer: anytype, return_stmt: anytype, indent_level: u32) !void {
+    fn generateCReturnStatement(self: *CCodegen, writer: Writer, return_stmt: anytype, indent_level: u32) !void {
         try self.writeIndent(writer, indent_level);
         try writer.writeAll("return");
 
@@ -1382,11 +1504,54 @@ pub const CCodegen = struct {
         try writer.writeAll(";\n");
     }
 
-    fn generateCForLoop(self: *CCodegen, writer: anytype, for_expr: anytype, indent_level: u32) !void {
+    fn generateCForLoop(self: *CCodegen, writer: Writer, for_expr: anytype, indent_level: u32) !void {
         const iterable_node = self.arena.getNodeConst(for_expr.iterable) orelse return;
 
+        // Check if this is a range expression
+        if (iterable_node.data == .range_expr) {
+            const range_expr = iterable_node.data.range_expr;
+            
+            // Generate range-based for loop
+            if (for_expr.captures.items.len == 1) {
+                const capture = for_expr.captures.items[0];
+                const capture_name = if (std.mem.eql(u8, capture.name, "_")) "i" else capture.name;
+                
+                try self.writeIndent(writer, indent_level);
+                try writer.print("for (int32_t {s} = ", .{capture_name});
+                
+                // Start value
+                if (range_expr.start) |start_id| {
+                    try self.generateCExpressionRecursive(writer, start_id);
+                } else {
+                    try writer.writeAll("0"); // Default start for ..<end
+                }
+                
+                try writer.print("; {s} ", .{capture_name});
+                
+                // Condition
+                if (range_expr.inclusive) {
+                    try writer.writeAll("<= ");
+                } else {
+                    try writer.writeAll("< ");
+                }
+                
+                // End value
+                if (range_expr.end) |end_id| {
+                    try self.generateCExpressionRecursive(writer, end_id);
+                } else {
+                    try writer.writeAll("INT32_MAX"); // Unbounded range
+                }
+                
+                try writer.print("; {s}++) {{\n", .{capture_name});
+            } else {
+                // Multiple captures not supported for ranges
+                try self.writeIndent(writer, indent_level);
+                try writer.writeAll("/* Range for loop with multiple captures not supported */\n");
+                return;
+            }
+        }
         // Check if iterating over an array or List
-        if (iterable_node.data == .identifier) {
+        else if (iterable_node.data == .identifier) {
             const iterable_name = iterable_node.data.identifier.name;
 
             // Check if this is a List (h or l for now)
@@ -1417,65 +1582,90 @@ pub const CCodegen = struct {
                 try self.writeIndent(writer, indent_level);
                 try writer.print("for (size_t _i = 0; _i < sizeof({s}) / sizeof({s}[0]); _i++) {{\n", .{ iterable_name, iterable_name });
 
-                // Create loop variable assignment for captured variable
+                // Create loop variable assignments for captured variables
                 if (for_expr.captures.items.len > 0) {
-                    const capture = for_expr.captures.items[0];
+                    // First capture is the element value
+                    const value_capture = for_expr.captures.items[0];
                     try self.writeIndent(writer, indent_level + 1);
-                    try writer.print("int32_t {s} = {s}[_i];\n", .{ capture.name, iterable_name });
-                }
-            }
-
-            // Generate loop body - process the body statements
-            const body_node = self.arena.getNodeConst(for_expr.body);
-            if (body_node) |body| {
-                switch (body.data) {
-                    .block => |block| {
-                        for (block.statements.items) |stmt_id| {
-                            const stmt_node = self.arena.getNodeConst(stmt_id);
-                            if (stmt_node) |stmt| {
-                                switch (stmt.data) {
-                                    .binary_expr => |binary_expr| {
-                                        // Handle assignment operations like g = g + h (from g += h)
-                                        if (binary_expr.op == .assign) {
-                                            try self.writeIndent(writer, indent_level + 1);
-                                            try self.generateCExpressionRecursive(writer, binary_expr.left);
-                                            try writer.writeAll(" = ");
-                                            try self.generateCExpressionRecursive(writer, binary_expr.right);
-                                            try writer.writeAll(";\n");
-                                        } else {
-                                            try self.writeIndent(writer, indent_level + 1);
-                                            try writer.writeAll("/* other binary operation */;\n");
-                                        }
-                                    },
-                                    else => {
-                                        try self.writeIndent(writer, indent_level + 1);
-                                        try writer.writeAll("/* other statement */;\n");
-                                    },
-                                }
-                            }
+                    try writer.print("int32_t {s} = {s}[_i];\n", .{ value_capture.name, iterable_name });
+                    
+                    // Second capture is the index (if present)
+                    if (for_expr.captures.items.len > 1) {
+                        const index_capture = for_expr.captures.items[1];
+                        if (!std.mem.eql(u8, index_capture.name, "_")) { // Don't generate unused index
+                            try self.writeIndent(writer, indent_level + 1);
+                            try writer.print("size_t {s} = _i;\n", .{index_capture.name});
                         }
-                    },
-                    else => {
-                        try self.writeIndent(writer, indent_level + 1);
-                        try writer.writeAll("/* non-block body */;\n");
-                    },
+                    }
                 }
             }
-
-            try self.writeIndent(writer, indent_level);
-            try writer.writeAll("}\n");
         } else {
             // For other iterables, generate a placeholder for now
             try self.writeIndent(writer, indent_level);
             try writer.writeAll("/* Complex for loop not yet supported */\n");
+            return;
         }
+
+        // Generate loop body - process the body statements
+        const body_node = self.arena.getNodeConst(for_expr.body);
+        if (body_node) |body| {
+            switch (body.data) {
+                .block => |block| {
+                    for (block.statements.items) |stmt_id| {
+                        const stmt_node = self.arena.getNodeConst(stmt_id);
+                        if (stmt_node) |stmt| {
+                            switch (stmt.data) {
+                                .var_decl => |var_decl| {
+                                    // Handle variable declarations
+                                    try self.writeIndent(writer, indent_level + 1);
+                                    
+                                    // Determine type - for now assume int32_t, but this should be improved
+                                    try writer.writeAll("int32_t ");
+                                    try writer.writeAll(var_decl.name);
+                                    
+                                    if (var_decl.initializer) |init_id| {
+                                        try writer.writeAll(" = ");
+                                        try self.generateCExpressionRecursive(writer, init_id);
+                                    }
+                                    try writer.writeAll(";\n");
+                                },
+                                .binary_expr => |binary_expr| {
+                                    // Handle assignment operations like g = g + h (from g += h)
+                                    if (binary_expr.op == .assign) {
+                                        try self.writeIndent(writer, indent_level + 1);
+                                        try self.generateCExpressionRecursive(writer, binary_expr.left);
+                                        try writer.writeAll(" = ");
+                                        try self.generateCExpressionRecursive(writer, binary_expr.right);
+                                        try writer.writeAll(";\n");
+                                    } else {
+                                        try self.writeIndent(writer, indent_level + 1);
+                                        try writer.writeAll("/* other binary operation */;\n");
+                                    }
+                                },
+                                else => {
+                                    try self.writeIndent(writer, indent_level + 1);
+                                    try writer.writeAll("/* other statement */;\n");
+                                },
+                            }
+                        }
+                    }
+                },
+                else => {
+                    try self.writeIndent(writer, indent_level + 1);
+                    try writer.writeAll("/* non-block body */;\n");
+                },
+            }
+        }
+
+        try self.writeIndent(writer, indent_level);
+        try writer.writeAll("}\n");
     }
 
-    fn generateCExpression(self: *CCodegen, writer: anytype, node_id: ast.NodeId) !void {
+    fn generateCExpression(self: *CCodegen, writer: Writer, node_id: ast.NodeId) !void {
         try self.generateCExpressionRecursive(writer, node_id);
     }
 
-    fn generateCLiteral(self: *CCodegen, writer: anytype, literal: ast.Literal) !void {
+    fn generateCLiteral(self: *CCodegen, writer: Writer, literal: ast.Literal) !void {
         _ = self;
         switch (literal) {
             .integer => |int_literal| {
@@ -1503,10 +1693,15 @@ pub const CCodegen = struct {
             .bool_false => {
                 try writer.writeAll("false");
             },
+            .enum_member => |enum_member| {
+                // For enum members, we generate the enum member name
+                // In C, enums are typically prefixed, e.g., ENUM_MEMBER
+                try writer.print("{s}", .{enum_member.name});
+            },
         }
     }
 
-    fn generateCBinaryExpression(self: *CCodegen, writer: anytype, binary_expr: anytype) !void {
+    fn generateCBinaryExpression(self: *CCodegen, writer: Writer, binary_expr: anytype) !void {
         try writer.writeAll("(");
         try self.generateCExpressionRecursive(writer, binary_expr.left);
         try writer.writeAll(" ");
@@ -1516,7 +1711,7 @@ pub const CCodegen = struct {
         try writer.writeAll(")");
     }
 
-    fn generateCMemberMethodCall(self: *CCodegen, writer: anytype, member_expr: anytype, args: []const ast.NodeId) !void {
+    fn generateCMemberMethodCall(self: *CCodegen, writer: Writer, member_expr: anytype, args: []const ast.NodeId) !void {
         const object_node = self.arena.getNodeConst(member_expr.object) orelse return;
 
         // Handle std.List(Type).init() calls
@@ -1625,7 +1820,7 @@ pub const CCodegen = struct {
         try writer.writeAll("/* unhandled member method call */");
     }
 
-    fn generateCMemberExpression(self: *CCodegen, writer: anytype, member_expr: anytype) !void {
+    fn generateCMemberExpression(self: *CCodegen, writer: Writer, member_expr: anytype) !void {
         const object_node = self.arena.getNodeConst(member_expr.object) orelse return;
 
         // Handle std.List(Type).init() calls
@@ -1653,7 +1848,14 @@ pub const CCodegen = struct {
 
         // Handle object.method() calls like h.append()
         if (object_node.data == .identifier) {
+            const identifier = object_node.data.identifier;
             const method_name = member_expr.field;
+
+            // Handle enum member access (e.g., MyEnum.a -> MyEnum_a)
+            if (self.isEnumType(identifier.name)) {
+                try writer.print("{s}_{s}", .{ identifier.name, member_expr.field });
+                return;
+            }
 
             if (std.mem.eql(u8, method_name, "append")) {
                 try writer.print("HowlList_i32_append", .{});
@@ -1663,6 +1865,17 @@ pub const CCodegen = struct {
 
         // Fallback for unhandled member expressions
         try writer.writeAll("/* unhandled member expression */");
+    }
+
+    /// Check if a type name is an enum type
+    fn isEnumType(self: *CCodegen, type_name: []const u8) bool {
+        if (self.semantic_analyzer.type_registry.get(type_name)) |typ| {
+            return switch (typ.data) {
+                .@"enum" => true,
+                else => false,
+            };
+        }
+        return false;
     }
 
     fn isStdlibFunctionCall(self: *CCodegen, call_expr: anytype) !bool {
@@ -1693,7 +1906,7 @@ pub const CCodegen = struct {
         return false;
     }
 
-    fn generateCStdlibCall(self: *CCodegen, writer: anytype, call_expr: anytype) !void {
+    fn generateCStdlibCall(self: *CCodegen, writer: Writer, call_expr: anytype) !void {
         const callee_node = self.arena.getNodeConst(call_expr.callee) orelse return;
 
         if (callee_node.data == .member_expr) {
@@ -1708,7 +1921,7 @@ pub const CCodegen = struct {
         try writer.writeAll("/* unknown stdlib call */()");
     }
 
-    fn generateCPrintfCall(self: *CCodegen, writer: anytype, call_expr: anytype) !void {
+    fn generateCPrintfCall(self: *CCodegen, writer: Writer, call_expr: anytype) !void {
         if (call_expr.args.items.len == 0) {
             try writer.writeAll("printf(\"\\n\")");
             return;
@@ -1733,7 +1946,7 @@ pub const CCodegen = struct {
         if (call_expr.args.items.len >= 2) {
             const args_node_id = call_expr.args.items[1];
             const args_node = self.arena.getNodeConst(args_node_id);
-            
+
             if (args_node) |node| {
                 // Look for the same pattern as JavaScript backend: call expression with __anonymous_struct
                 if (node.data == .call_expr) {
@@ -1750,7 +1963,7 @@ pub const CCodegen = struct {
                         }
                     }
                 }
-                
+
                 // Legacy fallback: check for struct_init (probably not used but keeping for compatibility)
                 if (node.data == .struct_init) {
                     const struct_init = node.data.struct_init;
@@ -1760,7 +1973,7 @@ pub const CCodegen = struct {
                 } else if (node.data == .array_init) {
                     // Check if it's being parsed as array_init instead
                     try writer.writeAll("printf(\"/* Found array_init instead of struct_init */\");");
-                    
+
                     // For now, fall back to no-argument formatting
                     try self.generateCFormattedPrintf(writer, format_string, &[_]ast.FieldInit{});
                     return;
@@ -1772,24 +1985,24 @@ pub const CCodegen = struct {
                 // try writer.writeAll("printf(\"/* args_node is null */\");");
             }
         }
-        
+
         // Fallback: just format string, no arguments
         try self.generateCFormattedPrintf(writer, format_string, &[_]ast.FieldInit{});
     }
 
-    fn generateCFormattedPrintf(self: *CCodegen, writer: anytype, format_string: []const u8, field_inits: []ast.FieldInit) !void {
+    fn generateCFormattedPrintf(self: *CCodegen, writer: Writer, format_string: []const u8, field_inits: []ast.FieldInit) !void {
         try writer.writeAll("printf(\"");
-        
+
         // Debug: add comment showing number of field_inits
         // try writer.print("/* DEBUG: field_inits.len = {d} */ ", .{field_inits.len});
-        
+
         // Convert format string and collect argument info
         var args_needed = std.ArrayList(ast.NodeId).init(self.allocator);
         defer args_needed.deinit();
-        
+
         var i: usize = 0;
         var arg_index: usize = 0;
-        
+
         while (i < format_string.len) {
             if (format_string[i] == '{' and i + 1 < format_string.len) {
                 // Handle format specifiers
@@ -1797,10 +2010,10 @@ pub const CCodegen = struct {
                 while (j < format_string.len and format_string[j] != '}') {
                     j += 1;
                 }
-                
+
                 if (j < format_string.len) { // Found closing '}'
-                    const spec = format_string[i+1..j];
-                    
+                    const spec = format_string[i + 1 .. j];
+
                     // Map Howl format specifiers to C printf specifiers
                     if (spec.len == 0) {
                         try writer.writeAll("%d"); // Default to %d for {}
@@ -1825,13 +2038,13 @@ pub const CCodegen = struct {
                     } else {
                         try writer.writeAll("%d"); // Fallback
                     }
-                    
+
                     // Add corresponding argument to the list
                     if (arg_index < field_inits.len) {
                         try args_needed.append(field_inits[arg_index].value);
                         arg_index += 1;
                     }
-                    
+
                     i = j + 1;
                 } else {
                     // No closing brace, just output the '{'
@@ -1852,9 +2065,9 @@ pub const CCodegen = struct {
                 i += 1;
             }
         }
-        
+
         try writer.writeAll("\"");
-        
+
         // Add the arguments
         for (args_needed.items) |arg_id| {
             try writer.writeAll(", ");
@@ -1870,20 +2083,20 @@ pub const CCodegen = struct {
                 }
             }
         }
-        
+
         try writer.writeAll(")");
     }
 
-    fn generateCFormattedPrintfWithArgs(self: *CCodegen, writer: anytype, format_string: []const u8, args: []ast.NodeId) !void {
+    fn generateCFormattedPrintfWithArgs(self: *CCodegen, writer: Writer, format_string: []const u8, args: []ast.NodeId) !void {
         try writer.writeAll("printf(\"");
-        
+
         // Convert format string and collect argument info
         var args_needed = std.ArrayList(ast.NodeId).init(self.allocator);
         defer args_needed.deinit();
-        
+
         var i: usize = 0;
         var arg_index: usize = 0;
-        
+
         while (i < format_string.len) {
             if (format_string[i] == '{' and i + 1 < format_string.len) {
                 // Handle format specifiers
@@ -1891,10 +2104,10 @@ pub const CCodegen = struct {
                 while (j < format_string.len and format_string[j] != '}') {
                     j += 1;
                 }
-                
+
                 if (j < format_string.len) { // Found closing '}'
-                    const spec = format_string[i+1..j];
-                    
+                    const spec = format_string[i + 1 .. j];
+
                     // Map Howl format specifiers to C printf specifiers
                     if (spec.len == 0) {
                         try writer.writeAll("%d"); // Default to %d for {}
@@ -1919,13 +2132,13 @@ pub const CCodegen = struct {
                     } else {
                         try writer.writeAll("%d"); // Fallback
                     }
-                    
+
                     // Add corresponding argument to the list
                     if (arg_index < args.len) {
                         try args_needed.append(args[arg_index]);
                         arg_index += 1;
                     }
-                    
+
                     i = j + 1;
                 } else {
                     // No closing brace, just output the '{'
@@ -1946,9 +2159,9 @@ pub const CCodegen = struct {
                 i += 1;
             }
         }
-        
+
         try writer.writeAll("\"");
-        
+
         // Add the arguments
         for (args_needed.items) |arg_id| {
             try writer.writeAll(", ");
@@ -1964,7 +2177,7 @@ pub const CCodegen = struct {
                 }
             }
         }
-        
+
         try writer.writeAll(")");
     }
 
@@ -1973,7 +2186,7 @@ pub const CCodegen = struct {
         // Supports: {} -> %d (default), {d} -> %d, {s} -> %s, {f} -> %f
         var result = std.ArrayList(u8).init(self.allocator);
         defer result.deinit();
-        
+
         var arg_count: usize = 0;
 
         var i: usize = 0;
@@ -2112,7 +2325,7 @@ pub const CCodegen = struct {
         return false;
     }
 
-    fn generateCExpressionRecursive(self: *CCodegen, writer: anytype, node_id: ast.NodeId) !void {
+    fn generateCExpressionRecursive(self: *CCodegen, writer: Writer, node_id: ast.NodeId) !void {
         const node = self.arena.getNodeConst(node_id) orelse return;
 
         switch (node.data) {
@@ -2123,13 +2336,22 @@ pub const CCodegen = struct {
                 try writer.writeAll(identifier.name);
             },
             .binary_expr => |binary_expr| {
-                try writer.writeAll("(");
-                try self.generateCExpressionRecursive(writer, binary_expr.left);
-                try writer.writeAll(" ");
-                try writer.writeAll(binary_expr.op.toString());
-                try writer.writeAll(" ");
-                try self.generateCExpressionRecursive(writer, binary_expr.right);
-                try writer.writeAll(")");
+                // Special handling for string concatenation
+                if (binary_expr.op == .concat) {
+                    try writer.writeAll("howl_string_concat(");
+                    try self.generateCExpressionRecursive(writer, binary_expr.left);
+                    try writer.writeAll(", ");
+                    try self.generateCExpressionRecursive(writer, binary_expr.right);
+                    try writer.writeAll(")");
+                } else {
+                    try writer.writeAll("(");
+                    try self.generateCExpressionRecursive(writer, binary_expr.left);
+                    try writer.writeAll(" ");
+                    try writer.writeAll(binary_expr.op.toString());
+                    try writer.writeAll(" ");
+                    try self.generateCExpressionRecursive(writer, binary_expr.right);
+                    try writer.writeAll(")");
+                }
             },
             .member_expr => |member_expr| {
                 // Handle member access like std.debug.print
@@ -2197,6 +2419,20 @@ pub const CCodegen = struct {
                 }
                 try writer.writeAll("}");
             },
+            .if_expr => |if_expr| {
+                // Generate C ternary operator: (condition ? then_value : else_value)
+                try writer.writeAll("(");
+                try self.generateCExpressionRecursive(writer, if_expr.condition);
+                try writer.writeAll(" ? ");
+                try self.generateCExpressionRecursive(writer, if_expr.then_branch);
+                try writer.writeAll(" : ");
+                if (if_expr.else_branch) |else_branch| {
+                    try self.generateCExpressionRecursive(writer, else_branch);
+                } else {
+                    try writer.writeAll("/* no else branch */");
+                }
+                try writer.writeAll(")");
+            },
             else => {
                 try writer.writeAll("/* Unknown expression */");
             },
@@ -2246,16 +2482,16 @@ pub const CCodegen = struct {
     fn generateCFormatCode(self: *CCodegen, format_string: []const u8, args_node_id: ast.NodeId) ![]const u8 {
         var result = std.ArrayList(u8).init(self.allocator);
         defer result.deinit();
-        
+
         // Parse format string and convert Howl format specifiers to C format specifiers
         const converted = try self.convertAdvancedHowlFormatToC(format_string);
         defer self.allocator.free(converted.format);
-        
+
         // Generate printf call with converted format
         try result.appendSlice("printf(\"");
         try result.appendSlice(converted.format);
         try result.appendSlice("\"");
-        
+
         // Add arguments from anonymous struct
         const args_node = self.arena.getNodeConst(args_node_id);
         if (args_node) |node| {
@@ -2299,19 +2535,19 @@ pub const CCodegen = struct {
                 },
             }
         }
-        
+
         try result.appendSlice(");");
         return try self.allocator.dupe(u8, result.items);
     }
-    
+
     // Advanced format string conversion supporting complex format specifiers
     fn convertAdvancedHowlFormatToC(self: *CCodegen, howl_format: []const u8) !struct { format: []const u8, arg_count: usize } {
         var result = std.ArrayList(u8).init(self.allocator);
         defer result.deinit();
-        
+
         var arg_count: usize = 0;
         var i: usize = 0;
-        
+
         while (i < howl_format.len) {
             if (howl_format[i] == '{' and i + 1 < howl_format.len) {
                 // Parse format specifier: {type:format_spec}
@@ -2319,15 +2555,15 @@ pub const CCodegen = struct {
                 while (end_pos < howl_format.len and howl_format[end_pos] != '}') {
                     end_pos += 1;
                 }
-                
+
                 if (end_pos < howl_format.len) {
-                    const format_spec = howl_format[i + 1..end_pos];
-                    
+                    const format_spec = howl_format[i + 1 .. end_pos];
+
                     // Parse the format specification
                     const converted_spec = try self.convertFormatSpec(format_spec);
                     try result.appendSlice(converted_spec);
                     arg_count += 1;
-                    
+
                     i = end_pos + 1; // Skip past '}'
                 } else {
                     // Malformed format spec, just copy the '{'
@@ -2358,30 +2594,30 @@ pub const CCodegen = struct {
                 i += 1;
             }
         }
-        
+
         return .{
             .format = try self.allocator.dupe(u8, result.items),
             .arg_count = arg_count,
         };
     }
-    
+
     // Convert individual format specification (e.g., "d:.2", "s:!>4")
     fn convertFormatSpec(self: *CCodegen, spec: []const u8) ![]const u8 {
         _ = self; // May be used in future for more complex conversions
-        
+
         if (spec.len == 0) {
             return "%d"; // Default format
         }
-        
+
         // Split on ':' if present
         var type_part = spec;
         var format_part: []const u8 = "";
-        
+
         if (std.mem.indexOf(u8, spec, ":")) |colon_pos| {
             type_part = spec[0..colon_pos];
-            format_part = spec[colon_pos + 1..];
+            format_part = spec[colon_pos + 1 ..];
         }
-        
+
         // Handle type specifiers
         if (std.mem.eql(u8, type_part, "d")) {
             // Integer format
