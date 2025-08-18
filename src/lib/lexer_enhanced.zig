@@ -128,6 +128,8 @@ pub const keywords = std.StaticStringMap(Token).initComptime(.{
     .{ "tag", Token{ .Tag = .{ .pos = 0 } } },
     .{ "fn", Token{ .Fn = .{ .pos = 0 } } },
     .{ "return", Token{ .Return = .{ .pos = 0 } } },
+    .{ "try", Token{ .Try = .{ .pos = 0 } } },
+    .{ "catch", Token{ .Catch = .{ .pos = 0 } } },
     .{ "and", Token{ .And = .{ .pos = 0 } } },
     .{ "or", Token{ .Or = .{ .pos = 0 } } },
     .{ "not", Token{ .Not = .{ .pos = 0 } } },

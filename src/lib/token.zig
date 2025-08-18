@@ -93,6 +93,8 @@ pub const Token = union(enum) {
     While: BaseToken, // while
     Return: BaseToken, // return
     Import: BaseToken, // @import
+    Try: BaseToken, // try
+    Catch: BaseToken, // catch
 
     // Operators and Punctuation
     Plus: BaseToken, // +

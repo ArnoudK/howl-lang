@@ -1,0 +1,10 @@
+main :: fn() void {
+    target :: @compile.target
+    @compile.print("Target: " + target)
+    
+    // Simple conditional without @compile.insert in expressions
+    message :: if (target == "c") "C target selected" else "Other target"
+    @compile.print("Message: " + message)
+    
+    @compile.print("Testing compile-time functions completed")
+}

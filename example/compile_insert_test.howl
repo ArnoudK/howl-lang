@@ -1,0 +1,18 @@
+// Test @compile.insert in proper context (match expressions)
+test_abs :: fn (x: i32) i32 {
+    match @compile.target {
+        | .c => {
+            @compile.insert("return abs(x);")}
+        | .javascript => {
+            @compile.insert("return Math.abs(x);")}
+    }
+}
+
+main :: fn() void {
+    target :: @compile.target
+    @compile.print("Testing @compile.insert in match expressions")
+    @compile.print("Target: " + target)
+    
+    // Test would call test_abs(-5) if we had proper function calling
+    @compile.print("Built-in system test completed")
+}

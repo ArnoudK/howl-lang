@@ -83,6 +83,11 @@ pub const JSCodegen = struct {
             .compile_insert_expr => |insert| try self.generateCompileInsertExpr(insert),
             .match_compile_expr => |match_expr| try self.generateMatchCompileExpr(match_expr),
             .match_expr => |match_expr| try self.generateMatchExpr(match_expr),
+            .try_expr => |try_expr| try self.generateTryExpr(try_expr),
+            .catch_expr => |catch_expr| try self.generateCatchExpr(catch_expr),
+            .error_union_type => try self.generateErrorUnionType(),
+            .error_literal => |error_literal| try self.generateErrorLiteral(error_literal),
+            .error_set_decl => |error_set_decl| try self.generateErrorSetDecl(error_set_decl),
             else => {
                 // Handle unsupported nodes with comments
                 try self.writeFormatted("/* Unsupported AST node: {s} */", .{@tagName(node.data)});
@@ -1576,6 +1581,23 @@ pub const JSCodegen = struct {
                 // For enum member patterns, check against the string representation
                 try self.writeFormatted("__match_value === \"{s}\"", .{member_name});
             },
+            .comparison => |comp| {
+                // Generate comparison: __match_value < value, __match_value > value, etc.
+                try self.write("__match_value ");
+                
+                const op_str = switch (comp.operator) {
+                    .LessThan => "< ",
+                    .GreaterThan => "> ",
+                    .LessThanEqual => "<= ",
+                    .GreaterThanEqual => ">= ",
+                    .EqualEqual => "=== ",
+                    .NotEqual => "!== ",
+                    else => "=== ", // fallback
+                };
+                
+                try self.write(op_str);
+                try self.generateNode(comp.value);
+            },
             .range => {
                 // TODO: Implement range pattern matching
                 try self.write("/* Range pattern not implemented yet */");
@@ -1834,6 +1856,114 @@ pub const JSCodegen = struct {
         
         return try self.allocator.dupe(u8, result.items);
     }
+    
+    // ============================================================================
+    // Error Handling Generation
+    // ============================================================================
+    
+    fn generateTryExpr(self: *JSCodegen, try_expr: anytype) !void {
+        // In JavaScript, try expressions are handled with try-catch blocks
+        try self.write("(function() {\n");
+        self.indent_level += 1;
+        
+        try self.writeIndent();
+        try self.write("try {\n");
+        self.indent_level += 1;
+        
+        try self.writeIndent();
+        try self.write("return ");
+        try self.generateNode(try_expr.expression);
+        try self.write(";\n");
+        
+        self.indent_level -= 1;
+        try self.writeIndent();
+        try self.write("} catch (error) {\n");
+        self.indent_level += 1;
+        
+        try self.writeIndent();
+        try self.write("throw error; // Propagate error\n");
+        
+        self.indent_level -= 1;
+        try self.writeIndent();
+        try self.write("}\n");
+        
+        self.indent_level -= 1;
+        try self.writeIndent();
+        try self.write("})()");
+    }
+    
+    fn generateCatchExpr(self: *JSCodegen, catch_expr: anytype) !void {
+        // Generate a try-catch block in JavaScript for the expression being caught
+        try self.write("(function() {\n");
+        self.indent_level += 1;
+        
+        try self.writeIndent();
+        try self.write("try {\n");
+        self.indent_level += 1;
+        
+        try self.writeIndent();
+        try self.write("return ");
+        try self.generateNode(catch_expr.expression);
+        try self.write(";\n");
+        
+        self.indent_level -= 1;
+        try self.writeIndent();
+        try self.write("} catch (");
+        
+        // Handle error capture variable
+        if (catch_expr.error_capture) |error_var| {
+            try self.write(error_var);
+        } else {
+            try self.write("error");
+        }
+        
+        try self.write(") {\n");
+        self.indent_level += 1;
+        
+        try self.writeIndent();
+        try self.write("return ");
+        
+        // Generate catch body or fallback value
+        if (catch_expr.catch_body) |body| {
+            try self.generateNode(body);
+        } else if (catch_expr.fallback_value) |fallback| {
+            try self.generateNode(fallback);
+        } else {
+            try self.write("null");
+        }
+        
+        try self.write(";\n");
+        
+        self.indent_level -= 1;
+        try self.writeIndent();
+        try self.write("}\n");
+        
+        self.indent_level -= 1;
+        try self.writeIndent();
+        try self.write("})()");
+    }
+    
+    fn generateErrorUnionType(self: *JSCodegen) !void {
+        // Error union types don't generate specific code in JavaScript
+        try self.write("/* error_union_type */");
+    }
+    
+    fn generateErrorLiteral(self: *JSCodegen, error_literal: anytype) !void {
+        // Error literals generate as Error objects in JavaScript
+        try self.writeFormatted("new Error(\"{s}\")", .{error_literal.name});
+    }
+    
+    fn generateErrorSetDecl(self: *JSCodegen, error_set_decl: anytype) !void {
+        // Generate error set as a JavaScript object with error constants
+        try self.writeFormatted("const {s} = {{", .{error_set_decl.name});
+        
+        for (error_set_decl.errors.items, 0..) |error_name, i| {
+            if (i > 0) try self.write(", ");
+            try self.writeFormatted("\n    {s}: \"{s}\"", .{ error_name, error_name });
+        }
+        
+        try self.write("\n};");
+    }
 };
 
 // Helper function to generate JavaScript from AST
@@ -1842,9 +1972,8 @@ pub fn generateJS(allocator: std.mem.Allocator, arena: *const ast.AstArena, sema
     defer codegen.deinit();
     
     return try codegen.generate(root_node_id);
-}
-
-// Tests
+    }
+    
 test "Basic JavaScript generation" {
     const testing = std.testing;
     var arena = ast.AstArena.init(testing.allocator);

@@ -1,0 +1,10 @@
+std :: @import("std")
+
+// Just test basic functionality for now
+pub main :: fn() !void {
+    a := 1
+    b := 2
+    c :: a + b
+    std.debug.print("Sum: {}", c)
+    return
+}

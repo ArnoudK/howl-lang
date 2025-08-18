@@ -3,5 +3,12 @@
         "build",
         "test",
         "-Dtest-filter=${filter}"
-    ]
+    ],
+    "files.associations": {
+        "stdlib.h": "c",
+        "string.h": "c",
+        "float.h": "c",
+        "stdint.h": "c",
+        "stdio.h": "c"
+    }
 }

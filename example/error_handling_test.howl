@@ -1,0 +1,79 @@
+// Comprehensive Error Handling Test
+// This file tests the new error handling features in Howl
+
+// Test 1: Error union types
+fn divide(a: i32, b: i32) -> !i32 {
+    if (b == 0) {
+        return error.DivisionByZero;
+    }
+    return a / b;
+}
+
+// Test 2: Try expression - propagates error up the call stack
+fn safeDivide(a: i32, b: i32) -> !i32 {
+    let result = try divide(a, b);
+    return result;
+}
+
+// Test 3: Catch expression - handles errors locally
+fn divideSafely(a: i32, b: i32) -> i32 {
+    let result = try divide(a, b) catch |err| {
+        print("Error occurred: {}", err);
+        return 0; // Return default value on error
+    };
+    return result;
+}
+
+// Test 4: Error union with different types
+fn parseNumber(input: str) -> !i32 {
+    if (input == "42") {
+        return 42;
+    }
+    return error.ParseError;
+}
+
+// Test 5: Chained error handling
+fn complexOperation(input: str) -> !i32 {
+    let num = try parseNumber(input);
+    let result = try divide(num, 2);
+    return result + 10;
+}
+
+// Test 6: Error handling with catch and custom error messages
+fn safeComplexOperation(input: str) -> i32 {
+    let result = try complexOperation(input) catch |err| {
+        print("Operation failed with error: {}", err);
+        return -1;
+    };
+    return result;
+}
+
+// Test 7: Function that returns error literal
+fn getError() -> error {
+    return error.CustomError;
+}
+
+// Main function to test all error handling features
+fn main() -> void {
+    print("=== Error Handling Tests ===");
+    
+    // Test normal case
+    print("divide(10, 2) = {}", try divide(10, 2));
+    
+    // Test error case with try-catch
+    let safe_result = divideSafely(10, 0);
+    print("divideSafely(10, 0) = {}", safe_result);
+    
+    // Test parsing
+    print("parseNumber(\"42\") = {}", try parseNumber("42"));
+    
+    // Test complex operation
+    let complex_result = safeComplexOperation("42");
+    print("safeComplexOperation(\"42\") = {}", complex_result);
+    
+    // Test complex operation with error
+    let error_result = safeComplexOperation("invalid");
+    print("safeComplexOperation(\"invalid\") = {}", error_result);
+    
+    print("=== Error Handling Tests Complete ===");
+}

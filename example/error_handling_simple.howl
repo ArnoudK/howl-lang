@@ -1,0 +1,9 @@
+MyError :: error { DivisionByZero }
+
+divide :: fn (a: i32, b: i32) MyError!i32 {
+    return MyError.DivisionByZero
+}
+
+main :: fn () void {
+    result :: divide(10, 2)
+}

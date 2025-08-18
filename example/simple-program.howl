@@ -1,9 +1,56 @@
-std :: import("std")
-main :: fn () void {
-    PI : f32 : 3.14159
-    e :: PI + 3
-    f :: if (e > 5)  "greater" else "lesser"
+// this file is used to show all capabilities of the Howl programming language
+// When changing the file only add new things or comment out `std.debug.print` statements
 
-    std.debug.print("Result: {s}\n", .{f})
 
+std :: @import("std")
+
+
+MyError :: error { 
+    DivisionByZero,
+    UnknownError,
+    InvalidValue,
+}
+
+MyEnum :: enum { 
+    Value1,
+    Value2,
+    Value3,
+} 
+
+MyStruct :: struct {
+    field1: i32,
+    field2: f64,
+}
+
+createMyStruct :: fn (a: i32, b: f64) MyError!MyStruct {
+    match a {
+    |   < 0 => {
+                return MyError.InvalidValue
+            }
+    |    _   => {
+                return MyStruct{ .field1 = a, .field2 = b }
+           }
+    }
+}
+
+divide :: fn (a: i32, b: i32) MyError!i32 {
+    return if (b == 0) MyError.DivisionByZero else (a / b)
+}
+
+main :: fn () !void {
+    
+    std.debug.print("Starting division...\n", .{})
+    result :: try divide(10, 2)
+    std.debug.print("Result of division: {}\n", .{result})
+
+    std.debug.print("Enum value: {}\n", .{MyEnum.Value1})
+
+    my_struct :: try createMyStruct(42, 3.14)
+    std.debug.print("MyStruct: {{field1: {}, field2: {}}}\n", .{my_struct.field1, my_struct.field2})
+
+    my_struct2 :: try createMyStruct(-1, 2.71)
+    std.debug.print("MyStruct2: {{field1: {}, field2: {}}}\n", .{my_struct2.field1, my_struct2.field2})
+
+    result2 :: try divide(10, 0)
+    std.debug.print("This line will not be reached due to error.\n", .{})
 }

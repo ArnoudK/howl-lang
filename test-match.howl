@@ -1,0 +1,21 @@
+// Test file to verify match patterns and struct init work
+
+MyStruct :: struct {
+    field1: i32,
+    field2: f64,
+}
+
+testMatch :: fn (a: i32) MyStruct {
+    match a {
+    | < 0 => {
+        return MyStruct{ .field1 = -1, .field2 = 0.0 }
+    }
+    | _ => {
+        return MyStruct{ .field1 = a, .field2 = 3.14 }
+    }
+    }
+}
+
+main :: fn () void {
+    result :: testMatch(42)
+}

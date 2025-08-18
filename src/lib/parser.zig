@@ -534,7 +534,7 @@ pub const Parser = struct {
         return expr;
     }
 
-    fn parseUnary(self: *Parser) !ast.NodeId {
+    fn parseUnary(self: *Parser) anyerror!ast.NodeId {
         if (self.match(&[_]std.meta.Tag(Token){.Exclamation, .Minus})) {
             const source_loc = self.getCurrentSourceLoc();
             const op: ast.UnaryOp = switch (self.previous()) {
@@ -571,8 +571,52 @@ pub const Parser = struct {
                         .member_expr = .{ .object = expr, .field = field_name }
                     }, source_loc));
                 }
+            } else if (self.match(&[_]std.meta.Tag(Token){.LeftBrace})) {
+                // Handle struct initialization: MyStruct{ .field1 = value1, .field2 = value2 }
+                expr = try self.finishStructInitialization(expr);
             } else {
-                break;
+                // Skip whitespace before checking for catch
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+                
+                if (self.match(&[_]std.meta.Tag(Token){.Catch})) {
+                    // Handle catch expression: expr catch |err| { ... } or expr catch "default"
+                    const source_loc = self.getCurrentSourceLoc();
+                    
+                    // Skip whitespace after catch keyword
+                    while (self.check(.Whitespace)) {
+                        _ = self.advance();
+                    }
+                    
+                    var error_capture: ?[]const u8 = null;
+                    var catch_body: ?ast.NodeId = null;
+                    var fallback_value: ?ast.NodeId = null;
+                    
+                    // Check for error capture variable |err|
+                    if (self.match(&[_]std.meta.Tag(Token){.Pipe})) {
+                        const capture_token = try self.consume(.Identifier, .expected_identifier, "Expected identifier in error capture");
+                        if (capture_token == .Identifier) {
+                            error_capture = capture_token.Identifier.value;
+                        }
+                        _ = try self.consume(.Pipe, .unexpected_token, "Expected '|' after error capture");
+                        
+                        // Skip whitespace before catch body
+                        while (self.check(.Whitespace)) {
+                            _ = self.advance();
+                        }
+                        
+                        // Parse catch body (block or single expression)
+                        catch_body = try self.parseExpression();
+                    } else {
+                        // Direct fallback value: expr catch "default"
+                        fallback_value = try self.parseExpression();
+                    }
+                    
+                    expr = try ast.createCatchExpr(self.arena, source_loc, expr, error_capture, catch_body, fallback_value);
+                } else {
+                    break;
+                }
             }
         }
 
@@ -643,6 +687,112 @@ pub const Parser = struct {
         }
     }
 
+    fn finishStructInitialization(self: *Parser, struct_type: ast.NodeId) !ast.NodeId {
+        const source_loc = self.getCurrentSourceLoc();
+        
+        // Parse struct initialization fields: { .field1 = value1, .field2 = value2 }
+        // We already consumed the opening brace in parseCall
+        
+        var fields = std.ArrayList(ast.FieldInit).init(self.allocator);
+        
+        // Skip whitespace after opening brace
+        while (self.check(.Whitespace) or self.check(.Newline)) {
+            _ = self.advance();
+        }
+        
+        // Handle empty struct initialization
+        if (self.check(.RightBrace)) {
+            _ = self.advance(); // consume }
+            
+            // Extract type name from struct_type node if it's an identifier
+            var type_name: ?[]const u8 = null;
+            if (self.arena.getNode(struct_type)) |node| {
+                if (node.data == .identifier) {
+                    type_name = node.data.identifier.name;
+                }
+            }
+            
+            return self.arena.createNode(ast.AstNode.init(.{
+                .struct_init = .{
+                    .type_name = type_name,
+                    .fields = fields,
+                }
+            }, source_loc));
+        }
+        
+        // Parse field initializations
+        while (true) {
+            // Skip whitespace before field
+            while (self.check(.Whitespace) or self.check(.Newline)) {
+                _ = self.advance();
+            }
+            
+            // Expect .fieldname = value
+            _ = try self.consume(.Dot, .unexpected_token, "Expected '.' before field name in struct initialization");
+            
+            const field_name_token = try self.consume(.Identifier, .expected_identifier, "Expected field name after '.' in struct initialization");
+            const field_name = if (field_name_token == .Identifier) field_name_token.Identifier.value else "error";
+            
+            // Skip whitespace around =
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            if (!self.match(&[_]std.meta.Tag(Token){.Assignment}) and !self.match(&[_]std.meta.Tag(Token){.Equals})) {
+                try self.reportError(.unexpected_token, "Expected '=' after field name in struct initialization", self.getCurrentSourceLoc());
+                break;
+            }
+            
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Parse field value
+            const field_value = try self.parseExpression();
+            
+            // Add field to list
+            try fields.append(ast.FieldInit{
+                .name = field_name,
+                .value = field_value,
+                .source_loc = source_loc,
+            });
+            
+            // Skip whitespace after field value
+            while (self.check(.Whitespace) or self.check(.Newline)) {
+                _ = self.advance();
+            }
+            
+            // Check for comma or end of struct
+            if (self.match(&[_]std.meta.Tag(Token){.Comma})) {
+                // Continue to next field
+                continue;
+            } else if (self.check(.RightBrace)) {
+                // End of struct
+                break;
+            } else {
+                try self.reportError(.unexpected_token, "Expected ',' or '}' in struct initialization", self.getCurrentSourceLoc());
+                break;
+            }
+        }
+        
+        _ = try self.consume(.RightBrace, .missing_closing_brace, "Expected '}' to close struct initialization");
+        
+        // Extract type name from struct_type node if it's an identifier  
+        var type_name: ?[]const u8 = null;
+        if (self.arena.getNode(struct_type)) |node| {
+            if (node.data == .identifier) {
+                type_name = node.data.identifier.name;
+            }
+        }
+        
+        return self.arena.createNode(ast.AstNode.init(.{
+            .struct_init = .{
+                .type_name = type_name,
+                .fields = fields,
+            }
+        }, source_loc));
+    }
+
     fn isTypeConstructor(self: *Parser, callee: ast.NodeId) !bool {
         const node = self.arena.getNode(callee) orelse return false;
         
@@ -708,6 +858,13 @@ pub const Parser = struct {
             }
         }
 
+        // Handle error handling expressions
+        if (self.match(&[_]std.meta.Tag(Token){.Try})) {
+            // Parse try expression - now independent of catch
+            const expr = try self.parseUnary();
+            return ast.createTryExpr(self.arena, source_loc, expr);
+        }
+
         // Handle @import specifically
         if (self.match(&[_]std.meta.Tag(Token){.Import})) {
             // Create an identifier for @import
@@ -721,20 +878,78 @@ pub const Parser = struct {
             }
         }
 
-        // Handle other built-in functions like @import
+        // Handle other built-in functions like @import and compile-time expressions
         if (self.match(&[_]std.meta.Tag(Token){.At})) {
             const builtin_name_token = try self.consume(.Identifier, .expected_identifier, "Expected built-in function name after '@'");
             if (builtin_name_token == .Identifier) {
                 const builtin_name = builtin_name_token.Identifier.value;
                 
-                // Create a special identifier for built-ins
-                const builtin_id = try ast.createIdentifier(self.arena, source_loc, builtin_name);
-                
-                // Parse as function call if followed by parentheses
-                if (self.check(.LeftParen)) {
-                    return self.parseCall_withCallee(builtin_id);
+                // Handle @compile.target and @compile.insert specially
+                if (std.mem.eql(u8, builtin_name, "compile")) {
+                    // Expect dot after compile
+                    _ = try self.consume(.Dot, .unexpected_token, "Expected '.' after '@compile'");
+                    
+                    const member_token = try self.consume(.Identifier, .expected_identifier, "Expected member name after '@compile.'");
+                    if (member_token == .Identifier) {
+                        const member_name = member_token.Identifier.value;
+                        
+                        if (std.mem.eql(u8, member_name, "target")) {
+                            // @compile.target - return compile target expression
+                            return ast.createCompileTargetExpr(self.arena, source_loc);
+                        } else if (std.mem.eql(u8, member_name, "insert")) {
+                            // @compile.insert(...) - handle function call
+                            if (self.check(.LeftParen)) {
+                                _ = self.advance(); // consume (
+                                
+                                // Skip whitespace
+                                while (self.check(.Whitespace)) {
+                                    _ = self.advance();
+                                }
+                                
+                                // Expect string literal with code to insert
+                                const code_token = try self.consume(.StringLiteral, .unexpected_token, "Expected string literal for @compile.insert");
+                                var code: []const u8 = "";
+                                if (code_token == .StringLiteral) {
+                                    code = code_token.StringLiteral.value;
+                                }
+                                
+                                // Skip whitespace
+                                while (self.check(.Whitespace)) {
+                                    _ = self.advance();
+                                }
+                                
+                                _ = try self.consume(.RightParen, .missing_closing_paren, "Expected ')' after @compile.insert");
+                                
+                                return ast.createCompileInsertExpr(self.arena, source_loc, code);
+                            } else {
+                                try self.reportError(.unexpected_token, "Expected '(' after '@compile.insert'", self.getCurrentSourceLoc());
+                                return ast.createErrorNode(self.arena, source_loc, .unexpected_token, "Expected '(' after '@compile.insert'");
+                            }
+                        } else {
+                            // Handle @compile.print and other compile-time functions as member expressions
+                            const compile_id = try ast.createIdentifier(self.arena, source_loc, "compile");
+                            const member_expr = try self.arena.createNode(ast.AstNode.init(.{
+                                .member_expr = .{ .object = compile_id, .field = member_name }
+                            }, source_loc));
+                            
+                            // If followed by parentheses, parse as function call
+                            if (self.check(.LeftParen)) {
+                                return self.parseCall_withCallee(member_expr);
+                            } else {
+                                return member_expr;
+                            }
+                        }
+                    }
                 } else {
-                    return builtin_id;
+                    // Create a special identifier for other built-ins
+                    const builtin_id = try ast.createIdentifier(self.arena, source_loc, builtin_name);
+                    
+                    // Parse as function call if followed by parentheses
+                    if (self.check(.LeftParen)) {
+                        return self.parseCall_withCallee(builtin_id);
+                    } else {
+                        return builtin_id;
+                    }
                 }
             }
         }
@@ -1157,6 +1372,12 @@ pub const Parser = struct {
                     } else if (self.check(.Enum)) {
                         // Enum declaration: [pub] name :: enum { ... }
                         return try self.parseEnumDeclaration(name, source_loc);
+                    } else if (self.check(.Error)) {
+                        // Error set declaration: [pub] name :: error { ... }
+                        return try self.parseErrorSetDeclaration(name, source_loc);
+                    } else if (self.check(.Struct)) {
+                        // Struct declaration: [pub] name :: struct { ... }
+                        return try self.parseStructDeclaration(name, source_loc);
                     } else {
                         // Constant definition: name :: expression
                         const value = try self.parseExpression();
@@ -1749,6 +1970,164 @@ pub const Parser = struct {
             }
         }, source_loc));
     }
+    
+    fn parseErrorSetDeclaration(self: *Parser, name: []const u8, source_loc: ast.SourceLoc) !ast.NodeId {
+        // Consume the 'error' token
+        _ = try self.consume(.Error, .unexpected_token, "Expected 'error'");
+        
+        // Require space after 'error'
+        if (!self.isAtEnd() and !self.check(.Whitespace) and !self.check(.Newline)) {
+            try self.reportError(.missing_space_after_keyword, "Missing space after 'error'", self.getCurrentSourceLoc());
+        }
+        
+        // Skip whitespace after error
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
+        // Expect opening brace
+        _ = try self.consume(.LeftBrace, .unexpected_token, "Expected '{' after 'error'");
+        
+        // Skip whitespace after opening brace
+        while (self.check(.Whitespace) or self.check(.Newline)) {
+            _ = self.advance();
+        }
+        
+        // Parse error names
+        var errors = std.ArrayList([]const u8).init(self.allocator);
+        
+        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            // Skip whitespace and newlines
+            while (self.check(.Whitespace) or self.check(.Newline)) {
+                _ = self.advance();
+            }
+            
+            if (self.check(.RightBrace)) break;
+            
+            // Parse error name
+            const error_token = try self.consume(.Identifier, .expected_identifier, "Expected error name");
+            const error_name = if (error_token == .Identifier) error_token.Identifier.value else "error";
+            
+            try errors.append(error_name);
+            
+            // Skip whitespace after error name
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Optional comma
+            if (self.check(.Comma)) {
+                _ = self.advance();
+                // Skip whitespace after comma
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+            }
+            
+            // Skip trailing newlines
+            while (self.check(.Newline)) {
+                _ = self.advance();
+            }
+        }
+        
+        // Expect closing brace
+        _ = try self.consume(.RightBrace, .unexpected_token, "Expected '}' after error names");
+        
+        // Ensure newline after error set declaration
+        try self.requireNewlineAfterStatement();
+        
+        return ast.createErrorSetDecl(self.arena, source_loc, name, errors);
+    }
+
+    fn parseStructDeclaration(self: *Parser, name: []const u8, source_loc: ast.SourceLoc) !ast.NodeId {
+        // Consume the 'struct' token
+        _ = try self.consume(.Struct, .unexpected_token, "Expected 'struct'");
+        
+        // Require space after 'struct'
+        if (!self.isAtEnd() and !self.check(.Whitespace) and !self.check(.Newline)) {
+            try self.reportError(.missing_space_after_keyword, "Missing space after 'struct'", self.getCurrentSourceLoc());
+        }
+        
+        // Skip whitespace after struct
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
+        // Expect opening brace
+        _ = try self.consume(.LeftBrace, .unexpected_token, "Expected '{' after 'struct'");
+        
+        // Skip whitespace after opening brace
+        while (self.check(.Whitespace) or self.check(.Newline)) {
+            _ = self.advance();
+        }
+        
+        // Parse struct fields
+        var fields = std.ArrayList(ast.Field).init(self.allocator);
+        
+        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            // Skip whitespace and newlines
+            while (self.check(.Whitespace) or self.check(.Newline)) {
+                _ = self.advance();
+            }
+            
+            if (self.check(.RightBrace)) break;
+            
+            // Parse field name
+            const field_token = try self.consume(.Identifier, .expected_identifier, "Expected struct field name");
+            const field_name = if (field_token == .Identifier) field_token.Identifier.value else "error";
+            const field_loc = self.getCurrentSourceLoc();
+            
+            // Skip whitespace after field name
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Expect colon after field name
+            _ = try self.consume(.Colon, .unexpected_token, "Expected ':' after struct field name");
+            
+            // Skip whitespace after colon
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Parse field type
+            const field_type = try self.parseType();
+            
+            try fields.append(ast.Field{
+                .name = field_name,
+                .type_annotation = field_type,
+                .default_value = null,
+                .source_loc = field_loc,
+            });
+            
+            // Skip whitespace after field type
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Optional comma
+            if (self.check(.Comma)) {
+                _ = self.advance();
+                // Skip whitespace after comma
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+            }
+            
+            // Skip trailing newlines
+            while (self.check(.Newline)) {
+                _ = self.advance();
+            }
+        }
+        
+        // Expect closing brace
+        _ = try self.consume(.RightBrace, .unexpected_token, "Expected '}' after struct fields");
+        
+        // Ensure newline after struct declaration
+        try self.requireNewlineAfterStatement();
+        
+        return ast.createStructDecl(self.arena, source_loc, name, fields, false);
+    }
 
     fn parseBlockStatement(self: *Parser) anyerror!ast.NodeId {
         const source_loc = self.getCurrentSourceLoc();
@@ -1965,6 +2344,39 @@ pub const Parser = struct {
         
         _ = try self.consume(.RightBrace, .missing_closing_brace, "Expected '}' after match arms");
         
+        // Check if this is a compile-time match expression (match @compile.target)
+        const expr_node = self.arena.getNodeConst(expression);
+        if (expr_node) |node| {
+            if (node.data == .compile_target_expr) {
+                // This is match @compile.target - create a special compile-time match expression
+                var compile_arms = std.ArrayList(ast.CompileMatchArm).init(self.allocator);
+                for (arms.items) |arm| {
+                    // Extract target from enum member pattern (e.g., .c -> CompileTarget.c)
+                    const target = if (arm.pattern == .enum_member) blk: {
+                        if (std.mem.eql(u8, arm.pattern.enum_member, "c")) {
+                            break :blk ast.CompileTarget.c;
+                        } else if (std.mem.eql(u8, arm.pattern.enum_member, "javascript")) {
+                            break :blk ast.CompileTarget.javascript;
+                        } else {
+                            // Default fallback - could report error here
+                            break :blk ast.CompileTarget.c;
+                        }
+                    } else ast.CompileTarget.c; // Default fallback
+                    
+                    try compile_arms.append(ast.CompileMatchArm{
+                        .target = target,
+                        .body = arm.body,
+                        .source_loc = arm.source_loc,
+                    });
+                }
+                arms.deinit(); // Clean up the regular arms
+                
+                return self.arena.createNode(ast.AstNode.init(.{
+                    .match_compile_expr = .{ .target_expr = expression, .arms = compile_arms }
+                }, source_loc));
+            }
+        }
+        
         // Transfer ownership of arms ArrayList to AST node
         return self.arena.createNode(ast.AstNode.init(.{
             .match_expr = .{ .expression = expression, .arms = arms }
@@ -2015,6 +2427,25 @@ pub const Parser = struct {
             }
         }
         
+        // Handle comparison patterns (< value, > value, == value, etc.)
+        if (self.match(&[_]std.meta.Tag(Token){.LessThan}) or 
+           self.match(&[_]std.meta.Tag(Token){.GreaterThan}) or 
+           self.match(&[_]std.meta.Tag(Token){.LessThanEqual}) or 
+           self.match(&[_]std.meta.Tag(Token){.GreaterThanEqual}) or 
+           self.match(&[_]std.meta.Tag(Token){.EqualEqual}) or 
+           self.match(&[_]std.meta.Tag(Token){.NotEqual})) {
+            const operator_token = self.previous();
+            const operator = std.meta.activeTag(operator_token);
+            
+            // Parse the value to compare against
+            const value_node = try self.parseExpression();
+            
+            return ast.MatchPattern{ .comparison = .{
+                .operator = operator,
+                .value = value_node,
+            }};
+        }
+        
         // Handle range patterns (simplified for now)
         // TODO: Implement proper range pattern parsing
         
@@ -2027,10 +2458,8 @@ pub const Parser = struct {
         
         // Handle error union types (e.g., !void, !i32)
         if (self.match(&[_]std.meta.Tag(Token){.Exclamation})) {
-            _ = try self.parseType(); // Parse the inner type but ignore for now
-            // For now, create a simple identifier with error union syntax
-            // TODO: Create proper error union type AST node
-            return ast.createIdentifier(self.arena, source_loc, "!void"); // Simplified for now
+            const payload_type = try self.parseType();
+            return ast.createErrorUnionType(self.arena, source_loc, null, payload_type);
         }
         
         // Handle array types [N]T or []T
@@ -2103,11 +2532,20 @@ pub const Parser = struct {
             return ast.createIdentifier(self.arena, source_loc, "bool");
         }
         
-        // Handle identifier types
+        // Handle identifier types (including ErrorSet!Type)
         if (self.match(&[_]std.meta.Tag(Token){.Identifier})) {
             const token = self.previous();
             if (token == .Identifier) {
-                return ast.createIdentifier(self.arena, source_loc, token.Identifier.value);
+                const identifier = try ast.createIdentifier(self.arena, source_loc, token.Identifier.value);
+                
+                // Check for error union syntax: ErrorSet!Type
+                if (self.check(.Exclamation)) {
+                    _ = self.advance(); // consume !
+                    const payload_type = try self.parseType();
+                    return ast.createErrorUnionType(self.arena, source_loc, identifier, payload_type);
+                }
+                
+                return identifier;
             }
         }
         

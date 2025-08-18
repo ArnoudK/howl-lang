@@ -1040,6 +1040,54 @@ pub const Formatter = struct {
                 try self.writeString(error_node.message);
                 try self.writeString(" */");
             },
+            .try_expr => |try_expr| {
+                try self.writeString("try ");
+                try self.formatASTNodeInternal(try_expr.expression, arena, false);
+            },
+            .catch_expr => |catch_expr| {
+                try self.formatASTNodeInternal(catch_expr.expression, arena, false);
+                try self.writeString(" catch ");
+                if (catch_expr.error_capture) |error_var| {
+                    try self.writeString("|");
+                    try self.writeString(error_var);
+                    try self.writeString("| ");
+                }
+                if (catch_expr.catch_body) |body| {
+                    try self.formatASTNodeInternal(body, arena, false);
+                } else if (catch_expr.fallback_value) |fallback| {
+                    try self.formatASTNodeInternal(fallback, arena, false);
+                }
+            },
+            .error_union_type => |error_union| {
+                if (error_union.error_set) |error_set| {
+                    try self.formatASTNodeInternal(error_set, arena, false);
+                } else {
+                    try self.writeString("!");
+                }
+                try self.writeString("!");
+                try self.formatASTNodeInternal(error_union.payload_type, arena, false);
+            },
+            .error_literal => |error_literal| {
+                try self.writeString("error.");
+                try self.writeString(error_literal.name);
+            },
+            .error_set_decl => |error_set_decl| {
+                try self.writeIndent();
+                try self.writeString(error_set_decl.name);
+                try self.writeString(" :: error {");
+                try self.writeNewline();
+                self.current_indent += 1;
+                for (error_set_decl.errors.items, 0..) |error_name, i| {
+                    if (i > 0) try self.writeString(",");
+                    try self.writeNewline();
+                    try self.writeIndent();
+                    try self.writeString(error_name);
+                }
+                self.current_indent -= 1;
+                try self.writeNewline();
+                try self.writeIndent();
+                try self.writeString("}");
+            },
         }
     }
 

@@ -279,7 +279,7 @@ fn runProgram(allocator: std.mem.Allocator, args: [][]const u8) !void {
     }
 
     // Determine target to know how to run
-    var target: root.CompileTarget = .javascript; // default
+    var target: root.CompileTarget = .c; // default
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "-tc")) {
             target = .c;
@@ -339,6 +339,7 @@ fn runProgram(allocator: std.mem.Allocator, args: [][]const u8) !void {
                 std.debug.print("{s}", .{run_result.stderr});
             }
 
+            std.debug.print("==========================================\nexit code: {d}\n", .{run_result.term.Exited});
             // Leave compiled files in howl-out/ for user inspection
             // Clean up is optional and disabled by default to allow debugging
             // std.fs.cwd().deleteFile("howl-out/howl_program.c") catch {};
@@ -463,7 +464,7 @@ const CompileResult = struct {
 fn compileFile(allocator: std.mem.Allocator, file_path: []const u8, args: [][]const u8) !CompileResult {
     // Parse options
     var output_format = CompileOptions.OutputFormat.colored_text;
-    var target: root.CompileTarget = .javascript; // Changed default to JavaScript
+    var target: root.CompileTarget = .c; // Changed default to C
     var max_errors: u32 = 10;
     var enable_warnings = true;
     var stop_on_first_error = false;

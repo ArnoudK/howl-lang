@@ -460,8 +460,45 @@ pub const SemanticAnalyzer = struct {
                     const else_type = try self.inferType(else_branch);
                     if (then_type != null and else_type != null) {
                         if (!self.typesCompatible(then_type.?, else_type.?)) {
-                            try self.reportError(.type_mismatch, "If-else branches have incompatible types", node.source_loc);
-                            result_type = null;
+                            // Check if we have a context (function return type) that both branches could satisfy
+                            if (self.current_function_return_type) |context_type| {
+                                const then_compatible = self.typesCompatible(context_type, then_type.?);
+                                const else_compatible = self.typesCompatible(context_type, else_type.?);
+                                
+                                if (then_compatible and else_compatible) {
+                                    // Both branches are compatible with the context type, use that as result
+                                    result_type = context_type;
+                                } else {
+                                    // Provide detailed error message about type incompatibility
+                                    const then_type_str = try self.typeToString(then_type.?);
+                                    defer self.allocator.free(then_type_str);
+                                    const else_type_str = try self.typeToString(else_type.?);
+                                    defer self.allocator.free(else_type_str);
+                                    const context_type_str = try self.typeToString(context_type);
+                                    defer self.allocator.free(context_type_str);
+                                    
+                                    const detailed_msg = try std.fmt.allocPrint(self.allocator, 
+                                        "If-else branches have incompatible types. Then branch: '{s}', else branch: '{s}'. Expected return type: '{s}'",
+                                        .{ then_type_str, else_type_str, context_type_str });
+                                    defer self.allocator.free(detailed_msg);
+                                    
+                                    try self.reportError(.type_mismatch, detailed_msg, node.source_loc);
+                                    result_type = null;
+                                }
+                            } else {
+                                const then_type_str = try self.typeToString(then_type.?);
+                                defer self.allocator.free(then_type_str);
+                                const else_type_str = try self.typeToString(else_type.?);
+                                defer self.allocator.free(else_type_str);
+                                
+                                const detailed_msg = try std.fmt.allocPrint(self.allocator, 
+                                    "If-else branches have incompatible types: '{s}' and '{s}'",
+                                    .{ then_type_str, else_type_str });
+                                defer self.allocator.free(detailed_msg);
+                                
+                                try self.reportError(.type_mismatch, detailed_msg, node.source_loc);
+                                result_type = null;
+                            }
                         }
                     }
                 } else {
@@ -608,18 +645,52 @@ pub const SemanticAnalyzer = struct {
             },
 
             .compile_target_expr => {
-                // @compile.target evaluates to the current compile target (as an enum-like value)
-                // For now, return a simple type
-                return ast.Type.initPrimitive(.{ .type = {} }, node.source_loc);
+                // @compile.target evaluates to the current compile target (as a string value)
+                return ast.Type.initPrimitive(.{ .str = {} }, node.source_loc);
             },
 
             .compile_insert_expr => {
-                // @compile.insert("code") doesn't return a value, it's a compile-time instruction
-                return ast.Type.initPrimitive(.{ .void = {} }, node.source_loc);
+                // @compile.insert("code") returns the inserted code as a string for consistency
+                return ast.Type.initPrimitive(.{ .str = {} }, node.source_loc);
             },
 
             .match_compile_expr => |match_compile| {
                 return self.analyzeMatchCompileExpression(match_compile, node.source_loc);
+            },
+            
+            .try_expr => |try_expr| {
+                // Delegate to analyzeTryExpression for proper validation
+                return self.analyzeTryExpression(try_expr, node.source_loc);
+            },
+            
+            .catch_expr => |catch_expr| {
+                // Catch expressions return either the success type or the catch body type
+                const expr_type = try self.inferType(catch_expr.expression);
+                if (catch_expr.catch_body) |body| {
+                    const catch_type = try self.inferType(body);
+                    return catch_type orelse expr_type;
+                } else if (catch_expr.fallback_value) |fallback| {
+                    const fallback_type = try self.inferType(fallback);
+                    return fallback_type;
+                }
+                return expr_type;
+            },
+            
+            .error_union_type => |error_union| {
+                // Delegate to proper error union type analysis
+                return self.analyzeErrorUnionType(error_union, node.source_loc);
+            },
+            
+            .error_literal => |error_literal| {
+                // Error literals have error type (simplified as string for now)
+                _ = error_literal; // Mark as used
+                return ast.Type.initPrimitive(.{ .string = {} }, node.source_loc);
+            },
+            
+            .error_set_decl => |error_set_decl| {
+                // Error set declarations represent the type itself
+                _ = error_set_decl; // Mark as used
+                return ast.Type.initPrimitive(.{ .type = {} }, node.source_loc);
             },
         }
     }
@@ -826,6 +897,15 @@ pub const SemanticAnalyzer = struct {
                                 }
                             }
                         },
+                        .identifier => |base_ident| {
+                            // Handle simple member expressions like @compile.print
+                            if (std.mem.eql(u8, base_ident.name, "compile")) {
+                                if (std.mem.eql(u8, member.field, "print")) {
+                                    // @compile.print returns void (it's a compile-time function)
+                                    return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
+                                }
+                            }
+                        },
                         else => {},
                     }
                 }
@@ -965,6 +1045,15 @@ pub const SemanticAnalyzer = struct {
                             return ast.Type.initPrimitive(.{ .type = {} }, source_loc);
                         }
                     }
+                    // Handle @compile module
+                    if (std.mem.eql(u8, ident.name, "compile")) {
+                        if (std.mem.eql(u8, field_name, "print")) {
+                            // @compile.print returns void (it's a compile-time function)
+                            return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
+                        }
+                        // Other @compile.* functions return their appropriate types
+                        // Note: @compile.target and @compile.insert are handled by the parser as special AST nodes
+                    }
                 },
                 .member_expr => |member| {
                     // Handle nested member access like std.debug.print
@@ -992,6 +1081,34 @@ pub const SemanticAnalyzer = struct {
 
         // Handle member access based on object type
         switch (obj_type.data) {
+            .error_set => |error_set| {
+                // Check if field_name is one of the error enumerants
+                for (error_set.enumerants) |enumerant| {
+                    if (std.mem.eql(u8, enumerant, field_name)) {
+                        // Return the error type for the enumerant
+                        return ast.Type.initError(error_set.name, source_loc);
+                    }
+                }
+                
+                // Provide helpful error message with suggestions
+                var suggestion_msg = std.ArrayList(u8).init(self.allocator);
+                defer suggestion_msg.deinit();
+                
+                try suggestion_msg.appendSlice("Error set '");
+                try suggestion_msg.appendSlice(error_set.name);
+                try suggestion_msg.appendSlice("' has no enumerant '");
+                try suggestion_msg.appendSlice(field_name);
+                try suggestion_msg.appendSlice("'. Available enumerants: ");
+                
+                for (error_set.enumerants, 0..) |enumerant, i| {
+                    if (i > 0) try suggestion_msg.appendSlice(", ");
+                    try suggestion_msg.appendSlice(enumerant);
+                }
+                
+                try self.reportError(.invalid_member_access, suggestion_msg.items, source_loc);
+                return null;
+            },
+            
             .@"struct" => |struct_info| {
                 // Find the field in the struct
                 for (struct_info.fields) |field| {
@@ -1089,6 +1206,73 @@ pub const SemanticAnalyzer = struct {
             switch (err) {
                 error.DuplicateSymbol => {
                     const msg = try std.fmt.allocPrint(self.allocator, "Enum '{s}' is already declared", .{enum_decl.name});
+                    defer self.allocator.free(msg);
+                    try self.reportError(.duplicate_declaration, msg, source_loc);
+                },
+                else => return err,
+            }
+        };
+
+        return ast.Type.initPrimitive(.{ .type = {} }, source_loc);
+    }
+    
+    fn analyzeErrorSetDeclaration(
+        self: *SemanticAnalyzer,
+        error_set_decl: @TypeOf(@as(ast.AstNode, undefined).data.error_set_decl),
+        source_loc: ast.SourceLoc,
+    ) !?ast.Type {
+        // Validate error enumerants
+        if (error_set_decl.errors.items.len == 0) {
+            try self.reportError(.type_mismatch, "Error set cannot be empty", source_loc);
+            return null;
+        }
+        
+        // Check for duplicate error names
+        for (error_set_decl.errors.items, 0..) |error_name1, i| {
+            for (error_set_decl.errors.items[i+1..], i+1..) |error_name2, j| {
+                if (std.mem.eql(u8, error_name1, error_name2)) {
+                    const msg = try std.fmt.allocPrint(self.allocator, "Duplicate error '{s}' in error set '{s}'", .{ error_name1, error_set_decl.name });
+                    defer self.allocator.free(msg);
+                    try self.reportError(.duplicate_declaration, msg, source_loc);
+                    return null;
+                }
+                _ = j; // Suppress unused variable warning
+            }
+        }
+        
+        // Create owned copy of error names for the type system
+        const owned_errors = try self.allocator.alloc([]const u8, error_set_decl.errors.items.len);
+        for (error_set_decl.errors.items, 0..) |error_name, i| {
+            // The error names are already owned by the AST arena, so we can safely reference them
+            owned_errors[i] = error_name;
+        }
+        
+        // Create the error set type with proper memory management
+        const error_set_type = ast.Type.initErrorSet(error_set_decl.name, owned_errors, source_loc);
+
+        // Register the error set type in the type registry
+        try self.type_registry.put(error_set_decl.name, error_set_type);
+
+        // Create compile-time value for the error set
+        const comptime_value = ComptimeValue{ .string = error_set_decl.name };
+
+        // Declare error set symbol with proper metadata
+        const symbol = Symbol{
+            .name = error_set_decl.name,
+            .symbol_type = .type_def,
+            .declared_type = error_set_type,
+            .inferred_type = null,
+            .source_loc = source_loc,
+            .is_mutable = false,
+            .is_used = false,
+            .comptime_value = comptime_value,
+            .function_params = null,
+        };
+
+        self.current_scope.declare(error_set_decl.name, symbol) catch |err| {
+            switch (err) {
+                error.DuplicateSymbol => {
+                    const msg = try std.fmt.allocPrint(self.allocator, "Error set '{s}' is already declared", .{error_set_decl.name});
                     defer self.allocator.free(msg);
                     try self.reportError(.duplicate_declaration, msg, source_loc);
                 },
@@ -1657,6 +1841,13 @@ pub const SemanticAnalyzer = struct {
                     try self.reportError(.undefined_variable, "Cannot infer enum type for member pattern", source_loc);
                 }
             },
+            .comparison => |comp| {
+                // TODO: Implement proper type checking for comparison patterns
+                _ = comp;
+                
+                // For now, just skip the type checking and accept all comparison patterns
+                // This will be expanded once the basic parsing works
+            },
             .range => {
                 // TODO: Implement range pattern validation
             },
@@ -1708,52 +1899,193 @@ pub const SemanticAnalyzer = struct {
         };
     }
 
-    /// Check if two types are compatible
-    fn typesCompatible(self: *SemanticAnalyzer, type1: ast.Type, type2: ast.Type) bool {
-        _ = self; // unused parameter
-        
-        // Handle same types
-        if (std.meta.eql(type1, type2)) return true;
-        
-        // Handle numeric type compatibility
-        return switch (type1.data) {
-            .primitive => |prim1| switch (type2.data) {
-                .primitive => |prim2| switch (prim1) {
-                    // Integers can be compatible with other integers
-                    .i8, .i16, .i32, .i64, .isize => switch (prim2) {
-                        .i8, .i16, .i32, .i64, .isize => true,
-                        else => false,
-                    },
-                    .u8, .u16, .u32, .u64, .usize => switch (prim2) {
-                        .u8, .u16, .u32, .u64, .usize => true,
-                        else => false,
-                    },
-                    // Floats can be compatible with other floats
-                    .f32, .f64 => switch (prim2) {
-                        .f32, .f64 => true,
-                        else => false,
-                    },
-                    // Strings are compatible with other strings
-                    .str => switch (prim2) {
-                        .str => true,
-                        else => false,
-                    },
-                    // Booleans are compatible with other booleans
-                    .bool => switch (prim2) {
-                        .bool => true,
-                        else => false,
-                    },
-                    // Characters are compatible with other characters
-                    .char => switch (prim2) {
-                        .char => true,
-                        else => false,
-                    },
-                    else => false,
-                },
-                else => false,
+    /// Convert a type to a human-readable string for error messages
+    fn typeToString(self: *SemanticAnalyzer, type_info: ast.Type) ![]u8 {
+        return switch (type_info.data) {
+            .primitive => |prim| switch (prim) {
+                .i8 => try self.allocator.dupe(u8, "i8"),
+                .i16 => try self.allocator.dupe(u8, "i16"),
+                .i32 => try self.allocator.dupe(u8, "i32"),
+                .i64 => try self.allocator.dupe(u8, "i64"),
+                .isize => try self.allocator.dupe(u8, "isize"),
+                .u8 => try self.allocator.dupe(u8, "u8"),
+                .u16 => try self.allocator.dupe(u8, "u16"),
+                .u32 => try self.allocator.dupe(u8, "u32"),
+                .u64 => try self.allocator.dupe(u8, "u64"),
+                .usize => try self.allocator.dupe(u8, "usize"),
+                .f32 => try self.allocator.dupe(u8, "f32"),
+                .f64 => try self.allocator.dupe(u8, "f64"),
+                .str => try self.allocator.dupe(u8, "str"),
+                .strb => try self.allocator.dupe(u8, "strb"),
+                .string => try self.allocator.dupe(u8, "string"),
+                .bool => try self.allocator.dupe(u8, "bool"),
+                .char => try self.allocator.dupe(u8, "char"),
+                .void => try self.allocator.dupe(u8, "void"),
+                .type => try self.allocator.dupe(u8, "type"),
+                .noreturn => try self.allocator.dupe(u8, "noreturn"),
+                .module => try self.allocator.dupe(u8, "module"),
             },
+            .error_set => |error_set| try self.allocator.dupe(u8, error_set.name),
+            .error_union => |error_union| {
+                const payload_str = try self.typeToString(error_union.payload_type.*);
+                defer self.allocator.free(payload_str);
+                return try std.fmt.allocPrint(self.allocator, "{s}!{s}", .{ error_union.error_set, payload_str });
+            },
+            .@"struct" => |struct_info| try self.allocator.dupe(u8, struct_info.name),
+            .custom_struct => |custom_struct| try self.allocator.dupe(u8, custom_struct.name),
+            .@"enum" => |enum_info| try self.allocator.dupe(u8, enum_info.name),
+            .function => try self.allocator.dupe(u8, "function"),
+            .pointer => try self.allocator.dupe(u8, "pointer"),
+            .array => try self.allocator.dupe(u8, "array"),
+            .optional => try self.allocator.dupe(u8, "optional"),
+            .comptime_type => try self.allocator.dupe(u8, "comptime type"),
+            .unknown => try self.allocator.dupe(u8, "unknown"),
+        };
+    }
+
+    /// Check if two types are compatible with comprehensive error union support
+    fn typesCompatible(self: *SemanticAnalyzer, expected: ast.Type, actual: ast.Type) bool {
+        // Early return for identical types
+        if (std.meta.eql(expected, actual)) return true;
+        
+        // Handle error union compatibility (both directions)
+        if (expected.data == .error_union) {
+            return self.isCompatibleWithErrorUnion(expected.data.error_union, actual);
+        }
+        
+        if (actual.data == .error_union) {
+            return self.isCompatibleWithErrorUnion(actual.data.error_union, expected);
+        }
+        
+        // Handle primitive type compatibility with proper coercion rules
+        if (expected.data == .primitive and actual.data == .primitive) {
+            return self.isPrimitiveCompatible(expected.data.primitive, actual.data.primitive);
+        }
+        
+        // Handle struct compatibility
+        if (expected.data == .@"struct" and actual.data == .@"struct") {
+            return self.isStructCompatible(expected.data.@"struct", actual.data.@"struct");
+        }
+        
+        if (expected.data == .custom_struct and actual.data == .custom_struct) {
+            return self.isCustomStructCompatible(expected.data.custom_struct, actual.data.custom_struct);
+        }
+        
+        // Handle error set compatibility
+        if (expected.data == .error_set and actual.data == .error_set) {
+            return self.isErrorSetCompatible(expected.data.error_set, actual.data.error_set);
+        }
+        
+        // Handle enum compatibility
+        if (expected.data == .@"enum" and actual.data == .@"enum") {
+            return std.mem.eql(u8, expected.data.@"enum".name, actual.data.@"enum".name);
+        }
+        
+        return false;
+    }
+    
+    /// Check if a type is compatible with an error union
+    fn isCompatibleWithErrorUnion(self: *SemanticAnalyzer, error_union: @TypeOf(@as(ast.Type, undefined).data.error_union), actual_type: ast.Type) bool {
+        _ = self;
+        
+        return switch (actual_type.data) {
+            // Payload type compatibility
+            .primitive => |prim| blk: {
+                if (error_union.payload_type.data == .primitive) {
+                    break :blk std.meta.eql(error_union.payload_type.data.primitive, prim);
+                }
+                break :blk false;
+            },
+            
+            // Error set compatibility
+            .error_set => |error_set| std.mem.eql(u8, error_union.error_set, error_set.name),
+            
+            // Struct compatibility
+            .@"struct" => blk: {
+                if (error_union.payload_type.data == .@"struct") {
+                    break :blk std.meta.eql(error_union.payload_type.data.@"struct", actual_type.data.@"struct");
+                }
+                break :blk false;
+            },
+            
+            .custom_struct => blk: {
+                if (error_union.payload_type.data == .custom_struct) {
+                    break :blk std.meta.eql(error_union.payload_type.data.custom_struct, actual_type.data.custom_struct);
+                }
+                break :blk false;
+            },
+            
+            // Other error union (for nested error unions)
+            .error_union => |other_error_union| {
+                // Both error sets must be compatible and payload types must match
+                return std.mem.eql(u8, error_union.error_set, other_error_union.error_set) and
+                       std.meta.eql(error_union.payload_type.*, other_error_union.payload_type.*);
+            },
+            
             else => false,
         };
+    }
+    
+    /// Check primitive type compatibility with proper coercion rules
+    fn isPrimitiveCompatible(self: *SemanticAnalyzer, expected: ast.PrimitiveType, actual: ast.PrimitiveType) bool {
+        _ = self;
+        
+        // Exact match
+        if (std.meta.eql(expected, actual)) return true;
+        
+        return switch (expected) {
+            // Integer compatibility - allow widening conversions
+            .i8 => switch (actual) { .i8 => true, else => false },
+            .i16 => switch (actual) { .i8, .i16 => true, else => false },
+            .i32 => switch (actual) { .i8, .i16, .i32 => true, else => false },
+            .i64 => switch (actual) { .i8, .i16, .i32, .i64 => true, else => false },
+            .isize => switch (actual) { .i8, .i16, .i32, .i64, .isize => true, else => false },
+            
+            // Unsigned integer compatibility
+            .u8 => switch (actual) { .u8 => true, else => false },
+            .u16 => switch (actual) { .u8, .u16 => true, else => false },
+            .u32 => switch (actual) { .u8, .u16, .u32 => true, else => false },
+            .u64 => switch (actual) { .u8, .u16, .u32, .u64 => true, else => false },
+            .usize => switch (actual) { .u8, .u16, .u32, .u64, .usize => true, else => false },
+            
+            // Float compatibility
+            .f32 => switch (actual) { .f32 => true, else => false },
+            .f64 => switch (actual) { .f32, .f64 => true, else => false },
+            
+            // String types
+            .str => switch (actual) { .str => true, else => false },
+            .strb => switch (actual) { .strb => true, else => false },
+            .string => switch (actual) { .string, .str => true, else => false }, // Legacy compatibility
+            
+            // Other types must match exactly
+            .bool => switch (actual) { .bool => true, else => false },
+            .char => switch (actual) { .char => true, else => false },
+            .void => switch (actual) { .void => true, else => false },
+            .type => switch (actual) { .type => true, else => false },
+            .noreturn => switch (actual) { .noreturn => true, else => false },
+            .module => switch (actual) { .module => true, else => false },
+        };
+    }
+    
+    /// Check struct type compatibility
+    fn isStructCompatible(self: *SemanticAnalyzer, expected: @TypeOf(@as(ast.Type, undefined).data.@"struct"), actual: @TypeOf(@as(ast.Type, undefined).data.@"struct")) bool {
+        _ = self;
+        // Structs must have the same name for now (nominal typing)
+        return std.mem.eql(u8, expected.name, actual.name);
+    }
+    
+    /// Check custom struct type compatibility
+    fn isCustomStructCompatible(self: *SemanticAnalyzer, expected: @TypeOf(@as(ast.Type, undefined).data.custom_struct), actual: @TypeOf(@as(ast.Type, undefined).data.custom_struct)) bool {
+        _ = self;
+        // Custom structs must have the same name for now (nominal typing)
+        return std.mem.eql(u8, expected.name, actual.name);
+    }
+    
+    /// Check error set compatibility
+    fn isErrorSetCompatible(self: *SemanticAnalyzer, expected: @TypeOf(@as(ast.Type, undefined).data.error_set), actual: @TypeOf(@as(ast.Type, undefined).data.error_set)) bool {
+        _ = self;
+        // Error sets are compatible if they have the same name
+        return std.mem.eql(u8, expected.name, actual.name);
     }
 
     /// Validate that enum explicit values are in ascending order
@@ -2565,6 +2897,10 @@ pub const SemanticAnalyzer = struct {
                 _ = try self.analyzeEnumDeclaration(enum_decl, node.source_loc);
                 return null;
             },
+            .error_set_decl => |error_set_decl| {
+                _ = try self.analyzeErrorSetDeclaration(error_set_decl, node.source_loc);
+                return null;
+            },
             .var_decl => |var_decl| {
                 _ = try self.analyzeVariableDeclaration(var_decl, node.source_loc);
                 return null;
@@ -2604,11 +2940,177 @@ pub const SemanticAnalyzer = struct {
                 }
                 return ast.Type.initPrimitive(.{ .void = {} }, node.source_loc);
             },
+            .try_expr => |try_expr| {
+                return self.analyzeTryExpression(try_expr, node.source_loc);
+            },
+            .catch_expr => |catch_expr| {
+                return self.analyzeCatchExpression(catch_expr, node.source_loc);
+            },
+            .error_union_type => |error_union| {
+                return self.analyzeErrorUnionType(error_union, node.source_loc);
+            },
+            .error_literal => |error_literal| {
+                // Error literals have error type
+                _ = error_literal; // avoid unused variable warning
+                return ast.Type.initPrimitive(.{ .string = {} }, node.source_loc); // Simplified for now
+            },
             else => {
                 // For other nodes, try to infer their type
                 return self.inferType(node_id);
             },
         }
+    }
+    
+    // ============================================================================
+    // Error Handling Analysis
+    // ============================================================================
+    
+    fn analyzeTryExpression(self: *SemanticAnalyzer, try_expr: @TypeOf(@as(ast.AstNode, undefined).data.try_expr), source_loc: ast.SourceLoc) anyerror!?ast.Type {
+        // Validate that try is used in a context where errors can be handled
+        if (self.current_function_return_type == null) {
+            try self.reportError(.invalid_statement, "Try expression used outside of function", source_loc);
+            return null;
+        }
+
+        const current_return_type = self.current_function_return_type.?;
+        
+        // Check if current function can handle errors (returns error union)
+        var can_handle_errors = false;
+        switch (current_return_type.data) {
+            .error_union => can_handle_errors = true,
+            .primitive => |prim| {
+                // Check if it's void - might be !void  
+                if (prim == .void) {
+                    // This is a simplified check - in a full implementation, we'd need 
+                    // to track whether this void is actually !void
+                    can_handle_errors = true;
+                }
+            },
+            else => {},
+        }
+        
+        if (!can_handle_errors) {
+            try self.reportError(.invalid_statement, "Try expression used in function that doesn't return an error union", source_loc);
+            return null;
+        }
+        
+        // Analyze the expression being tried
+        const expr_type = try self.inferType(try_expr.expression);
+        
+        if (expr_type) |et| {
+            // Validate that the expression returns an error union
+            switch (et.data) {
+                .error_union => |eu| {
+                    // Return the payload type of the error union
+                    return eu.payload_type.*;
+                },
+                else => {
+                    try self.reportError(.type_mismatch, "Try expression requires an error union type", source_loc);
+                    return null;
+                },
+            }
+        }
+        
+        return expr_type;
+    }
+    
+    fn analyzeCatchExpression(self: *SemanticAnalyzer, catch_expr: @TypeOf(@as(ast.AstNode, undefined).data.catch_expr), source_loc: ast.SourceLoc) anyerror!?ast.Type {
+        // Analyze the expression being caught (not necessarily a try expression)
+        const expr_type = try self.analyzeNode(catch_expr.expression);
+        
+        // If there's an error capture variable, add it to current scope
+        if (catch_expr.error_capture) |error_var| {
+            const error_symbol = Symbol{
+                .name = error_var,
+                .symbol_type = .variable,
+                .declared_type = ast.Type.initPrimitive(.{ .string = {} }, source_loc), // Error type
+                .inferred_type = null,
+                .source_loc = source_loc,
+                .is_used = false,
+                .is_mutable = false,
+                .comptime_value = null,
+                .function_params = null,
+            };
+            _ = try self.current_scope.symbols.put(error_var, error_symbol);
+        }
+        
+        // Analyze catch body or fallback value
+        var catch_type: ?ast.Type = null;
+        if (catch_expr.catch_body) |body| {
+            catch_type = try self.analyzeNode(body);
+        } else if (catch_expr.fallback_value) |fallback| {
+            catch_type = try self.analyzeNode(fallback);
+        }
+        
+        // The catch expression returns the type of the catch body/fallback or the success type of the expression
+        if (catch_type) |ct| {
+            return ct;
+        } else if (expr_type) |et| {
+            // Return the payload type if it's an error union
+            // TODO: Extract payload type from error union
+            return et;
+        }
+        
+        return null;
+    }
+    
+    fn analyzeErrorUnionType(self: *SemanticAnalyzer, error_union: @TypeOf(@as(ast.AstNode, undefined).data.error_union_type), source_loc: ast.SourceLoc) anyerror!?ast.Type {
+        // Validate error set identifier
+        const error_set_id = error_union.error_set orelse {
+            try self.reportError(.type_mismatch, "Error union missing error set", source_loc);
+            return null;
+        };
+        
+        const error_set_node = self.arena.getNode(error_set_id);
+        if (error_set_node == null) {
+            try self.reportError(.type_mismatch, "Invalid error set in error union", source_loc);
+            return null;
+        }
+        
+        // Extract and validate error set name
+        const error_set_name = switch (error_set_node.?.data) {
+            .identifier => |ident| ident.name,
+            else => {
+                try self.reportError(.type_mismatch, "Error set must be an identifier", source_loc);
+                return null;
+            },
+        };
+        
+        // Validate that the error set exists and is declared
+        const error_set_symbol = self.current_scope.lookup(error_set_name);
+        if (error_set_symbol == null or error_set_symbol.?.symbol_type != .type_def) {
+            const msg = try std.fmt.allocPrint(self.allocator, "Undefined error set '{s}'", .{error_set_name});
+            defer self.allocator.free(msg);
+            try self.reportError(.undefined_variable, msg, source_loc);
+            return null;
+        }
+        
+        // Analyze and validate the payload type
+        const payload_type = try self.inferType(error_union.payload_type);
+        if (payload_type == null) {
+            try self.reportError(.type_mismatch, "Invalid payload type in error union", source_loc);
+            return null;
+        }
+        
+        // Validate that payload type is not another error union (for now, to avoid complexity)
+        if (payload_type.?.data == .error_union) {
+            try self.reportError(.type_mismatch, "Nested error unions are not supported", source_loc);
+            return null;
+        }
+        
+        // Create error union type with proper memory management
+        const payload_type_ptr = try self.allocator.create(ast.Type);
+        payload_type_ptr.* = payload_type.?;
+        
+        const result_type = ast.Type{
+            .data = .{ .error_union = .{ 
+                .error_set = error_set_name,
+                .payload_type = payload_type_ptr,
+            }},
+            .source_loc = source_loc,
+        };
+        
+        return result_type;
     }
 
     pub fn analyzeProgram(self: *SemanticAnalyzer, root_node_id: ast.NodeId) !void {

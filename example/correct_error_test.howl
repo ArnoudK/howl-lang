@@ -1,0 +1,95 @@
+// Correct Howl Error Handling Test
+// This file tests the corrected error handling implementation
+
+std :: @import("std")
+
+// Define an error set
+FileError :: error {
+    NotFound,
+    AccessDenied,
+    DiskFull
+}
+
+// Function that returns an error union with specific error set
+readFile :: fn(path: str) FileError!str {
+    result := if (path == "missing.txt") {
+        return FileError.NotFound
+    } else if (path == "protected.txt") {
+        return FileError.AccessDenied
+    } else {
+        return "file contents"
+    }
+    return result
+}
+
+// Function that returns anyerror (using ! syntax)
+divide :: fn(a: i32, b: i32) !i32 {
+    result := if (b == 0) {
+        return error.DivisionByZero
+    } else {
+        return a / b
+    }
+    return result
+}
+
+// Function using try to propagate errors
+safeDivide :: fn(a: i32, b: i32) !i32 {
+    result :: try divide(a, b)
+    return result + 1
+}
+
+// Function using catch with error capture
+handleDivision :: fn(a: i32, b: i32) i32 {
+    result :: divide(a, b) catch |err| {
+        std.debug.print("Division error: {}", err)
+        return -1
+    }
+    return result
+}
+
+// Function using catch with direct fallback value
+safeFileRead :: fn(path: str) str {
+    contents :: readFile(path) catch "default content"
+    return contents
+}
+
+// Function with match on error union
+processFile :: fn(path: str) str {
+    result :: readFile(path)
+    return match result {
+    | str => |contents| contents
+    | FileError.NotFound => "File not found"
+    | FileError.AccessDenied => "Access denied"
+    | FileError.DiskFull => "Disk full"
+    }
+}
+
+pub main :: fn() !void {
+    std.debug.print("=== Correct Howl Error Handling Tests ===")
+    
+    // Test successful operation
+    result1 :: divide(10, 2) catch 0
+    std.debug.print("divide(10, 2) = {}", result1)
+    
+    // Test error with catch and fallback
+    result2 :: divide(10, 0) catch 0
+    std.debug.print("divide(10, 0) with fallback = {}", result2)
+    
+    // Test try propagation
+    result3 :: safeDivide(10, 2) catch 0
+    std.debug.print("safeDivide(10, 2) = {}", result3)
+    
+    // Test file operations
+    content1 :: safeFileRead("good.txt")
+    std.debug.print("safeFileRead(\"good.txt\") = {}", content1)
+    
+    content2 :: safeFileRead("missing.txt")
+    std.debug.print("safeFileRead(\"missing.txt\") = {}", content2)
+    
+    // Test match on error union
+    processed :: processFile("missing.txt")
+    std.debug.print("processFile(\"missing.txt\") = {}", processed)
+    
+    std.debug.print("=== Tests Complete ===")
+    return
+}

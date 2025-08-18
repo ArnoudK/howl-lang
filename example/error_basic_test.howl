@@ -1,0 +1,33 @@
+// Basic Error Handling Test
+// Tests fundamental error handling syntax
+
+// Function that can return an error
+fn mayFail(x: i32) -> !i32 {
+    if (x < 0) {
+        return error.NegativeInput;
+    }
+    return x * 2;
+}
+
+// Function using try expression
+fn testTry(x: i32) -> !i32 {
+    let result = try mayFail(x);
+    return result + 1;
+}
+
+// Function using try-catch expression
+fn testCatch(x: i32) -> i32 {
+    let result = try mayFail(x) catch |err| {
+        return 0; // Default value on error
+    };
+    return result;
+}
+
+fn main() -> void {
+    // Test successful case
+    print("Testing mayFail(5): {}", try mayFail(5));
+    
+    // Test error case with catch
+    print("Testing testCatch(-1): {}", testCatch(-1));
+    print("Testing testCatch(3): {}", testCatch(3));
+}

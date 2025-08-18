@@ -2,7 +2,7 @@
 
 // Enhanced debug print function - supports format specifiers and anonymous struct arguments
 // Usage: std.debug.print("{d:.2} {s:!>4}", .{3.141, "hi!"})
- print :: fn (format: string, args: struct{})  void {
+ print :: fn (format: string, args: AnyType)  void {
     match @compile.target {
     |    .c => @compile.insert("/* Enhanced C debug print */"),
     |    .javascript => @compile.insert("/* Enhanced JS debug print */")

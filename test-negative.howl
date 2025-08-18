@@ -1,0 +1,4 @@
+// Simple test for negative numbers
+main :: fn () void {
+    x :: -1
+}

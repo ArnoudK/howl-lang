@@ -1,11 +1,51 @@
-main :: fn() i32 {
-    x := 42
-    y := undefinedVar
-    z := x + "string"  // Type mismatch error
-    w := nonExistentFunc()
-    return "not a number"  // Return type mismatch
+// Comprehensive Error Handling Test Suite for Howl Language
+// Tests all error handling features with best practices
+
+// Test 1: Basic Error Set Declaration
+FileError :: error { FileNotFound, PermissionDenied, InvalidPath }
+NetworkError :: error { ConnectionLost, Timeout, InvalidResponse }
+
+// Test 2: Simple Error Union Types
+readFile :: fn (path: str) FileError!str {
+    return if (path == "restricted") FileError.PermissionDenied else "file contents"
 }
 
-badFunction :: fn(param: UnknownType) void {
-    return param + 5
+// Test 3: Error Union with Different Payload Types  
+parseNumber :: fn (input: str) FileError!i32 {
+    return if (input == "invalid") FileError.InvalidPath else 42
+}
+
+// Test 4: Try expression with error propagation
+safeParseNumber :: fn (input: str) FileError!i32 {
+    return try parseNumber(input)
+}
+
+// Test 5: Catch with fallback values
+safeReadFile :: fn (path: str) str {
+    return readFile(path) catch "default content"
+}
+
+// Test 6: Complex conditional error handling
+divideNumbers :: fn (a: i32, b: i32) FileError!i32 {
+    return if (b == 0) FileError.InvalidPath else (a / b)
+}
+
+main :: fn () void {
+    // Test basic error handling
+    result1 :: readFile("valid.txt")
+    
+    // Test try expression  
+    result2 :: try safeParseNumber("42")
+    
+    // Test catch with fallback
+    result3 :: safeReadFile("missing.txt") 
+    
+    // Test complex conditional
+    result4 :: divideNumbers(10, 2) catch -1
+    
+    // Test error value access
+    result5 :: FileError.FileNotFound
+    
+    // Test different error sets
+    result6 :: NetworkError.ConnectionLost
 }

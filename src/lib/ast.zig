@@ -291,6 +291,10 @@ pub const Type = struct {
             error_set: []const u8, // simplified for now
             payload_type: *Type,
         },
+        error_set: struct {
+            name: []const u8,
+            enumerants: [][]const u8,
+        },
         // Compile-time types
         comptime_type: struct {
             resolved_type: ?*Type, // null until compile-time evaluation
@@ -328,6 +332,20 @@ pub const Type = struct {
     pub fn initEnum(name: []const u8, members: []EnumMember, source_loc: SourceLoc) Type {
         return Type{
             .data = .{ .@"enum" = .{ .name = name, .members = members } },
+            .source_loc = source_loc,
+        };
+    }
+
+    pub fn initErrorSet(name: []const u8, enumerants: [][]const u8, source_loc: SourceLoc) Type {
+        return Type{
+            .data = .{ .error_set = .{ .name = name, .enumerants = enumerants } },
+            .source_loc = source_loc,
+        };
+    }
+
+    pub fn initError(error_set_name: []const u8, source_loc: SourceLoc) Type {
+        return Type{
+            .data = .{ .error_set = .{ .name = error_set_name, .enumerants = &[_][]const u8{} } },
             .source_loc = source_loc,
         };
     }
@@ -549,6 +567,10 @@ pub const MatchPattern = union(enum) {
     identifier: []const u8,
     wildcard: void, // _
     enum_member: []const u8, // .member (inferred enum member)
+    comparison: struct {
+        operator: std.meta.Tag(Token), // .LessThan, .GreaterThan, .EqualEqual, etc.
+        value: NodeId,
+    },
     range: struct {
         start: NodeId,
         end: NodeId,
@@ -742,6 +764,26 @@ pub const AstNode = struct {
             error_code: ErrorSystem.ErrorCode,
             message: []const u8,
         },
+        try_expr: struct {
+            expression: NodeId, // Expression that may return an error union
+        },
+        catch_expr: struct {
+            expression: NodeId, // Expression that may return an error union (not tied to try)
+            error_capture: ?[]const u8, // Optional error capture variable name |err|
+            catch_body: ?NodeId, // Block to execute when error occurs, null for direct value fallback
+            fallback_value: ?NodeId, // For `expr catch "default"` syntax
+        },
+        error_union_type: struct {
+            error_set: ?NodeId, // Optional error set, null for inferred (anyerror)
+            payload_type: NodeId, // The non-error type
+        },
+        error_literal: struct {
+            name: []const u8, // Error name (e.g., "OutOfMemory")
+        },
+        error_set_decl: struct {
+            name: []const u8, // Error set name (e.g., "FileError")
+            errors: std.ArrayList([]const u8), // List of error names
+        },
     };
 
     pub fn init(data: NodeData, source_loc: SourceLoc) AstNode {
@@ -770,7 +812,11 @@ pub const AstNode = struct {
             .block,
             .struct_init,
             .array_init,
-            .generic_type_expr => true,
+            .generic_type_expr,
+            .try_expr,
+            .catch_expr,
+            .error_union_type,
+            .error_literal => true,
             else => false,
         };
     }
@@ -785,7 +831,8 @@ pub const AstNode = struct {
             .import_decl,
             .return_stmt,
             .break_stmt,
-            .continue_stmt => true,
+            .continue_stmt,
+            .error_set_decl => true,
             else => false,
         };
     }
@@ -878,6 +925,31 @@ pub fn createMatchCompileExpr(arena: *AstArena, source_loc: SourceLoc, target_ex
     return arena.createNode(node);
 }
 
+pub fn createTryExpr(arena: *AstArena, source_loc: SourceLoc, expression: NodeId) !NodeId {
+    const node = AstNode.init(.{ .try_expr = .{ .expression = expression } }, source_loc);
+    return arena.createNode(node);
+}
+
+pub fn createCatchExpr(arena: *AstArena, source_loc: SourceLoc, expression: NodeId, error_capture: ?[]const u8, catch_body: ?NodeId, fallback_value: ?NodeId) !NodeId {
+    const node = AstNode.init(.{ .catch_expr = .{ .expression = expression, .error_capture = error_capture, .catch_body = catch_body, .fallback_value = fallback_value } }, source_loc);
+    return arena.createNode(node);
+}
+
+pub fn createErrorSetDecl(arena: *AstArena, source_loc: SourceLoc, name: []const u8, errors: std.ArrayList([]const u8)) !NodeId {
+    const node = AstNode.init(.{ .error_set_decl = .{ .name = name, .errors = errors } }, source_loc);
+    return arena.createNode(node);
+}
+
+pub fn createErrorUnionType(arena: *AstArena, source_loc: SourceLoc, error_set: ?NodeId, payload_type: NodeId) !NodeId {
+    const node = AstNode.init(.{ .error_union_type = .{ .error_set = error_set, .payload_type = payload_type } }, source_loc);
+    return arena.createNode(node);
+}
+
+pub fn createErrorLiteral(arena: *AstArena, source_loc: SourceLoc, name: []const u8) !NodeId {
+    const node = AstNode.init(.{ .error_literal = .{ .name = name } }, source_loc);
+    return arena.createNode(node);
+}
+
 // ============================================================================
 // AST Visitor Pattern for Traversal
 // ============================================================================
@@ -942,6 +1014,19 @@ pub const AstVisitor = struct {
                 for (match_compile.arms.items) |arm| {
                     try self.visit(arena, arm.body);
                 }
+            },
+            .try_expr => |try_expr| {
+                try self.visit(arena, try_expr.expression);
+            },
+            .catch_expr => |catch_expr| {
+                try self.visit(arena, catch_expr.try_expression);
+                try self.visit(arena, catch_expr.catch_body);
+            },
+            .error_union_type => |error_union| {
+                if (error_union.error_set) |error_set| {
+                    try self.visit(arena, error_set);
+                }
+                try self.visit(arena, error_union.payload_type);
             },
             else => {}, // Leaf nodes
         }
