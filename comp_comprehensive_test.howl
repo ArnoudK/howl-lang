@@ -1,0 +1,32 @@
+// Comprehensive test of 'comp' keyword functionality
+
+std :: @import("std")
+
+// Regular runtime function
+regularAdd :: fn (a: i32, b: i32) i32 {
+    return a + b
+}
+
+// Compile-time function - should not appear in generated C code
+compAdd :: comp fn (a: i32, b: i32) i32 {
+    return a + b
+}
+
+// Another compile-time function
+compDouble :: comp fn (x: i32) i32 {
+    return x * 2
+}
+
+// Compile-time utility function
+compSquare :: comp fn (x: i32) i32 {
+    return x * x
+}
+
+main :: fn () void {
+    // Only runtime functions should be called in generated C code
+    result :: regularAdd(10, 5)
+    std.debug.print("Runtime addition result: {}\n", .{result})
+    
+    // Compile-time functions are not available at runtime - they exist only during compilation
+    std.debug.print("All compile-time functions successfully parsed and excluded from runtime\n", .{})
+}

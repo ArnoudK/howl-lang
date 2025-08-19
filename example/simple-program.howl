@@ -51,6 +51,16 @@ main :: fn () !void {
     my_struct2 :: try createMyStruct(-1, 2.71)
     std.debug.print("MyStruct2: {{field1: {}, field2: {}}}\n", .{my_struct2.field1, my_struct2.field2})
 
+    // GC array example - demonstrates $ prefix for heap allocation
+    simple_gc_array :: $[1, 2, 3]
+    first_element :: simple_gc_array[0]
+    std.debug.print("GC Array - First element: {}\n", .{first_element})
+
+    // GC struct array example - demonstrates $ prefix with struct initialization
+    people :: $[MyStruct{ .field1 = 1, .field2 = 1.1 }, MyStruct{ .field1 = 2, .field2 = 2.2 }]
+    first_person :: people[0]
+    std.debug.print("GC Struct Array - First person field1: {}\n", .{first_person.field1})
+
     result2 :: try divide(10, 0)
     std.debug.print("This line will not be reached due to error.\n", .{})
 }

@@ -498,6 +498,10 @@ pub const LexerFile = struct {
                     try self.tokens.append(Token{ .RightBracket = .{ .pos = self.tokenize_state.current_pos } });
                     self.advance();
                 },
+                '$' => {
+                    try self.tokens.append(Token{ .Dollar = .{ .pos = self.tokenize_state.current_pos } });
+                    self.advance();
+                },
                 ';' => {
                     try self.tokens.append(Token{ .Semicolon = .{ .pos = self.tokenize_state.current_pos } });
                     self.advance();

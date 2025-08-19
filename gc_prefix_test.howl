@@ -1,0 +1,17 @@
+// Test $ prefix for garbage collection
+struct Person {
+    name: string,
+    age: i32,
+}
+
+// Regular initialization (no GC)
+person1: Person = Person{ .name = "Alice", .age = 30 };
+
+// GC initialization with $ prefix
+person2: *Person = $Person{ .name = "Bob", .age = 25 };
+
+// Regular array (no GC)
+numbers1: [3]i32 = [1, 2, 3];
+
+// GC array with $ prefix
+numbers2: *[3]i32 = $[1, 2, 3];

@@ -96,6 +96,12 @@ int main() {
     printf("MyStruct: %d, field2: %f}}\n", my_struct.field1, my_struct.field2);
     MyStruct my_struct2 = ({ MyError_MyStruct_ErrorUnion _temp = createMyStruct((-1), 2.71f); if (_temp.error < 0) exit(1); _temp.payload; });
     printf("MyStruct2: %d, field2: %f}}\n", my_struct2.field1, my_struct2.field2);
+    int32_t *simple_gc_array = malloc(3 * sizeof(int32_t));
+    int32_t first_element = simple_gc_array[0];
+    printf("GC Array - First element: %d\n", first_element);
+    MyStruct *people = malloc(2 * sizeof(MyStruct));
+    MyStruct first_person = people[0];
+    printf("GC Struct Array - First person field1: %d\n", first_person.field1);
     int32_t result2 = ({ MyError_i32_ErrorUnion _temp = divide(10, 0); if (_temp.error < 0) exit(1); _temp.payload; });
     printf("This line will not be reached due to error.\n");
     return 0;

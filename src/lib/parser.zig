@@ -716,6 +716,7 @@ pub const Parser = struct {
                 .struct_init = .{
                     .type_name = type_name,
                     .fields = fields,
+                    .use_gc = false,
                 }
             }, source_loc));
         }
@@ -789,6 +790,7 @@ pub const Parser = struct {
             .struct_init = .{
                 .type_name = type_name,
                 .fields = fields,
+                .use_gc = false,
             }
         }, source_loc));
     }
@@ -1079,6 +1081,51 @@ pub const Parser = struct {
             }
         }
 
+        // Garbage collected initialization: $[1, 2, 3] or $MyStruct{ .field = value }
+        if (self.match(&[_]std.meta.Tag(Token){.Dollar})) {
+            // Skip whitespace after $
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Parse array literal: $[1, 2, 3]
+            if (self.match(&[_]std.meta.Tag(Token){.LeftBracket})) {
+                var elements = std.ArrayList(ast.NodeId).init(self.allocator);
+                
+                // Skip whitespace after [
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+                
+                if (!self.check(.RightBracket)) {
+                    while (true) {
+                        const element = try self.parseExpression();
+                        try elements.append(element);
+                        
+                        if (!self.match(&[_]std.meta.Tag(Token){.Comma})) break;
+                        
+                        // Skip whitespace after comma
+                        while (self.check(.Whitespace)) {
+                            _ = self.advance();
+                        }
+                        
+                        if (self.check(.RightBracket)) break; // Trailing comma
+                    }
+                }
+                
+                _ = try self.consume(.RightBracket, .unexpected_token, "Expected ']' after array elements");
+                
+                return self.arena.createNode(ast.AstNode.init(.{
+                    .array_init = .{ .elements = elements, .use_gc = true }
+                }, source_loc));
+            }
+            
+            // For now, handle other cases as errors
+            try self.reportError(.invalid_expression, "Only GC arrays are currently supported", source_loc);
+            _ = self.advance(); // Skip next token to avoid infinite loop
+            return ast.createIdentifier(self.arena, source_loc, "error");
+        }
+
         // Array literal: [1, 2, 3]
         if (self.match(&[_]std.meta.Tag(Token){.LeftBracket})) {
             var elements = std.ArrayList(ast.NodeId).init(self.allocator);
@@ -1107,7 +1154,7 @@ pub const Parser = struct {
             _ = try self.consume(.RightBracket, .unexpected_token, "Expected ']' after array elements");
             
             return self.arena.createNode(ast.AstNode.init(.{
-                .array_init = .{ .elements = elements }
+                .array_init = .{ .elements = elements, .use_gc = false }
             }, source_loc));
         }
 

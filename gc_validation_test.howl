@@ -1,0 +1,7 @@
+pub main :: fn() !void {
+    // This should parse successfully - GC array
+    good_gc_array :: $[1, 2, 3]
+    // This should cause an error - missing bracket after $
+    bad_gc_syntax :: $missing_bracket
+    return
+}

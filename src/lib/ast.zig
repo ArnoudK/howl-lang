@@ -93,6 +93,7 @@ pub const AstArena = struct {
             .extern_fn_decl => |*extern_fn| extern_fn.params.deinit(),
             .struct_decl => |*struct_decl| struct_decl.fields.deinit(),
             .enum_decl => |*enum_decl| enum_decl.members.deinit(),  // Fix memory leak!
+            .union_decl => |*union_decl| union_decl.variants.deinit(),
             .block => |*block| block.statements.deinit(),
             .match_expr => |*match| match.arms.deinit(),
             .match_compile_expr => |*match_compile| match_compile.arms.deinit(),
@@ -287,6 +288,10 @@ pub const Type = struct {
             return_type: *Type,
         },
         optional: *Type,
+        union_type: struct {
+            name: []const u8,
+            variants: []UnionVariant,
+        },
         error_union: struct {
             error_set: []const u8, // simplified for now
             payload_type: *Type,
@@ -542,6 +547,12 @@ pub const EnumMember = struct {
     source_loc: SourceLoc,
 };
 
+pub const UnionVariant = struct {
+    name: []const u8,
+    payload_type: ?NodeId, // Optional payload type (e.g., Error(str) vs Error)
+    source_loc: SourceLoc,
+};
+
 // ============================================================================
 // For Loop Capture Support  
 // ============================================================================
@@ -683,6 +694,10 @@ pub const AstNode = struct {
             name: []const u8,
             members: std.ArrayList(EnumMember),
         },
+        union_decl: struct {
+            name: []const u8,
+            variants: std.ArrayList(UnionVariant),
+        },
         type_decl: struct {
             name: []const u8,
             type_expr: NodeId, // Expression that evaluates to a type
@@ -718,9 +733,11 @@ pub const AstNode = struct {
         struct_init: struct {
             type_name: ?[]const u8,
             fields: std.ArrayList(FieldInit),
+            use_gc: bool, // true if $ prefix was used for garbage collection
         },
         array_init: struct {
             elements: std.ArrayList(NodeId),
+            use_gc: bool, // true if $ prefix was used for garbage collection
         },
         range_expr: struct {
             start: ?NodeId,  // null for `..<end` syntax
@@ -731,6 +748,12 @@ pub const AstNode = struct {
         // Type expressions for compile-time type creation
         type_expr: struct {
             base_type: NodeId, // Can be a struct definition, primitive type, etc.
+        },
+        slice_type_expr: struct {
+            element_type: NodeId, // []T where this is T
+        },
+        optional_type_expr: struct {
+            inner_type: NodeId, // ?T where this is T
         },
         struct_type_expr: struct {
             fields: std.ArrayList(Field),

@@ -862,6 +862,9 @@ pub const Formatter = struct {
                 try self.writeString(member.field);
             },
             .array_init => |array_init| {
+                if (array_init.use_gc) {
+                    try self.writeString("$");
+                }
                 try self.writeString("[");
                 for (array_init.elements.items, 0..) |elem_id, i| {
                     if (i > 0) try self.writeString(", ");
@@ -920,6 +923,9 @@ pub const Formatter = struct {
                 }
             },
             .struct_init => |struct_init| {
+                if (struct_init.use_gc) {
+                    try self.writeString("$");
+                }
                 if (struct_init.type_name) |type_name| {
                     try self.writeString(type_name);
                 }

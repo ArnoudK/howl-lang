@@ -1,0 +1,11 @@
+MyTag :: tag {
+    one: i32,
+    two: i64,
+    three: void,
+}
+AnotherTag :: tag {
+    success: string,
+    failure: void,
+    warning: i32,
+}
+main :: fn() void {}
