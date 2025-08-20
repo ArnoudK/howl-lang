@@ -839,6 +839,10 @@ pub const Parser = struct {
             return ast.createLiteralExpr(self.arena, source_loc, ast.Literal.bool_false);
         }
 
+        if (self.match(&[_]std.meta.Tag(Token){.None})) {
+            return ast.createLiteralExpr(self.arena, source_loc, ast.Literal.none);
+        }
+
         if (self.match(&[_]std.meta.Tag(Token){.IntegerLiteral})) {
             const token = self.previous();
             if (ast.Literal.fromToken(token)) |literal| {
@@ -1092,8 +1096,8 @@ pub const Parser = struct {
             if (self.match(&[_]std.meta.Tag(Token){.LeftBracket})) {
                 var elements = std.ArrayList(ast.NodeId).init(self.allocator);
                 
-                // Skip whitespace after [
-                while (self.check(.Whitespace)) {
+                // Skip whitespace and newlines after [
+                while (self.check(.Whitespace) or self.check(.Newline)) {
                     _ = self.advance();
                 }
                 
@@ -1104,8 +1108,8 @@ pub const Parser = struct {
                         
                         if (!self.match(&[_]std.meta.Tag(Token){.Comma})) break;
                         
-                        // Skip whitespace after comma
-                        while (self.check(.Whitespace)) {
+                        // Skip whitespace and newlines after comma
+                        while (self.check(.Whitespace) or self.check(.Newline)) {
                             _ = self.advance();
                         }
                         
@@ -1425,6 +1429,12 @@ pub const Parser = struct {
                     } else if (self.check(.Struct)) {
                         // Struct declaration: [pub] name :: struct { ... }
                         return try self.parseStructDeclaration(name, source_loc);
+                    } else if (self.check(.Union)) {
+                        // Union declaration: [pub] name :: union { ... }
+                        return try self.parseUnionDeclaration(name, source_loc);
+                    } else if (self.check(.Tag)) {
+                        // Tagged union declaration: [pub] name :: tag { ... }
+                        return try self.parseTaggedUnionDeclaration(name, source_loc);
                     } else {
                         // Constant definition: name :: expression
                         const value = try self.parseExpression();
@@ -1628,8 +1638,8 @@ pub const Parser = struct {
                 _ = self.advance();
             }
             return_type = try self.parseType();
-        } else if (self.check(.Identifier) or self.check(.Void) or self.check(.I32) or self.check(.I64) or self.check(.U32) or self.check(.U64) or self.check(.F32) or self.check(.F64) or self.check(.Str) or self.check(.Bool)) {
-            // Handle direct return type like: fn(x: i32) i32
+        } else if (self.check(.Identifier) or self.check(.Void) or self.check(.I32) or self.check(.I64) or self.check(.U32) or self.check(.U64) or self.check(.F32) or self.check(.F64) or self.check(.Str) or self.check(.Bool) or self.check(.QuestionMark)) {
+            // Handle direct return type like: fn(x: i32) i32 or optional types like: fn(x: i32) ?i32
             return_type = try self.parseType();
         }
 
@@ -2176,6 +2186,194 @@ pub const Parser = struct {
         return ast.createStructDecl(self.arena, source_loc, name, fields, false);
     }
 
+    fn parseUnionDeclaration(self: *Parser, name: []const u8, source_loc: ast.SourceLoc) !ast.NodeId {
+        // Consume the 'union' token
+        _ = try self.consume(.Union, .unexpected_token, "Expected 'union'");
+        
+        // Require space after 'union'
+        if (!self.isAtEnd() and !self.check(.Whitespace) and !self.check(.Newline)) {
+            try self.reportError(.missing_space_after_keyword, "Missing space after 'union'", self.getCurrentSourceLoc());
+        }
+        
+        // Skip whitespace after union
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
+        // Expect opening brace
+        _ = try self.consume(.LeftBrace, .unexpected_token, "Expected '{' after 'union'");
+        
+        // Skip whitespace after opening brace
+        while (self.check(.Whitespace) or self.check(.Newline)) {
+            _ = self.advance();
+        }
+        
+        // Parse union variants
+        var variants = std.ArrayList(ast.UnionVariant).init(self.allocator);
+        
+        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            // Skip whitespace and newlines
+            while (self.check(.Whitespace) or self.check(.Newline)) {
+                _ = self.advance();
+            }
+            
+            if (self.check(.RightBrace)) break;
+            
+            // Parse variant name
+            const variant_token = try self.consume(.Identifier, .expected_identifier, "Expected union variant name");
+            const variant_name = if (variant_token == .Identifier) variant_token.Identifier.value else "error";
+            const variant_loc = self.getCurrentSourceLoc();
+            
+            // Skip whitespace after variant name
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Check for optional payload type: variant_name(payload_type)
+            var payload_type: ?ast.NodeId = null;
+            if (self.check(.LeftParen)) {
+                _ = self.advance(); // consume (
+                
+                // Skip whitespace after (
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+                
+                // Parse payload type
+                payload_type = try self.parseType();
+                
+                // Skip whitespace before )
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+                
+                _ = try self.consume(.RightParen, .missing_closing_paren, "Expected ')' after union variant payload type");
+            }
+            
+            try variants.append(ast.UnionVariant{
+                .name = variant_name,
+                .payload_type = payload_type,
+                .source_loc = variant_loc,
+            });
+            
+            // Skip whitespace after variant
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Optional comma
+            if (self.check(.Comma)) {
+                _ = self.advance();
+                // Skip whitespace after comma
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+            }
+            
+            // Skip trailing newlines
+            while (self.check(.Newline)) {
+                _ = self.advance();
+            }
+        }
+        
+        // Expect closing brace
+        _ = try self.consume(.RightBrace, .unexpected_token, "Expected '}' after union variants");
+        
+        // Ensure newline after union declaration
+        try self.requireNewlineAfterStatement();
+        
+        return ast.createUnionDecl(self.arena, source_loc, name, variants);
+    }
+
+    fn parseTaggedUnionDeclaration(self: *Parser, name: []const u8, source_loc: ast.SourceLoc) !ast.NodeId {
+        // Consume the 'tag' token
+        _ = try self.consume(.Tag, .unexpected_token, "Expected 'tag'");
+        
+        // Require space after 'tag'
+        if (!self.isAtEnd() and !self.check(.Whitespace) and !self.check(.Newline)) {
+            try self.reportError(.missing_space_after_keyword, "Missing space after 'tag'", self.getCurrentSourceLoc());
+        }
+        
+        // Skip whitespace after tag
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+        
+        // Expect opening brace
+        _ = try self.consume(.LeftBrace, .unexpected_token, "Expected '{' after 'tag'");
+        
+        // Skip whitespace after opening brace
+        while (self.check(.Whitespace) or self.check(.Newline)) {
+            _ = self.advance();
+        }
+        
+        // Parse tagged union variants (same as regular union variants)
+        var variants = std.ArrayList(ast.UnionVariant).init(self.allocator);
+        
+        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            // Skip whitespace and newlines
+            while (self.check(.Whitespace) or self.check(.Newline)) {
+                _ = self.advance();
+            }
+            
+            if (self.check(.RightBrace)) break;
+            
+            // Parse variant name
+            const variant_token = try self.consume(.Identifier, .expected_identifier, "Expected tagged union variant name");
+            const variant_name = if (variant_token == .Identifier) variant_token.Identifier.value else "error";
+            const variant_loc = self.getCurrentSourceLoc();
+            
+            // Skip whitespace after variant name
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Expect colon for tagged union: variant_name: payload_type
+            _ = try self.consume(.Colon, .unexpected_token, "Expected ':' after tagged union variant name");
+            
+            // Skip whitespace after colon
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Parse payload type (required for tagged unions)
+            const payload_type = try self.parseType();
+            
+            try variants.append(ast.UnionVariant{
+                .name = variant_name,
+                .payload_type = payload_type,
+                .source_loc = variant_loc,
+            });
+            
+            // Skip whitespace after variant
+            while (self.check(.Whitespace)) {
+                _ = self.advance();
+            }
+            
+            // Optional comma
+            if (self.check(.Comma)) {
+                _ = self.advance();
+                // Skip whitespace after comma
+                while (self.check(.Whitespace)) {
+                    _ = self.advance();
+                }
+            }
+            
+            // Skip trailing newlines
+            while (self.check(.Newline)) {
+                _ = self.advance();
+            }
+        }
+        
+        // Expect closing brace
+        _ = try self.consume(.RightBrace, .unexpected_token, "Expected '}' after tagged union variants");
+        
+        // Ensure newline after tagged union declaration
+        try self.requireNewlineAfterStatement();
+        
+        return ast.createUnionDecl(self.arena, source_loc, name, variants);
+    }
+
     fn parseBlockStatement(self: *Parser) anyerror!ast.NodeId {
         const source_loc = self.getCurrentSourceLoc();
         var statements = std.ArrayList(ast.NodeId).init(self.allocator);
@@ -2370,6 +2568,33 @@ pub const Parser = struct {
                 _ = self.advance();
             }
             
+            // Handle variable binding syntax: |variable|
+            var binding_var: ?[]const u8 = null;
+            if (self.match(&[_]std.meta.Tag(Token){.Pipe})) {
+                if (self.match(&[_]std.meta.Tag(Token){.Identifier})) {
+                    const var_token = self.previous();
+                    if (var_token == .Identifier) {
+                        binding_var = var_token.Identifier.value;
+                    }
+                } else {
+                    try self.reportError(.unexpected_token, "Expected variable name in binding pattern", self.getCurrentSourceLoc());
+                }
+                _ = try self.consume(.Pipe, .unexpected_token, "Expected '|' after binding variable");
+                
+                // Skip whitespace after binding
+                while (self.check(.Whitespace) or self.check(.Newline)) {
+                    _ = self.advance();
+                }
+            }
+            
+            // If we have a binding variable and the pattern is Some, update the pattern
+            var final_pattern = pattern;
+            if (binding_var) |var_name| {
+                if (pattern == .some) {
+                    final_pattern = ast.MatchPattern{ .some = .{ .bind_variable = var_name } };
+                }
+            }
+            
             const body = if (self.check(.LeftBrace)) blk: {
                 _ = try self.consume(.LeftBrace, .missing_closing_brace, "Expected '{' at start of block");
                 break :blk try self.parseBlockStatement();
@@ -2377,7 +2602,7 @@ pub const Parser = struct {
                 try self.parseExpression();
             
             try arms.append(ast.MatchArm{
-                .pattern = pattern,
+                .pattern = final_pattern,
                 .guard = guard,
                 .body = body,
                 .source_loc = self.getCurrentSourceLoc(),
@@ -2466,6 +2691,19 @@ pub const Parser = struct {
             }
         }
         
+        // Handle None pattern (optional matching)
+        if (self.match(&[_]std.meta.Tag(Token){.None})) {
+            return ast.MatchPattern.none_pattern;
+        }
+        
+        // Handle Some pattern with value capture: Some => |variable|
+        if (self.match(&[_]std.meta.Tag(Token){.Some})) {
+            // Look ahead to see if this is followed by => |variable|
+            // We need to check if we're in the context of parsing a match arm
+            // Since this is called from the match parsing, we can assume we're looking for pattern => body
+            return ast.MatchPattern{ .some = .{ .bind_variable = "value" } }; // Default variable name for now
+        }
+        
         // Handle identifier patterns
         if (self.match(&[_]std.meta.Tag(Token){.Identifier})) {
             const token = self.previous();
@@ -2503,6 +2741,12 @@ pub const Parser = struct {
     fn parseType(self: *Parser) !ast.NodeId {
         const source_loc = self.getCurrentSourceLoc();
         
+        // Handle optional types (e.g., ?i32, ?str)
+        if (self.match(&[_]std.meta.Tag(Token){.QuestionMark})) {
+            const inner_type = try self.parseType();
+            return ast.createOptionalTypeExpr(self.arena, source_loc, inner_type);
+        }
+        
         // Handle error union types (e.g., !void, !i32)
         if (self.match(&[_]std.meta.Tag(Token){.Exclamation})) {
             const payload_type = try self.parseType();
@@ -2531,14 +2775,14 @@ pub const Parser = struct {
             }
             
             const element_type = try self.parseType();
-            _ = element_type; // TODO: Use element_type in proper array type creation
             
-            // For now, create a simplified array type identifier
-            // TODO: Create proper array type AST node
-            if (array_size) |_| {
-                return ast.createIdentifier(self.arena, source_loc, "[N]T"); // Simplified sized array
+            // Create proper array/slice type AST node
+            if (array_size) |size| {
+                // TODO: Create proper sized array type node
+                _ = size;
+                return ast.createIdentifier(self.arena, source_loc, "[N]T"); // Simplified sized array for now
             } else {
-                return ast.createIdentifier(self.arena, source_loc, "[]T"); // Simplified slice
+                return ast.createSliceTypeExpr(self.arena, source_loc, element_type);
             }
         }
         

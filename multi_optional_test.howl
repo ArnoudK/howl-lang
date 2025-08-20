@@ -1,0 +1,38 @@
+// Multi-Type Optional Test (Built-ins Only)
+// Test optionals with different built-in types
+
+// Optional bool function
+getBool :: fn (flag: bool) ?bool {
+    return if (flag) true else None
+}
+
+// Optional f32 function
+getFloat :: fn (positive: bool) ?f32 {
+    return if (positive) 3.14 else None
+}
+
+// Optional i64 function
+getBigNumber :: fn (big: bool) ?i64 {
+    return if (big) 9999999999 else None
+}
+
+main :: fn () i32 {
+    // Test different optional types
+    bool_some: ?bool = getBool(true)
+    bool_none: ?bool = getBool(false)
+    
+    float_some: ?f32 = getFloat(true)
+    float_none: ?f32 = getFloat(false)
+    
+    big_some: ?i64 = getBigNumber(true)
+    big_none: ?i64 = getBigNumber(false)
+    
+    // Direct optional assignments
+    direct_bool: ?bool = true
+    direct_float: ?f32 = 2.718
+    direct_big: ?i64 = 42
+    direct_none_bool: ?bool = None
+    direct_none_float: ?f32 = None
+    
+    return 0
+}

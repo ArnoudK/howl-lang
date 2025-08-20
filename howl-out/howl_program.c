@@ -44,6 +44,25 @@ MyStruct MyStruct_init(int32_t field1, howl_f64_t field2) {
 }
 
 // ============================================================================
+// Optional MyStruct Implementation
+// ============================================================================
+
+typedef struct Optional_MyStruct_t {
+    MyStruct value;
+    int32_t is_some; // 1 if has value, -1 if none
+} Optional_MyStruct_t;
+
+Optional_MyStruct_t Optional_MyStruct_t_some(MyStruct value) {
+    Optional_MyStruct_t result = {.value = value, .is_some = 1};
+    return result;
+}
+
+Optional_MyStruct_t Optional_MyStruct_t_none() {
+    Optional_MyStruct_t result = {.value = {}, .is_some = -1};
+    return result;
+}
+
+// ============================================================================
 // Error Union MyError_MyStruct_ErrorUnion Implementation
 // ============================================================================
 
@@ -51,6 +70,15 @@ typedef struct MyError_MyStruct_ErrorUnion {
     MyError_t error;
     MyStruct payload;
 } MyError_MyStruct_ErrorUnion;
+
+// ============================================================================
+// Error Union MyError_Optional_MyStruct_t_ErrorUnion Implementation
+// ============================================================================
+
+typedef struct MyError_Optional_MyStruct_t_ErrorUnion {
+    MyError_t error;
+    Optional_MyStruct_t payload;
+} MyError_Optional_MyStruct_t_ErrorUnion;
 
 // ============================================================================
 // Error Union MyError_i32_ErrorUnion Implementation
@@ -68,6 +96,20 @@ MyError_MyStruct_ErrorUnion createMyStruct(int32_t a, howl_f64_t b) {
         return (MyError_MyStruct_ErrorUnion){.error = MyError_InvalidValue, .payload = 0};
     } else if (true) {
         return (MyError_MyStruct_ErrorUnion){.error = MyError_SUCCESS, .payload = MyStruct_init(a, b)};
+    }
+}
+
+
+
+MyError_Optional_MyStruct_t_ErrorUnion createMyStructMaybe(int32_t i, howl_f64_t b, bool c) {
+    if (c == true) {
+        return (MyError_Optional_MyStruct_t_ErrorUnion){.error = MyError_SUCCESS, .payload = Optional_MyStruct_t_none()};
+    } else if (c == false) {
+        if (i < 0) {
+            return (MyError_Optional_MyStruct_t_ErrorUnion){.error = MyError_InvalidValue, .payload = 0};
+        } else if (true) {
+            return (MyError_Optional_MyStruct_t_ErrorUnion){.error = MyError_SUCCESS, .payload = Optional_MyStruct_t_some(MyStruct_init(i, b))};
+        }
     }
 }
 

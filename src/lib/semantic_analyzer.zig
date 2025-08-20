@@ -22,6 +22,8 @@ pub const ComptimeValue = union(enum) {
         name: []const u8,
         members: []ast.EnumMember,
     },
+    none: void,
+    some: ast.NodeId,
     enum_member: struct {
         enum_name: []const u8,
         member_name: []const u8,
@@ -37,6 +39,8 @@ pub const ComptimeValue = union(enum) {
             .float => |float| ComptimeValue{ .float = float.value },
             .bool_true => ComptimeValue{ .boolean = true },
             .bool_false => ComptimeValue{ .boolean = false },
+            .none => ComptimeValue{ .none = {} },
+            .some => |some| ComptimeValue{ .some = some.value },
             .string => |str| ComptimeValue{ .string = str.value },
             .char => |char| ComptimeValue{ .integer = @intCast(char.value) }, // Convert char to int
             .enum_member => |member| ComptimeValue{
@@ -385,6 +389,8 @@ pub const SemanticAnalyzer = struct {
                     .string => ast.Type.initPrimitive(.{ .str = {} }, node.source_loc),
                     .char => ast.Type.initPrimitive(.{ .char = {} }, node.source_loc),
                     .bool_true, .bool_false => ast.Type.initPrimitive(.{ .bool = {} }, node.source_loc),
+                    .none => null, // None cannot be inferred without context - will need special handling
+                    .some => |some| try self.inferType(some.value), // Infer from wrapped value
                     .enum_member => |member| self.inferEnumMemberType(member, node.source_loc),
                 };
             },
@@ -464,7 +470,7 @@ pub const SemanticAnalyzer = struct {
                             if (self.current_function_return_type) |context_type| {
                                 const then_compatible = self.typesCompatible(context_type, then_type.?);
                                 const else_compatible = self.typesCompatible(context_type, else_type.?);
-                                
+
                                 if (then_compatible and else_compatible) {
                                     // Both branches are compatible with the context type, use that as result
                                     result_type = context_type;
@@ -476,12 +482,10 @@ pub const SemanticAnalyzer = struct {
                                     defer self.allocator.free(else_type_str);
                                     const context_type_str = try self.typeToString(context_type);
                                     defer self.allocator.free(context_type_str);
-                                    
-                                    const detailed_msg = try std.fmt.allocPrint(self.allocator, 
-                                        "If-else branches have incompatible types. Then branch: '{s}', else branch: '{s}'. Expected return type: '{s}'",
-                                        .{ then_type_str, else_type_str, context_type_str });
+
+                                    const detailed_msg = try std.fmt.allocPrint(self.allocator, "If-else branches have incompatible types. Then branch: '{s}', else branch: '{s}'. Expected return type: '{s}'", .{ then_type_str, else_type_str, context_type_str });
                                     defer self.allocator.free(detailed_msg);
-                                    
+
                                     try self.reportError(.type_mismatch, detailed_msg, node.source_loc);
                                     result_type = null;
                                 }
@@ -490,12 +494,10 @@ pub const SemanticAnalyzer = struct {
                                 defer self.allocator.free(then_type_str);
                                 const else_type_str = try self.typeToString(else_type.?);
                                 defer self.allocator.free(else_type_str);
-                                
-                                const detailed_msg = try std.fmt.allocPrint(self.allocator, 
-                                    "If-else branches have incompatible types: '{s}' and '{s}'",
-                                    .{ then_type_str, else_type_str });
+
+                                const detailed_msg = try std.fmt.allocPrint(self.allocator, "If-else branches have incompatible types: '{s}' and '{s}'", .{ then_type_str, else_type_str });
                                 defer self.allocator.free(detailed_msg);
-                                
+
                                 try self.reportError(.type_mismatch, detailed_msg, node.source_loc);
                                 result_type = null;
                             }
@@ -517,7 +519,7 @@ pub const SemanticAnalyzer = struct {
                 for (match_expr.arms.items) |arm| {
                     // Analyze the pattern against the matched expression type
                     try self.analyzeMatchPattern(arm.pattern, match_expr_type, arm.source_loc);
-                    
+
                     if (arm.guard) |guard| {
                         const guard_type = try self.inferType(guard);
                         if (guard_type) |gt| {
@@ -657,12 +659,12 @@ pub const SemanticAnalyzer = struct {
             .match_compile_expr => |match_compile| {
                 return self.analyzeMatchCompileExpression(match_compile, node.source_loc);
             },
-            
+
             .try_expr => |try_expr| {
                 // Delegate to analyzeTryExpression for proper validation
                 return self.analyzeTryExpression(try_expr, node.source_loc);
             },
-            
+
             .catch_expr => |catch_expr| {
                 // Catch expressions return either the success type or the catch body type
                 const expr_type = try self.inferType(catch_expr.expression);
@@ -675,22 +677,62 @@ pub const SemanticAnalyzer = struct {
                 }
                 return expr_type;
             },
-            
+
             .error_union_type => |error_union| {
                 // Delegate to proper error union type analysis
                 return self.analyzeErrorUnionType(error_union, node.source_loc);
             },
-            
+
             .error_literal => |error_literal| {
                 // Error literals have error type (simplified as string for now)
                 _ = error_literal; // Mark as used
                 return ast.Type.initPrimitive(.{ .string = {} }, node.source_loc);
             },
-            
+
             .error_set_decl => |error_set_decl| {
                 // Error set declarations represent the type itself
                 _ = error_set_decl; // Mark as used
                 return ast.Type.initPrimitive(.{ .type = {} }, node.source_loc);
+            },
+
+            .union_decl => |union_decl| {
+                // Union declarations represent the type itself
+                _ = union_decl; // Mark as used
+                return ast.Type.initPrimitive(.{ .type = {} }, node.source_loc);
+            },
+
+            .slice_type_expr => |slice_type| {
+                // Slice types like []T
+                const element_type = try self.inferType(slice_type.element_type);
+                if (element_type) |elem_type| {
+                    // Create a slice type (array with null size)
+                    const heap_elem_type = try self.allocator.create(ast.Type);
+                    heap_elem_type.* = elem_type;
+                    return ast.Type{
+                        .data = .{ .array = .{ .element_type = heap_elem_type, .size = null } },
+                        .source_loc = node.source_loc,
+                    };
+                }
+                return null;
+            },
+
+            .optional_type_expr => |optional_type| {
+                // Optional types like ?T
+                const inner_type = try self.inferType(optional_type.inner_type);
+                if (inner_type) |inner| {
+                    const heap_inner_type = try self.allocator.create(ast.Type);
+                    heap_inner_type.* = inner;
+                    return ast.Type{
+                        .data = .{ .optional = heap_inner_type },
+                        .source_loc = node.source_loc,
+                    };
+                }
+                return null;
+            },
+
+            .comptime_type_call => |comptime_call| {
+                // Handle compile-time type generation like List(i32)
+                return self.resolveComptimeTypeCallDirect(comptime_call, node.source_loc);
             },
         }
     }
@@ -819,6 +861,13 @@ pub const SemanticAnalyzer = struct {
         const callee_node = self.arena.getNode(callee_id);
         if (callee_node == null) return null;
 
+        // First, check if this is a compile-time type function call
+        const call_expr_data = ast.AstNode.NodeData{ .call_expr = .{ .callee = callee_id, .args = std.ArrayList(ast.NodeId).fromOwnedSlice(self.allocator, @constCast(args)) } };
+
+        if (try self.resolveComptimeTypeCall(call_expr_data.call_expr, source_loc)) |comptime_type| {
+            return comptime_type;
+        }
+
         // For now, assume all function calls return i32
         // TODO: Implement proper function type checking
 
@@ -831,6 +880,14 @@ pub const SemanticAnalyzer = struct {
 
                 if (self.current_scope.lookup(ident.name)) |symbol| {
                     if (symbol.symbol_type == .function) {
+                        // Debug: Print function call type
+                        if (std.mem.eql(u8, ident.name, "getValue") or std.mem.eql(u8, ident.name, "getOpt")) {
+                            if (symbol.declared_type) |declared_type| {
+                                std.debug.print("DEBUG: Function call {s}() returns type: {}\n", .{ ident.name, declared_type });
+                            } else {
+                                std.debug.print("DEBUG: Function call {s}() has null declared_type\n", .{ident.name});
+                            }
+                        }
                         // TODO: Check argument count and types
                         return symbol.declared_type;
                     } else {
@@ -1089,26 +1146,26 @@ pub const SemanticAnalyzer = struct {
                         return ast.Type.initError(error_set.name, source_loc);
                     }
                 }
-                
+
                 // Provide helpful error message with suggestions
                 var suggestion_msg = std.ArrayList(u8).init(self.allocator);
                 defer suggestion_msg.deinit();
-                
+
                 try suggestion_msg.appendSlice("Error set '");
                 try suggestion_msg.appendSlice(error_set.name);
                 try suggestion_msg.appendSlice("' has no enumerant '");
                 try suggestion_msg.appendSlice(field_name);
                 try suggestion_msg.appendSlice("'. Available enumerants: ");
-                
+
                 for (error_set.enumerants, 0..) |enumerant, i| {
                     if (i > 0) try suggestion_msg.appendSlice(", ");
                     try suggestion_msg.appendSlice(enumerant);
                 }
-                
+
                 try self.reportError(.invalid_member_access, suggestion_msg.items, source_loc);
                 return null;
             },
-            
+
             .@"struct" => |struct_info| {
                 // Find the field in the struct
                 for (struct_info.fields) |field| {
@@ -1176,7 +1233,7 @@ pub const SemanticAnalyzer = struct {
     ) !?ast.Type {
         // Validate enum explicit values are sorted in ascending order
         try self.validateEnumValueOrder(enum_decl.members.items, source_loc);
-        
+
         // Create the enum type
         const enum_type = ast.Type.initEnum(enum_decl.name, enum_decl.members.items, source_loc);
 
@@ -1215,7 +1272,7 @@ pub const SemanticAnalyzer = struct {
 
         return ast.Type.initPrimitive(.{ .type = {} }, source_loc);
     }
-    
+
     fn analyzeErrorSetDeclaration(
         self: *SemanticAnalyzer,
         error_set_decl: @TypeOf(@as(ast.AstNode, undefined).data.error_set_decl),
@@ -1226,10 +1283,10 @@ pub const SemanticAnalyzer = struct {
             try self.reportError(.type_mismatch, "Error set cannot be empty", source_loc);
             return null;
         }
-        
+
         // Check for duplicate error names
         for (error_set_decl.errors.items, 0..) |error_name1, i| {
-            for (error_set_decl.errors.items[i+1..], i+1..) |error_name2, j| {
+            for (error_set_decl.errors.items[i + 1 ..], i + 1..) |error_name2, j| {
                 if (std.mem.eql(u8, error_name1, error_name2)) {
                     const msg = try std.fmt.allocPrint(self.allocator, "Duplicate error '{s}' in error set '{s}'", .{ error_name1, error_set_decl.name });
                     defer self.allocator.free(msg);
@@ -1239,14 +1296,14 @@ pub const SemanticAnalyzer = struct {
                 _ = j; // Suppress unused variable warning
             }
         }
-        
+
         // Create owned copy of error names for the type system
         const owned_errors = try self.allocator.alloc([]const u8, error_set_decl.errors.items.len);
         for (error_set_decl.errors.items, 0..) |error_name, i| {
             // The error names are already owned by the AST arena, so we can safely reference them
             owned_errors[i] = error_name;
         }
-        
+
         // Create the error set type with proper memory management
         const error_set_type = ast.Type.initErrorSet(error_set_decl.name, owned_errors, source_loc);
 
@@ -1376,6 +1433,10 @@ pub const SemanticAnalyzer = struct {
         if (func_decl.return_type) |return_type_node| {
             if (try self.inferType(return_type_node)) |inferred_return_type| {
                 return_type = inferred_return_type;
+                // Debug: Print function name and inferred return type
+                if (std.mem.eql(u8, func_decl.name, "getValue") or std.mem.eql(u8, func_decl.name, "getOpt")) {
+                    std.debug.print("DEBUG: Function {s} has return type: {}\n", .{ func_decl.name, inferred_return_type });
+                }
             }
         }
 
@@ -1749,6 +1810,8 @@ pub const SemanticAnalyzer = struct {
             .string => ast.Type.initPrimitive(.{ .str = {} }, source_loc),
             .char => ast.Type.initPrimitive(.{ .char = {} }, source_loc),
             .bool_true, .bool_false => ast.Type.initPrimitive(.{ .bool = {} }, source_loc),
+            .none => null, // None requires context for type inference
+            .some => |some| self.inferType(some.value) catch null, // Infer from wrapped value
             .enum_member => |member| self.inferEnumMemberType(member, source_loc) catch null,
         };
     }
@@ -1756,19 +1819,19 @@ pub const SemanticAnalyzer = struct {
     /// Resolve a type from a type annotation node
     fn resolveType(self: *SemanticAnalyzer, type_node_id: ast.NodeId) !?ast.Type {
         const type_node = self.arena.getNode(type_node_id) orelse return null;
-        
+
         switch (type_node.data) {
             .identifier => |ident| {
                 // Check if it's a primitive type
                 if (self.resolvePrimitiveType(ident.name)) |prim_type| {
                     return ast.Type.initPrimitive(prim_type, type_node.source_loc);
                 }
-                
+
                 // Check if it's a registered enum type
                 if (self.type_registry.get(ident.name)) |enum_type| {
                     return enum_type;
                 }
-                
+
                 // Check if it's a struct type
                 if (self.struct_definitions.get(ident.name)) |struct_info| {
                     // Get the fields from the struct definition
@@ -1776,26 +1839,37 @@ pub const SemanticAnalyzer = struct {
                     const is_comptime = false; // Default to runtime struct
                     return ast.Type.initCustomStruct(ident.name, fields, is_comptime, type_node.source_loc);
                 }
-                
+
                 const msg = try std.fmt.allocPrint(self.allocator, "Unknown type '{s}'", .{ident.name});
                 defer self.allocator.free(msg);
                 try self.reportError(.undefined_variable, msg, type_node.source_loc);
                 return null;
             },
+            .optional_type_expr => |optional_type| {
+                // Resolve the inner type first
+                const inner_type = (try self.resolveType(optional_type.inner_type)) orelse {
+                    try self.reportError(.invalid_declaration, "Invalid inner type in optional", type_node.source_loc);
+                    return null;
+                };
+
+                // Create an optional type wrapping the inner type
+                const inner_type_ptr = try self.arena.allocator.create(ast.Type);
+                inner_type_ptr.* = inner_type;
+
+                return ast.Type{
+                    .data = .{ .optional = inner_type_ptr },
+                    .source_loc = type_node.source_loc,
+                };
+            },
             else => {
                 try self.reportError(.invalid_declaration, "Invalid type annotation", type_node.source_loc);
                 return null;
-            }
+            },
         }
     }
 
     /// Analyze a match pattern and check it against the matched expression type
-    fn analyzeMatchPattern(
-        self: *SemanticAnalyzer, 
-        pattern: ast.MatchPattern, 
-        match_expr_type: ?ast.Type,
-        source_loc: ast.SourceLoc
-    ) !void {
+    fn analyzeMatchPattern(self: *SemanticAnalyzer, pattern: ast.MatchPattern, match_expr_type: ?ast.Type, source_loc: ast.SourceLoc) !void {
         switch (pattern) {
             .wildcard => {
                 // Wildcard matches anything
@@ -1828,14 +1902,14 @@ pub const SemanticAnalyzer = struct {
                                 }
                             }
                             if (!found) {
-                                const msg = try std.fmt.allocPrint(self.allocator, "Enum member '{s}' does not exist in enum '{s}'", .{member_name, enum_info.name});
+                                const msg = try std.fmt.allocPrint(self.allocator, "Enum member '{s}' does not exist in enum '{s}'", .{ member_name, enum_info.name });
                                 defer self.allocator.free(msg);
                                 try self.reportError(.undefined_variable, msg, source_loc);
                             }
                         },
                         else => {
                             try self.reportError(.type_mismatch, "Enum member pattern can only be used with enum types", source_loc);
-                        }
+                        },
                     }
                 } else {
                     try self.reportError(.undefined_variable, "Cannot infer enum type for member pattern", source_loc);
@@ -1844,7 +1918,7 @@ pub const SemanticAnalyzer = struct {
             .comparison => |comp| {
                 // TODO: Implement proper type checking for comparison patterns
                 _ = comp;
-                
+
                 // For now, just skip the type checking and accept all comparison patterns
                 // This will be expanded once the basic parsing works
             },
@@ -1859,6 +1933,38 @@ pub const SemanticAnalyzer = struct {
             },
             .guard => {
                 // TODO: Implement guard pattern validation
+            },
+            .some => |some_info| {
+                // Check if the matched expression type is optional
+                if (match_expr_type) |expr_type| {
+                    switch (expr_type.data) {
+                        .optional => |opt_info| {
+                            // The bound variable should have the inner type
+                            _ = opt_info; // Type is validated, variable binding handled in codegen
+                            _ = some_info.bind_variable;
+                        },
+                        else => {
+                            try self.reportError(.type_mismatch, "Some pattern can only be used with optional types", source_loc);
+                        },
+                    }
+                } else {
+                    try self.reportError(.undefined_variable, "Cannot infer optional type for Some pattern", source_loc);
+                }
+            },
+            .none_pattern => {
+                // Check if the matched expression type is optional
+                if (match_expr_type) |expr_type| {
+                    switch (expr_type.data) {
+                        .optional => {
+                            // None pattern is valid for optional types
+                        },
+                        else => {
+                            try self.reportError(.type_mismatch, "None pattern can only be used with optional types", source_loc);
+                        },
+                    }
+                } else {
+                    try self.reportError(.undefined_variable, "Cannot infer optional type for None pattern", source_loc);
+                }
             },
         }
     }
@@ -1939,55 +2045,72 @@ pub const SemanticAnalyzer = struct {
             .array => try self.allocator.dupe(u8, "array"),
             .optional => try self.allocator.dupe(u8, "optional"),
             .comptime_type => try self.allocator.dupe(u8, "comptime type"),
+            .union_type => |union_info| try self.allocator.dupe(u8, union_info.name),
             .unknown => try self.allocator.dupe(u8, "unknown"),
         };
     }
 
     /// Check if two types are compatible with comprehensive error union support
     fn typesCompatible(self: *SemanticAnalyzer, expected: ast.Type, actual: ast.Type) bool {
+        // Debug output for specific case
+        // const debug = false; // Change to true to enable debug output
+        // if (debug) {
+        //     std.debug.print("DEBUG typesCompatible: expected={}, actual={}\n", .{expected, actual});
+        // }
+
         // Early return for identical types
         if (std.meta.eql(expected, actual)) return true;
-        
+
         // Handle error union compatibility (both directions)
         if (expected.data == .error_union) {
             return self.isCompatibleWithErrorUnion(expected.data.error_union, actual);
         }
-        
+
         if (actual.data == .error_union) {
             return self.isCompatibleWithErrorUnion(actual.data.error_union, expected);
         }
-        
+
         // Handle primitive type compatibility with proper coercion rules
         if (expected.data == .primitive and actual.data == .primitive) {
             return self.isPrimitiveCompatible(expected.data.primitive, actual.data.primitive);
         }
-        
+
         // Handle struct compatibility
         if (expected.data == .@"struct" and actual.data == .@"struct") {
             return self.isStructCompatible(expected.data.@"struct", actual.data.@"struct");
         }
-        
+
         if (expected.data == .custom_struct and actual.data == .custom_struct) {
             return self.isCustomStructCompatible(expected.data.custom_struct, actual.data.custom_struct);
         }
-        
+
         // Handle error set compatibility
         if (expected.data == .error_set and actual.data == .error_set) {
             return self.isErrorSetCompatible(expected.data.error_set, actual.data.error_set);
         }
-        
+
         // Handle enum compatibility
         if (expected.data == .@"enum" and actual.data == .@"enum") {
             return std.mem.eql(u8, expected.data.@"enum".name, actual.data.@"enum".name);
         }
-        
+
+        // Handle optional type compatibility
+        if (expected.data == .optional) {
+            // If both types are optional, compare their inner types
+            if (actual.data == .optional) {
+                return self.typesCompatible(expected.data.optional.*, actual.data.optional.*);
+            }
+            // Check if actual type can be converted to the inner optional type (T -> ?T)
+            return self.typesCompatible(expected.data.optional.*, actual);
+        }
+
         return false;
     }
-    
+
     /// Check if a type is compatible with an error union
     fn isCompatibleWithErrorUnion(self: *SemanticAnalyzer, error_union: @TypeOf(@as(ast.Type, undefined).data.error_union), actual_type: ast.Type) bool {
         _ = self;
-        
+
         return switch (actual_type.data) {
             // Payload type compatibility
             .primitive => |prim| blk: {
@@ -1996,10 +2119,10 @@ pub const SemanticAnalyzer = struct {
                 }
                 break :blk false;
             },
-            
+
             // Error set compatibility
             .error_set => |error_set| std.mem.eql(u8, error_union.error_set, error_set.name),
-            
+
             // Struct compatibility
             .@"struct" => blk: {
                 if (error_union.payload_type.data == .@"struct") {
@@ -2007,80 +2130,143 @@ pub const SemanticAnalyzer = struct {
                 }
                 break :blk false;
             },
-            
+
             .custom_struct => blk: {
                 if (error_union.payload_type.data == .custom_struct) {
                     break :blk std.meta.eql(error_union.payload_type.data.custom_struct, actual_type.data.custom_struct);
                 }
                 break :blk false;
             },
-            
+
             // Other error union (for nested error unions)
             .error_union => |other_error_union| {
                 // Both error sets must be compatible and payload types must match
                 return std.mem.eql(u8, error_union.error_set, other_error_union.error_set) and
-                       std.meta.eql(error_union.payload_type.*, other_error_union.payload_type.*);
+                    std.meta.eql(error_union.payload_type.*, other_error_union.payload_type.*);
             },
-            
+
             else => false,
         };
     }
-    
+
     /// Check primitive type compatibility with proper coercion rules
     fn isPrimitiveCompatible(self: *SemanticAnalyzer, expected: ast.PrimitiveType, actual: ast.PrimitiveType) bool {
         _ = self;
-        
+
         // Exact match
         if (std.meta.eql(expected, actual)) return true;
-        
+
         return switch (expected) {
             // Integer compatibility - allow widening conversions
-            .i8 => switch (actual) { .i8 => true, else => false },
-            .i16 => switch (actual) { .i8, .i16 => true, else => false },
-            .i32 => switch (actual) { .i8, .i16, .i32 => true, else => false },
-            .i64 => switch (actual) { .i8, .i16, .i32, .i64 => true, else => false },
-            .isize => switch (actual) { .i8, .i16, .i32, .i64, .isize => true, else => false },
-            
+            .i8 => switch (actual) {
+                .i8 => true,
+                else => false,
+            },
+            .i16 => switch (actual) {
+                .i8, .i16 => true,
+                else => false,
+            },
+            .i32 => switch (actual) {
+                .i8, .i16, .i32 => true,
+                else => false,
+            },
+            .i64 => switch (actual) {
+                .i8, .i16, .i32, .i64 => true,
+                else => false,
+            },
+            .isize => switch (actual) {
+                .i8, .i16, .i32, .i64, .isize => true,
+                else => false,
+            },
+
             // Unsigned integer compatibility
-            .u8 => switch (actual) { .u8 => true, else => false },
-            .u16 => switch (actual) { .u8, .u16 => true, else => false },
-            .u32 => switch (actual) { .u8, .u16, .u32 => true, else => false },
-            .u64 => switch (actual) { .u8, .u16, .u32, .u64 => true, else => false },
-            .usize => switch (actual) { .u8, .u16, .u32, .u64, .usize => true, else => false },
-            
+            .u8 => switch (actual) {
+                .u8 => true,
+                else => false,
+            },
+            .u16 => switch (actual) {
+                .u8, .u16 => true,
+                else => false,
+            },
+            .u32 => switch (actual) {
+                .u8, .u16, .u32 => true,
+                else => false,
+            },
+            .u64 => switch (actual) {
+                .u8, .u16, .u32, .u64 => true,
+                else => false,
+            },
+            .usize => switch (actual) {
+                .u8, .u16, .u32, .u64, .usize => true,
+                else => false,
+            },
+
             // Float compatibility
-            .f32 => switch (actual) { .f32 => true, else => false },
-            .f64 => switch (actual) { .f32, .f64 => true, else => false },
-            
+            .f32 => switch (actual) {
+                .f32 => true,
+                else => false,
+            },
+            .f64 => switch (actual) {
+                .f32, .f64 => true,
+                else => false,
+            },
+
             // String types
-            .str => switch (actual) { .str => true, else => false },
-            .strb => switch (actual) { .strb => true, else => false },
-            .string => switch (actual) { .string, .str => true, else => false }, // Legacy compatibility
-            
+            .str => switch (actual) {
+                .str => true,
+                else => false,
+            },
+            .strb => switch (actual) {
+                .strb => true,
+                else => false,
+            },
+            .string => switch (actual) {
+                .string, .str => true,
+                else => false,
+            }, // Legacy compatibility
+
             // Other types must match exactly
-            .bool => switch (actual) { .bool => true, else => false },
-            .char => switch (actual) { .char => true, else => false },
-            .void => switch (actual) { .void => true, else => false },
-            .type => switch (actual) { .type => true, else => false },
-            .noreturn => switch (actual) { .noreturn => true, else => false },
-            .module => switch (actual) { .module => true, else => false },
+            .bool => switch (actual) {
+                .bool => true,
+                else => false,
+            },
+            .char => switch (actual) {
+                .char => true,
+                else => false,
+            },
+            .void => switch (actual) {
+                .void => true,
+                else => false,
+            },
+            .type => switch (actual) {
+                .type => true,
+                else => false,
+            },
+            .noreturn => switch (actual) {
+                .noreturn => true,
+                else => false,
+            },
+            .module => switch (actual) {
+                .module => true,
+                else => false,
+            },
         };
     }
-    
+
     /// Check struct type compatibility
     fn isStructCompatible(self: *SemanticAnalyzer, expected: @TypeOf(@as(ast.Type, undefined).data.@"struct"), actual: @TypeOf(@as(ast.Type, undefined).data.@"struct")) bool {
         _ = self;
         // Structs must have the same name for now (nominal typing)
         return std.mem.eql(u8, expected.name, actual.name);
     }
-    
+
     /// Check custom struct type compatibility
     fn isCustomStructCompatible(self: *SemanticAnalyzer, expected: @TypeOf(@as(ast.Type, undefined).data.custom_struct), actual: @TypeOf(@as(ast.Type, undefined).data.custom_struct)) bool {
         _ = self;
         // Custom structs must have the same name for now (nominal typing)
         return std.mem.eql(u8, expected.name, actual.name);
     }
-    
+
     /// Check error set compatibility
     fn isErrorSetCompatible(self: *SemanticAnalyzer, expected: @TypeOf(@as(ast.Type, undefined).data.error_set), actual: @TypeOf(@as(ast.Type, undefined).data.error_set)) bool {
         _ = self;
@@ -2092,7 +2278,7 @@ pub const SemanticAnalyzer = struct {
     fn validateEnumValueOrder(self: *SemanticAnalyzer, members: []ast.EnumMember, source_loc: ast.SourceLoc) !void {
         _ = source_loc; // unused parameter
         var last_value: ?i64 = null;
-        
+
         for (members) |member| {
             if (member.value) |value_node| {
                 // Evaluate the explicit value at compile time
@@ -2100,11 +2286,7 @@ pub const SemanticAnalyzer = struct {
                 if (value) |int_value| {
                     if (last_value) |last| {
                         if (int_value <= last) {
-                            const msg = try std.fmt.allocPrint(
-                                self.allocator, 
-                                "Enum member '{s}' has value {d} which is not greater than previous value {d}. Enum explicit values must be in ascending order.", 
-                                .{ member.name, int_value, last }
-                            );
+                            const msg = try std.fmt.allocPrint(self.allocator, "Enum member '{s}' has value {d} which is not greater than previous value {d}. Enum explicit values must be in ascending order.", .{ member.name, int_value, last });
                             defer self.allocator.free(msg);
                             try self.reportError(.invalid_enum_value, msg, member.source_loc);
                             return;
@@ -2113,11 +2295,7 @@ pub const SemanticAnalyzer = struct {
                     last_value = int_value;
                 } else {
                     // If we can't evaluate the value as a compile-time integer, report an error
-                    const msg = try std.fmt.allocPrint(
-                        self.allocator,
-                        "Enum member '{s}' has non-constant explicit value. Enum values must be compile-time integer constants.",
-                        .{member.name}
-                    );
+                    const msg = try std.fmt.allocPrint(self.allocator, "Enum member '{s}' has non-constant explicit value. Enum values must be compile-time integer constants.", .{member.name});
                     defer self.allocator.free(msg);
                     try self.reportError(.invalid_enum_value, msg, member.source_loc);
                     return;
@@ -2130,7 +2308,7 @@ pub const SemanticAnalyzer = struct {
     /// Evaluate an AST node as a compile-time integer constant
     fn evaluateCompileTimeInteger(self: *SemanticAnalyzer, node_id: ast.NodeId) !?i64 {
         const node = self.arena.getNode(node_id) orelse return null;
-        
+
         switch (node.data) {
             .literal => |literal| {
                 switch (literal) {
@@ -2174,7 +2352,7 @@ pub const SemanticAnalyzer = struct {
     ) !?ast.Type {
         _ = self; // unused parameter
         _ = array_init; // TODO: Implement array type checking
-        
+
         // For now, return a generic array type
         // TODO: Infer element type from elements
         return ast.Type.initPrimitive(.{ .type = {} }, source_loc);
@@ -2960,11 +3138,11 @@ pub const SemanticAnalyzer = struct {
             },
         }
     }
-    
+
     // ============================================================================
     // Error Handling Analysis
     // ============================================================================
-    
+
     fn analyzeTryExpression(self: *SemanticAnalyzer, try_expr: @TypeOf(@as(ast.AstNode, undefined).data.try_expr), source_loc: ast.SourceLoc) anyerror!?ast.Type {
         // Validate that try is used in a context where errors can be handled
         if (self.current_function_return_type == null) {
@@ -2973,30 +3151,30 @@ pub const SemanticAnalyzer = struct {
         }
 
         const current_return_type = self.current_function_return_type.?;
-        
+
         // Check if current function can handle errors (returns error union)
         var can_handle_errors = false;
         switch (current_return_type.data) {
             .error_union => can_handle_errors = true,
             .primitive => |prim| {
-                // Check if it's void - might be !void  
+                // Check if it's void - might be !void
                 if (prim == .void) {
-                    // This is a simplified check - in a full implementation, we'd need 
+                    // This is a simplified check - in a full implementation, we'd need
                     // to track whether this void is actually !void
                     can_handle_errors = true;
                 }
             },
             else => {},
         }
-        
+
         if (!can_handle_errors) {
             try self.reportError(.invalid_statement, "Try expression used in function that doesn't return an error union", source_loc);
             return null;
         }
-        
+
         // Analyze the expression being tried
         const expr_type = try self.inferType(try_expr.expression);
-        
+
         if (expr_type) |et| {
             // Validate that the expression returns an error union
             switch (et.data) {
@@ -3010,14 +3188,14 @@ pub const SemanticAnalyzer = struct {
                 },
             }
         }
-        
+
         return expr_type;
     }
-    
+
     fn analyzeCatchExpression(self: *SemanticAnalyzer, catch_expr: @TypeOf(@as(ast.AstNode, undefined).data.catch_expr), source_loc: ast.SourceLoc) anyerror!?ast.Type {
         // Analyze the expression being caught (not necessarily a try expression)
         const expr_type = try self.analyzeNode(catch_expr.expression);
-        
+
         // If there's an error capture variable, add it to current scope
         if (catch_expr.error_capture) |error_var| {
             const error_symbol = Symbol{
@@ -3033,7 +3211,7 @@ pub const SemanticAnalyzer = struct {
             };
             _ = try self.current_scope.symbols.put(error_var, error_symbol);
         }
-        
+
         // Analyze catch body or fallback value
         var catch_type: ?ast.Type = null;
         if (catch_expr.catch_body) |body| {
@@ -3041,7 +3219,7 @@ pub const SemanticAnalyzer = struct {
         } else if (catch_expr.fallback_value) |fallback| {
             catch_type = try self.analyzeNode(fallback);
         }
-        
+
         // The catch expression returns the type of the catch body/fallback or the success type of the expression
         if (catch_type) |ct| {
             return ct;
@@ -3050,23 +3228,23 @@ pub const SemanticAnalyzer = struct {
             // TODO: Extract payload type from error union
             return et;
         }
-        
+
         return null;
     }
-    
+
     fn analyzeErrorUnionType(self: *SemanticAnalyzer, error_union: @TypeOf(@as(ast.AstNode, undefined).data.error_union_type), source_loc: ast.SourceLoc) anyerror!?ast.Type {
         // Validate error set identifier
         const error_set_id = error_union.error_set orelse {
             try self.reportError(.type_mismatch, "Error union missing error set", source_loc);
             return null;
         };
-        
+
         const error_set_node = self.arena.getNode(error_set_id);
         if (error_set_node == null) {
             try self.reportError(.type_mismatch, "Invalid error set in error union", source_loc);
             return null;
         }
-        
+
         // Extract and validate error set name
         const error_set_name = switch (error_set_node.?.data) {
             .identifier => |ident| ident.name,
@@ -3075,7 +3253,7 @@ pub const SemanticAnalyzer = struct {
                 return null;
             },
         };
-        
+
         // Validate that the error set exists and is declared
         const error_set_symbol = self.current_scope.lookup(error_set_name);
         if (error_set_symbol == null or error_set_symbol.?.symbol_type != .type_def) {
@@ -3084,32 +3262,32 @@ pub const SemanticAnalyzer = struct {
             try self.reportError(.undefined_variable, msg, source_loc);
             return null;
         }
-        
+
         // Analyze and validate the payload type
         const payload_type = try self.inferType(error_union.payload_type);
         if (payload_type == null) {
             try self.reportError(.type_mismatch, "Invalid payload type in error union", source_loc);
             return null;
         }
-        
+
         // Validate that payload type is not another error union (for now, to avoid complexity)
         if (payload_type.?.data == .error_union) {
             try self.reportError(.type_mismatch, "Nested error unions are not supported", source_loc);
             return null;
         }
-        
+
         // Create error union type with proper memory management
         const payload_type_ptr = try self.allocator.create(ast.Type);
         payload_type_ptr.* = payload_type.?;
-        
+
         const result_type = ast.Type{
-            .data = .{ .error_union = .{ 
+            .data = .{ .error_union = .{
                 .error_set = error_set_name,
                 .payload_type = payload_type_ptr,
-            }},
+            } },
             .source_loc = source_loc,
         };
-        
+
         return result_type;
     }
 
@@ -3206,6 +3384,286 @@ pub const SemanticAnalyzer = struct {
 
         // If we couldn't resolve it, return an unknown type that will be resolved during match analysis
         // This allows for enum member inference in match expressions
-        return ast.Type{ .data = .unknown, .source_loc = source_loc };
+        return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
+    }
+
+    // ============================================================================
+    // Compile-Time Type Function Resolution
+    // ============================================================================
+
+    /// Resolve a compile-time type function call from comptime_type_call node
+    fn resolveComptimeTypeCallDirect(
+        self: *SemanticAnalyzer,
+        comptime_call: @TypeOf(@as(ast.AstNode, undefined).data.comptime_type_call),
+        source_loc: ast.SourceLoc,
+    ) !?ast.Type {
+        const function_node = self.arena.getNode(comptime_call.function) orelse return null;
+
+        // Check if this is a simple identifier (e.g., List(i32))
+        if (function_node.data == .identifier) {
+            const function_name = function_node.data.identifier.name;
+
+            // Handle built-in type functions
+            if (try self.resolveBuiltinTypeFunction(function_name, comptime_call.args.items, source_loc)) |resolved_type| {
+                return resolved_type;
+            }
+        }
+
+        // Check if this is a member expression (e.g., std.List(i32))
+        if (function_node.data == .member_expr) {
+            const member_expr = function_node.data.member_expr;
+            const object_node = self.arena.getNode(member_expr.object) orelse return null;
+
+            if (object_node.data == .identifier and std.mem.eql(u8, object_node.data.identifier.name, "std")) {
+                if (try self.resolveBuiltinTypeFunction(member_expr.field, comptime_call.args.items, source_loc)) |resolved_type| {
+                    return resolved_type;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// Resolve a compile-time type function call like List(i32)
+    fn resolveComptimeTypeCall(
+        self: *SemanticAnalyzer,
+        call_expr: @TypeOf(@as(ast.AstNode, undefined).data.call_expr),
+        source_loc: ast.SourceLoc,
+    ) !?ast.Type {
+        const callee_node = self.arena.getNode(call_expr.callee) orelse return null;
+
+        // Check if this is a simple identifier (e.g., List(i32))
+        if (callee_node.data == .identifier) {
+            const function_name = callee_node.data.identifier.name;
+
+            // Handle built-in type functions
+            if (try self.resolveBuiltinTypeFunction(function_name, call_expr.args.items, source_loc)) |resolved_type| {
+                return resolved_type;
+            }
+        }
+
+        // Check if this is a member expression (e.g., std.List(i32))
+        if (callee_node.data == .member_expr) {
+            const member_expr = callee_node.data.member_expr;
+            const object_node = self.arena.getNode(member_expr.object) orelse return null;
+
+            if (object_node.data == .identifier) {
+                const module_name = object_node.data.identifier.name;
+                const function_name = member_expr.field;
+
+                // Handle std library type functions
+                if (std.mem.eql(u8, module_name, "std")) {
+                    if (try self.resolveStdTypeFunction(function_name, call_expr.args.items, source_loc)) |resolved_type| {
+                        return resolved_type;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// Resolve built-in type functions like List(T), Optional(T)
+    fn resolveBuiltinTypeFunction(
+        self: *SemanticAnalyzer,
+        function_name: []const u8,
+        args: []ast.NodeId,
+        source_loc: ast.SourceLoc,
+    ) !?ast.Type {
+        if (std.mem.eql(u8, function_name, "List")) {
+            return try self.createListType(args, source_loc);
+        } else if (std.mem.eql(u8, function_name, "Optional")) {
+            return try self.createOptionalType(args, source_loc);
+        } else if (std.mem.eql(u8, function_name, "Result")) {
+            return try self.createResultType(args, source_loc);
+        }
+
+        return null;
+    }
+
+    /// Resolve standard library type functions like std.List(T)
+    fn resolveStdTypeFunction(
+        self: *SemanticAnalyzer,
+        function_name: []const u8,
+        args: []ast.NodeId,
+        source_loc: ast.SourceLoc,
+    ) !?ast.Type {
+        if (std.mem.eql(u8, function_name, "List")) {
+            return try self.createListType(args, source_loc);
+        } else if (std.mem.eql(u8, function_name, "HashMap")) {
+            return try self.createHashMapType(args, source_loc);
+        }
+
+        return null;
+    }
+
+    /// Create a List(T) type
+    fn createListType(
+        self: *SemanticAnalyzer,
+        args: []ast.NodeId,
+        source_loc: ast.SourceLoc,
+    ) !ast.Type {
+        if (args.len != 1) {
+            try self.reportError(.type_mismatch, "List expects exactly one type parameter", source_loc);
+            return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
+        }
+
+        // Resolve the element type
+        const element_type = (try self.inferType(args[0])) orelse {
+            try self.reportError(.type_mismatch, "Invalid element type for List", source_loc);
+            return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
+        };
+
+        // Generate unique type name (e.g., List_i32, List_str)
+        const type_name = try self.generateListTypeName(element_type);
+
+        // Check if we already have this type registered
+        if (self.type_registry.get(type_name)) |existing_type| {
+            return existing_type;
+        }
+
+        // Create the List struct with appropriate fields
+        const fields = try self.createListFields(element_type);
+
+        const list_type = ast.Type.initCustomStruct(type_name, fields, true, // This is a compile-time generated type
+            source_loc);
+
+        // Register the type for reuse
+        try self.type_registry.put(type_name, list_type);
+
+        return list_type;
+    }
+
+    /// Create an Optional(T) type (tagged union with Some(T) and None)
+    fn createOptionalType(
+        self: *SemanticAnalyzer,
+        args: []ast.NodeId,
+        source_loc: ast.SourceLoc,
+    ) !ast.Type {
+        if (args.len != 1) {
+            try self.reportError(.type_mismatch, "Optional expects exactly one type parameter", source_loc);
+            return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
+        }
+
+        // For now, create a simple struct representation
+        // In a full implementation, this would be a tagged union
+        const inner_type = (try self.inferType(args[0])) orelse {
+            try self.reportError(.type_mismatch, "Invalid inner type for Optional", source_loc);
+            return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
+        };
+
+        const type_name = try self.generateOptionalTypeName(inner_type);
+
+        if (self.type_registry.get(type_name)) |existing_type| {
+            return existing_type;
+        }
+
+        const optional_type = ast.Type.initCustomStruct(type_name, &[_]ast.Field{}, // Placeholder fields
+            true, source_loc);
+
+        try self.type_registry.put(type_name, optional_type);
+
+        return optional_type;
+    }
+
+    /// Create a Result(T, E) type
+    fn createResultType(
+        self: *SemanticAnalyzer,
+        args: []ast.NodeId,
+        source_loc: ast.SourceLoc,
+    ) !ast.Type {
+        if (args.len != 2) {
+            try self.reportError(.type_mismatch, "Result expects exactly two type parameters", source_loc);
+            return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
+        }
+
+        // For now, return a placeholder
+        return ast.Type.initCustomStruct("Result", &[_]ast.Field{}, true, source_loc);
+    }
+
+    /// Create a HashMap(K, V) type
+    fn createHashMapType(
+        self: *SemanticAnalyzer,
+        args: []ast.NodeId,
+        source_loc: ast.SourceLoc,
+    ) !ast.Type {
+        if (args.len != 2) {
+            try self.reportError(.type_mismatch, "HashMap expects exactly two type parameters", source_loc);
+            return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
+        }
+
+        // For now, return a placeholder
+        return ast.Type.initCustomStruct("HashMap", &[_]ast.Field{}, true, source_loc);
+    }
+
+    /// Generate a unique type name for List(T)
+    fn generateListTypeName(self: *SemanticAnalyzer, element_type: ast.Type) ![]const u8 {
+        const element_str = switch (element_type.data) {
+            .primitive => |prim| switch (prim) {
+                .i32 => "i32",
+                .i64 => "i64",
+                .u32 => "u32",
+                .u64 => "u64",
+                .f32 => "f32",
+                .f64 => "f64",
+                .bool => "bool",
+                .str => "str",
+                else => "unknown",
+            },
+            .@"struct" => |s| s.name,
+            .custom_struct => |s| s.name,
+            else => "complex",
+        };
+
+        return try std.fmt.allocPrint(self.allocator, "List_{s}", .{element_str});
+    }
+
+    /// Generate a unique type name for Optional(T)
+    fn generateOptionalTypeName(self: *SemanticAnalyzer, inner_type: ast.Type) ![]const u8 {
+        const inner_str = switch (inner_type.data) {
+            .primitive => |prim| switch (prim) {
+                .i32 => "i32",
+                .i64 => "i64",
+                .str => "str",
+                else => "unknown",
+            },
+            .@"struct" => |s| s.name,
+            .custom_struct => |s| s.name,
+            else => "complex",
+        };
+
+        return try std.fmt.allocPrint(self.allocator, "Optional_{s}", .{inner_str});
+    }
+
+    /// Create fields for a List(T) struct
+    fn createListFields(self: *SemanticAnalyzer, element_type: ast.Type) ![]ast.Field {
+        _ = element_type; // Will be used to create proper typed fields
+
+        // For now, create generic fields
+        // In a full implementation, the data field would be []T
+        const fields = try self.allocator.alloc(ast.Field, 3);
+
+        fields[0] = ast.Field{
+            .name = "data",
+            .type_annotation = null, // Would be []T
+            .default_value = null,
+            .source_loc = ast.SourceLoc.invalid(),
+        };
+
+        fields[1] = ast.Field{
+            .name = "len",
+            .type_annotation = null, // Would be usize
+            .default_value = null,
+            .source_loc = ast.SourceLoc.invalid(),
+        };
+
+        fields[2] = ast.Field{
+            .name = "capacity",
+            .type_annotation = null, // Would be usize
+            .default_value = null,
+            .source_loc = ast.SourceLoc.invalid(),
+        };
+
+        return fields;
     }
 };

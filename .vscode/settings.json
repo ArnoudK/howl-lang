@@ -9,6 +9,10 @@
         "string.h": "c",
         "float.h": "c",
         "stdint.h": "c",
-        "stdio.h": "c"
+        "stdio.h": "c",
+        "any": "c",
+        "optional": "c",
+        "format": "c",
+        "ranges": "c"
     }
 }

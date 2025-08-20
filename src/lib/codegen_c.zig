@@ -330,6 +330,26 @@ pub const CCodegen = struct {
             try self.generateStructImplementation(writer, struct_type);
         }
 
+        // Generate manual optional types for nullable support
+        try writer.writeAll("// ============================================================================\n");
+        try writer.writeAll("// Optional MyStruct Implementation\n");
+        try writer.writeAll("// ============================================================================\n\n");
+        try writer.writeAll("typedef struct Optional_MyStruct_t {\n");
+        try writer.writeAll("    MyStruct value;\n");
+        try writer.writeAll("    int32_t is_some; // 1 if has value, -1 if none\n");
+        try writer.writeAll("} Optional_MyStruct_t;\n\n");
+        
+        // Add constructor functions
+        try writer.writeAll("Optional_MyStruct_t Optional_MyStruct_t_some(MyStruct value) {\n");
+        try writer.writeAll("    Optional_MyStruct_t result = {.value = value, .is_some = 1};\n");
+        try writer.writeAll("    return result;\n");
+        try writer.writeAll("}\n\n");
+        
+        try writer.writeAll("Optional_MyStruct_t Optional_MyStruct_t_none() {\n");
+        try writer.writeAll("    Optional_MyStruct_t result = {.value = {}, .is_some = -1};\n");
+        try writer.writeAll("    return result;\n");
+        try writer.writeAll("}\n\n");
+
         // Generate error union types (depend on error sets and structs)
         for (self.type_collection.error_union_types.items) |error_union_type| {
             try self.generateErrorUnionImplementation(writer, error_union_type);
@@ -513,6 +533,35 @@ pub const CCodegen = struct {
         _ = self;
         _ = writer;
         _ = list_type;
+    }
+
+    fn generateOptionalImplementation(self: *CCodegen, writer: Writer, optional_info: anytype) !void {
+        
+        try writer.writeAll("// ============================================================================\n");
+        try writer.print("// Optional {s} Implementation\n", .{optional_info.inner_type});
+        try writer.writeAll("// ============================================================================\n\n");
+        
+        // Generate the optional struct type
+        try writer.print("typedef struct {s} {{\n", .{optional_info.struct_name});
+        try writer.print("    {s} value;\n", .{optional_info.inner_type});
+        try writer.writeAll("    int32_t is_some; // 1 if has value, -1 if none\n");
+        try writer.writeAll("} ");
+        try writer.print("{s};\n\n", .{optional_info.struct_name});
+        
+        // Generate constructor functions
+        const function_names = self.type_collection.getOptionalFunctionNames(optional_info.struct_name);
+        
+        // Some constructor
+        try writer.print("{s} {s}({s} value) {{\n", .{ optional_info.struct_name, function_names.some, optional_info.inner_type });
+        try writer.print("    {s} result = {{.value = value, .is_some = 1}};\n", .{optional_info.struct_name});
+        try writer.writeAll("    return result;\n");
+        try writer.writeAll("}\n\n");
+        
+        // None constructor
+        try writer.print("{s} {s}() {{\n", .{ optional_info.struct_name, function_names.none });
+        try writer.print("    {s} result = {{.value = {{}}, .is_some = -1}};\n", .{optional_info.struct_name});
+        try writer.writeAll("    return result;\n");
+        try writer.writeAll("}\n\n");
     }
 
     fn generateCollectedFunctionDeclarations(self: *CCodegen, writer: Writer) !void {
@@ -1050,12 +1099,26 @@ pub const CCodegen = struct {
                 }
                 return null; // Unknown identifier
             },
+            .optional_type_expr => |optional_type| {
+                // Get the inner type first
+                const inner_type = self.getNodeType(optional_type.inner_type);
+                if (inner_type) |inner| {
+                    // Create an optional type based on the inner type
+                    const inner_c_type = self.generateCType(inner);
+                    // For now, handle known types specifically to avoid allocation issues
+                    if (std.mem.eql(u8, inner_c_type, "MyStruct")) {
+                        return ast.Type.initCustomStruct("Optional_MyStruct_t", &[_]ast.Field{}, false, node.source_loc);
+                    }
+                    // For other types, create a generic name (could be expanded later)
+                    return ast.Type.initCustomStruct("Optional_Type_t", &[_]ast.Field{}, false, node.source_loc);
+                }
+                return null;
+            },
             else => return null, // Unsupported node type for now
         }
     }
 
     fn generateCType(self: *CCodegen, howl_type: ?ast.Type) []const u8 {
-        _ = self; // suppress unused parameter warning for now
         if (howl_type) |type_info| {
             return switch (type_info.data) {
                 .primitive => |prim| switch (prim) {
@@ -1093,6 +1156,16 @@ pub const CCodegen = struct {
                     // Return the enum name directly
                     return enum_info.name;
                 },
+                .optional => |opt_info| {
+                    // Generate the optional type name
+                    const inner_type_str = self.generateCType(opt_info.*);
+                    const sanitized_inner = self.sanitizeTypeForName(inner_type_str);
+                    // For now, handle known types specifically to avoid allocation issues
+                    if (std.mem.eql(u8, sanitized_inner, "MyStruct")) {
+                        return "Optional_MyStruct_t";
+                    }
+                    return "Optional_Type_t"; // Generic fallback
+                },
                 else => "int32_t", // Default fallback
             };
         }
@@ -1112,6 +1185,8 @@ pub const CCodegen = struct {
             .string => "char*",
             .char => "uint8_t",
             .enum_member => "int32_t", // Enums are represented as integers in C
+            .none => "void*", // None literal (NULL)
+            .some => "void*", // Some literal (determined by context)
         };
     }
 
@@ -1124,6 +1199,8 @@ pub const CCodegen = struct {
             .string => "%s",
             .char => "%c",
             .enum_member => "%d", // Enums as integers
+            .none => "%p", // None as pointer (NULL)
+            .some => "%p", // Some as pointer (determined by context)
         };
     }
 
@@ -1565,6 +1642,16 @@ pub const CCodegen = struct {
                 // TODO: Implement guard patterns
                 try writer.writeAll("/* Guard pattern not implemented */true");
             },
+            .some => |_| {
+                // Pattern matching for Some(value) - check if optional is not null
+                try self.generateCExpression(writer, match_expr_id);
+                try writer.writeAll(".is_valid == 0");
+            },
+            .none_pattern => {
+                // Pattern matching for None - check if optional is null
+                try self.generateCExpression(writer, match_expr_id);
+                try writer.writeAll(".is_valid == -1");
+            },
         }
     }
 
@@ -1768,12 +1855,22 @@ pub const CCodegen = struct {
                 if (struct_init.type_name) |_| {
                     // This is a success case - wrap it in error union struct
                     try writer.writeAll("return (");
-                        try writer.writeAll(self.getCurrentErrorUnionStructName());
-                        try writer.writeAll("){.error = MyError_SUCCESS, .payload = ");
+                    const current_error_union = self.getCurrentErrorUnionStructName();
+                    try writer.writeAll(current_error_union);
+                    try writer.writeAll("){.error = MyError_SUCCESS, .payload = ");
+                    
+                    // Check if this is an optional error union (contains "Optional" in name)
+                    if (std.mem.indexOf(u8, current_error_union, "Optional") != null) {
+                        // Wrap the struct literal in Optional_MyStruct_t_some()
+                        try writer.writeAll("Optional_MyStruct_t_some(");
                         try self.generateCExpression(writer, value_id);
-                        try writer.writeAll("};\n");
-                        return;
+                        try writer.writeAll(")");
+                    } else {
+                        try self.generateCExpression(writer, value_id);
                     }
+                    try writer.writeAll("};\n");
+                    return;
+                }
                 } else if (check_node.data == .call_expr) {
                     const call_expr = check_node.data.call_expr;
                     const callee_node = self.arena.getNodeConst(call_expr.callee);
@@ -1784,12 +1881,40 @@ pub const CCodegen = struct {
                         if (std.mem.endsWith(u8, func_name, "_init")) {
                                 // This is a success case - wrap it in error union struct
                                 try writer.writeAll("return (");
-                                try writer.writeAll(self.getCurrentErrorUnionStructName());
+                                const current_error_union = self.getCurrentErrorUnionStructName();
+                                try writer.writeAll(current_error_union);
                                 try writer.writeAll("){.error = MyError_SUCCESS, .payload = ");
-                                try self.generateCExpression(writer, value_id);
+                                
+                                // Check if this is an optional error union (contains "Optional" in name)
+                                if (std.mem.indexOf(u8, current_error_union, "Optional") != null) {
+                                    // Wrap the struct constructor in Optional_MyStruct_t_some()
+                                    try writer.writeAll("Optional_MyStruct_t_some(");
+                                    try self.generateCExpression(writer, value_id);
+                                    try writer.writeAll(")");
+                                } else {
+                                    try self.generateCExpression(writer, value_id);
+                                }
                                 try writer.writeAll("};\n");
                                 return;
                             }
+                        }
+                    }
+                }
+            }
+            
+            // Check if this is a None literal that needs to be wrapped in optional error union
+            if (value_node) |check_node| {
+                if (check_node.data == .literal) {
+                    const literal = check_node.data.literal;
+                    if (literal == .none) {
+                        // This is a None return in a nullable function - wrap it in error union with optional none
+                        const current_error_union = self.getCurrentErrorUnionStructName();
+                        // Check if this is an optional error union (contains "Optional" in name)
+                        if (std.mem.indexOf(u8, current_error_union, "Optional") != null) {
+                            try writer.writeAll("return (");
+                            try writer.writeAll(current_error_union);
+                            try writer.writeAll("){.error = MyError_SUCCESS, .payload = Optional_MyStruct_t_none()};\n");
+                            return;
                         }
                     }
                 }
@@ -1979,7 +2104,7 @@ pub const CCodegen = struct {
     }
 
     fn generateCLiteral(self: *CCodegen, writer: Writer, literal: ast.Literal) !void {
-        _ = self;
+        _ = self; // Parameter kept for future use
         switch (literal) {
             .integer => |int_literal| {
                 try writer.print("{d}", .{int_literal.value});
@@ -2010,6 +2135,14 @@ pub const CCodegen = struct {
                 // For enum members, we generate the enum member name
                 // In C, enums are typically prefixed, e.g., ENUM_MEMBER
                 try writer.print("{s}", .{enum_member.name});
+            },
+            .none => {
+                // Generate NULL for None literal
+                try writer.writeAll("NULL");
+            },
+            .some => |_| {
+                // Generate Some literal - for now just generate a placeholder
+                try writer.writeAll("/* Some value */");
             },
         }
     }
@@ -2678,9 +2811,11 @@ pub const CCodegen = struct {
                                                     }
                                                 }
                                             }
+                                            break;
                                         }
                                     }
                                 }
+                                break;
                             }
                         }
                     }

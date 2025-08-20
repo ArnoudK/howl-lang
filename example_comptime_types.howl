@@ -1,0 +1,32 @@
+// Example using the new Zig-like compile-time type generation
+std :: @import("std")
+
+main :: fn () !void {
+    // Use compile-time type functions like Zig
+    IntList :: std.List(i32)
+    StrList :: std.List(str)
+    MaybeInt :: Optional(i32)
+    
+    // Create instances
+    numbers := IntList.init()
+    numbers.append(42)
+    numbers.append(84)
+    
+    names := StrList.init()
+    names.append("hello")
+    names.append("world")
+    
+    maybe_value := MaybeInt.Some(123)
+    
+    // Use the values
+    first_number := numbers.get(0)
+    std.debug.print("First number: {}\n", .{first_number})
+    
+    first_name := names.get(0) 
+    std.debug.print("First name: {s}\n", .{first_name})
+    
+    if maybe_value.is_some() {
+        value := maybe_value.unwrap()
+        std.debug.print("Maybe value: {}\n", .{value})
+    }
+}

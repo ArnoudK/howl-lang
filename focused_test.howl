@@ -1,0 +1,69 @@
+// Focused test of implemented Howl language features
+// Tests: basic unions, slices, optionals, and existing control flow
+
+std :: @import("std")
+
+// Simple union type  
+Color :: union {
+    Red,
+    Green,
+    Blue(i32),  // Blue with intensity value
+}
+
+// Optional type example
+MaybeNumber :: ?i32
+
+main :: fn() {
+    std.debug.print("=== Testing New Howl Features ===\n", .{})
+    
+    // Test 1: Union types
+    std.debug.print("\n--- Union Types ---\n", .{})
+    
+    red_color := Color.Red
+    blue_color := Color.Blue(255)
+    
+    std.debug.print("Created colors\n", .{})
+    
+    // Test 2: Optional types  
+    std.debug.print("\n--- Optional Types ---\n", .{})
+    
+    some_number: ?i32 = 42
+    no_number: ?i32 = null
+    
+    std.debug.print("Created optionals\n", .{})
+    
+    // Test 3: Slice types
+    std.debug.print("\n--- Slice Types ---\n", .{})
+    
+    numbers := [1, 2, 3, 4, 5]
+    std.debug.print("Array created: 5 elements\n", .{})
+    
+    // Test 4: GC arrays (already working)  
+    std.debug.print("\n--- GC Arrays ---\n", .{})
+    
+    gc_array := $[10, 20, 30]
+    std.debug.print("GC array created: 3 elements\n", .{})
+    
+    // Test 5: For loops (already working)
+    std.debug.print("\n--- For Loops ---\n", .{})
+    
+    for (0..3) |i| {
+        std.debug.print("Loop iteration: {}\n", .{i})
+    }
+    
+    // Test 6: Match expressions (already working)
+    std.debug.print("\n--- Match Expressions ---\n", .{})
+    
+    value := 42
+    result := match value {
+        40 => "Forty",
+        41 => "Forty-one", 
+        42 => "Forty-two",
+        _ => "Other",
+    }
+    std.debug.print("Match result: {}\n", .{result})
+    
+    std.debug.print("\n=== All Tests Complete ===\n", .{})
+    
+    return
+}

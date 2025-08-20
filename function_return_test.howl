@@ -1,0 +1,10 @@
+// Test function return type inference
+
+getNum :: fn () ?i32 {
+    return 42  // Should auto-wrap as Some(42)
+}
+
+main :: fn () i32 {
+    result := getNum()  // Should infer as ?i32
+    return 0
+}

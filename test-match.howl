@@ -1,21 +1,21 @@
-// Test file to verify match patterns and struct init work
+std :: @import("std")
 
-MyStruct :: struct {
-    field1: i32,
-    field2: f64,
+MyError :: error { 
+    InvalidValue,
 }
 
-testMatch :: fn (a: i32) MyStruct {
+createValue :: fn (a: i32) MyError!i32 {
     match a {
-    | < 0 => {
-        return MyStruct{ .field1 = -1, .field2 = 0.0 }
-    }
-    | _ => {
-        return MyStruct{ .field1 = a, .field2 = 3.14 }
-    }
+    |   < 0 => {
+                return MyError.InvalidValue
+            }
+    |    _   => {
+                return a * 2
+            }
     }
 }
 
-main :: fn () void {
-    result :: testMatch(42)
+main :: fn () !void {
+    result :: try createValue(5)
+    std.debug.print("Result: {}\n", .{result})
 }

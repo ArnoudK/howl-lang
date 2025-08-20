@@ -1,0 +1,212 @@
+// Comprehensive test of new Howl language features
+// This file tests: slice types, optional types, tagged unions, and enhanced control flow
+
+std :: @import("std")
+
+// ============================================================================
+// SLICE TYPES []T
+// ============================================================================
+
+// Function that takes a slice of integers
+process_slice :: fn(numbers: []i32) {
+    std.debug.print("Processing slice with length: {}\n", .{numbers.len})
+    
+    // Iterate over slice elements
+    for (numbers) |num| {
+        std.debug.print("Number: {}\n", .{num})
+    }
+}
+
+// ============================================================================
+// OPTIONAL TYPES ?T  
+// ============================================================================
+
+// Function that returns an optional integer
+find_number :: fn(target: i32) ?i32 {
+    if (target > 10) {
+        return target * 2
+    } else {
+        return null
+    }
+}
+
+// Function that works with optional values
+handle_optional :: fn(maybe_num: ?i32) {
+    if (maybe_num) |num| {
+        std.debug.print("Found number: {}\n", .{num})
+    } else {
+        std.debug.print("No number found\n", .{})
+    }
+}
+
+// ============================================================================
+// TAGGED UNIONS (SUM TYPES)
+// ============================================================================
+
+// Define a result type that can be either success or error
+Result :: union {
+    Success(i32),
+    Error(str),
+    Loading,
+}
+
+// Function that returns a Result
+calculate_result :: fn(input: i32) Result {
+    if (input < 0) {
+        return Result.Error("Negative input not allowed")
+    } else if (input == 0) {
+        return Result.Loading  
+    } else {
+        return Result.Success(input * 100)
+    }
+}
+
+// Function to handle Result union
+process_result :: fn(result: Result) {
+    match result {
+        .Success => |value| {
+            std.debug.print("Success: {}\n", .{value})
+        },
+        .Error => |message| {
+            std.debug.print("Error: {}\n", .{message})
+        },
+        .Loading => {
+            std.debug.print("Loading...\n", .{})
+        },
+    }
+}
+
+// Another union example - a simple Option type
+Option :: union {
+    Some(i32),
+    None,
+}
+
+// ============================================================================
+// ENHANCED ARRAY AND SLICE OPERATIONS
+// ============================================================================
+
+test_slices :: fn() {
+    std.debug.print("=== SLICE TESTS ===\n", .{})
+    
+    // Create a regular array
+    numbers := [1, 2, 3, 4, 5]
+    
+    // Pass array as slice (implicit conversion)
+    process_slice(numbers)
+    
+    // Create a GC array and use it as slice
+    gc_numbers := $[10, 20, 30, 40]
+    process_slice(gc_numbers)
+}
+
+test_optionals :: fn() {
+    std.debug.print("=== OPTIONAL TESTS ===\n", .{})
+    
+    // Test optional values
+    maybe_big := find_number(15)
+    maybe_small := find_number(5)
+    
+    handle_optional(maybe_big)
+    handle_optional(maybe_small)
+    
+    // Direct optional creation
+    some_value: ?i32 = 42
+    no_value: ?i32 = null
+    
+    handle_optional(some_value)
+    handle_optional(no_value)
+}
+
+test_unions :: fn() {
+    std.debug.print("=== UNION TESTS ===\n", .{})
+    
+    // Test different union variants
+    success_result := calculate_result(5)
+    error_result := calculate_result(-1)
+    loading_result := calculate_result(0)
+    
+    process_result(success_result)
+    process_result(error_result)
+    process_result(loading_result)
+    
+    // Test Option union
+    some_option := Option.Some(123)
+    none_option := Option.None
+    
+    match some_option {
+        .Some => |value| {
+            std.debug.print("Option has value: {}\n", .{value})
+        },
+        .None => {
+            std.debug.print("Option is None\n", .{})
+        },
+    }
+    
+    match none_option {
+        .Some => |value| {
+            std.debug.print("Option has value: {}\n", .{value})
+        },
+        .None => {
+            std.debug.print("Option is None\n", .{})
+        },
+    }
+}
+
+// ============================================================================
+// COMPLEX TYPE COMPOSITIONS
+// ============================================================================
+
+// A struct that uses the new types
+DataProcessor :: struct {
+    name: str,
+    buffer: []i32,
+    current_result: ?Result,
+    options: []?i32,
+}
+
+test_complex_types :: fn() {
+    std.debug.print("=== COMPLEX TYPE TESTS ===\n", .{})
+    
+    // Create arrays to use as slices
+    main_buffer := $[1, 2, 3, 4, 5]
+    option_array := $[42, null, 84, null, 126]
+    
+    processor := DataProcessor{
+        .name = "TestProcessor",
+        .buffer = main_buffer,
+        .current_result = Result.Success(100),
+        .options = option_array,
+    }
+    
+    std.debug.print("Processor name: {}\n", .{processor.name})
+    std.debug.print("Buffer length: {}\n", .{processor.buffer.len})
+    
+    // Process the current result
+    if (processor.current_result) |result| {
+        process_result(result)
+    }
+}
+
+// ============================================================================
+// MAIN FUNCTION
+// ============================================================================
+
+main :: fn() {
+    std.debug.print("=== NEW HOWL FEATURES TEST ===\n", .{})
+    
+    test_slices()
+    std.debug.print("\n", .{})
+    
+    test_optionals()
+    std.debug.print("\n", .{})
+    
+    test_unions()
+    std.debug.print("\n", .{})
+    
+    test_complex_types()
+    
+    std.debug.print("\n=== ALL TESTS COMPLETE ===\n", .{})
+    
+    return
+}

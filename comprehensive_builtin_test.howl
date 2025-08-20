@@ -1,0 +1,24 @@
+// Comprehensive Generic Optional Test
+// Test optionals with all supported built-in types
+
+main :: fn () i32 {
+    // Integer optionals
+    opt_i32: ?i32 = 42
+    opt_i64: ?i64 = 9999999999
+    opt_u32: ?u32 = 123
+    opt_u64: ?u64 = 456
+    
+    // Float optionals  
+    opt_f32: ?f32 = 3.14
+    opt_f64: ?f64 = 2.718281828
+    
+    // Bool optional
+    opt_bool: ?bool = true
+    
+    // None optionals for each type
+    none_i32: ?i32 = None
+    none_f32: ?f32 = None
+    none_bool: ?bool = None
+    
+    return 0
+}

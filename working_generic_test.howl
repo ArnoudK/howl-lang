@@ -1,0 +1,14 @@
+// Working Generic Optional Test
+// Test with types that currently pass semantic analysis
+
+main :: fn () i32 {
+    // These should work (semantic analyzer allows them)
+    opt_i32: ?i32 = 42
+    opt_bool: ?bool = true
+    
+    // None optionals
+    none_i32: ?i32 = None
+    none_bool: ?bool = None
+    
+    return 0
+}

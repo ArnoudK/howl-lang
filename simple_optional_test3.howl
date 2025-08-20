@@ -1,0 +1,9 @@
+// Test with explicit optional type
+
+getValue :: fn (x: i32) ?i32 {
+    return x
+}
+
+main :: fn () void {
+    result :: getValue(42)
+}

@@ -1094,6 +1094,45 @@ pub const Formatter = struct {
                 try self.writeIndent();
                 try self.writeString("}");
             },
+            .union_decl => |union_decl| {
+                try self.writeIndent();
+                try self.writeString("union ");
+                try self.writeString(union_decl.name);
+                try self.writeString(" {");
+                try self.writeNewline();
+                self.current_indent += 1;
+                for (union_decl.variants.items) |variant| {
+                    try self.writeIndent();
+                    try self.writeString(variant.name);
+                    if (variant.payload_type) |type_node| {
+                        try self.writeString("(");
+                        try self.formatASTNodeInternal(type_node, arena, false);
+                        try self.writeString(")");
+                    }
+                    try self.writeString(",");
+                    try self.writeNewline();
+                }
+                self.current_indent -= 1;
+                try self.writeIndent();
+                try self.writeString("}");
+            },
+            .slice_type_expr => |slice_type| {
+                try self.writeString("[]");
+                try self.formatASTNodeInternal(slice_type.element_type, arena, false);
+            },
+            .optional_type_expr => |optional_type| {
+                try self.writeString("?");
+                try self.formatASTNodeInternal(optional_type.inner_type, arena, false);
+            },
+            .comptime_type_call => |comptime_call| {
+                try self.formatASTNodeInternal(comptime_call.function, arena, false);
+                try self.writeString("(");
+                for (comptime_call.args.items, 0..) |arg_id, i| {
+                    if (i > 0) try self.writeString(", ");
+                    try self.formatASTNodeInternal(arg_id, arena, false);
+                }
+                try self.writeString(")");
+            },
         }
     }
 

@@ -102,6 +102,7 @@ pub const AstArena = struct {
             .struct_type_expr => |*struct_type| struct_type.fields.deinit(),
             .for_expr => |*for_expr| for_expr.captures.deinit(),
             .generic_type_expr => |*generic_type| generic_type.type_params.deinit(),
+            .comptime_type_call => |*comptime_call| comptime_call.args.deinit(),
             else => {}, // No cleanup needed for other node types
         }
     }
@@ -471,6 +472,10 @@ pub const Literal = union(enum) {
     },
     bool_true: void,
     bool_false: void,
+    none: void, // None for optional types
+    some: struct {
+        value: NodeId, // The wrapped value for Some(value)
+    },
     enum_member: struct {
         name: []const u8, // Member name without the dot (e.g., "c", "javascript")
     },
@@ -491,6 +496,7 @@ pub const Literal = union(enum) {
             },
             .True => Literal.bool_true,
             .False => Literal.bool_false,
+            .None => Literal.none,
             else => null,
         };
     }
@@ -525,6 +531,8 @@ pub const Literal = union(enum) {
             .char => |c| try std.fmt.allocPrint(allocator, "'{c}'", .{c.value}),
             .bool_true => try allocator.dupe(u8, "true"),
             .bool_false => try allocator.dupe(u8, "false"),
+            .none => try allocator.dupe(u8, "None"),
+            .some => |some| try std.fmt.allocPrint(allocator, "Some({})", .{some.value}), // This might need refinement
             .enum_member => |member| try std.fmt.allocPrint(allocator, ".{s}", .{member.name}),
         };
     }
@@ -593,6 +601,11 @@ pub const MatchPattern = union(enum) {
         pattern: *MatchPattern,
         condition: NodeId,
     },
+    // Optional pattern matching
+    some: struct {
+        bind_variable: []const u8, // Variable name to bind the value to
+    },
+    none_pattern: void, // Pattern matching for None (distinct from literal None)
 };
 
 pub const MatchArm = struct {
@@ -636,7 +649,7 @@ pub const AstNode = struct {
     source_loc: SourceLoc,
     type_info: ?Type = null, // Filled in during semantic analysis
 
-    const NodeData = union(enum) {
+    pub const NodeData = union(enum) {
         // Literals and basic nodes
         literal: Literal,
         identifier: struct {
@@ -807,6 +820,12 @@ pub const AstNode = struct {
             name: []const u8, // Error set name (e.g., "FileError")
             errors: std.ArrayList([]const u8), // List of error names
         },
+        
+        // Compile-time type functions (like std.List(T))
+        comptime_type_call: struct {
+            function: NodeId, // The function being called (e.g., std.List)
+            args: std.ArrayList(NodeId), // Type arguments (e.g., i32 in List(i32))
+        },
     };
 
     pub fn init(data: NodeData, source_loc: SourceLoc) AstNode {
@@ -835,11 +854,14 @@ pub const AstNode = struct {
             .block,
             .struct_init,
             .array_init,
+            .slice_type_expr,
+            .optional_type_expr,
             .generic_type_expr,
             .try_expr,
             .catch_expr,
             .error_union_type,
-            .error_literal => true,
+            .error_literal,
+            .comptime_type_call => true,
             else => false,
         };
     }
@@ -850,6 +872,8 @@ pub const AstNode = struct {
             .function_decl,
             .extern_fn_decl,
             .struct_decl,
+            .enum_decl,
+            .union_decl,
             .type_decl,
             .import_decl,
             .return_stmt,
@@ -973,6 +997,21 @@ pub fn createErrorLiteral(arena: *AstArena, source_loc: SourceLoc, name: []const
     return arena.createNode(node);
 }
 
+pub fn createSliceTypeExpr(arena: *AstArena, source_loc: SourceLoc, element_type: NodeId) !NodeId {
+    const node = AstNode.init(.{ .slice_type_expr = .{ .element_type = element_type } }, source_loc);
+    return arena.createNode(node);
+}
+
+pub fn createOptionalTypeExpr(arena: *AstArena, source_loc: SourceLoc, inner_type: NodeId) !NodeId {
+    const node = AstNode.init(.{ .optional_type_expr = .{ .inner_type = inner_type } }, source_loc);
+    return arena.createNode(node);
+}
+
+pub fn createUnionDecl(arena: *AstArena, source_loc: SourceLoc, name: []const u8, variants: std.ArrayList(UnionVariant)) !NodeId {
+    const node = AstNode.init(.{ .union_decl = .{ .name = name, .variants = variants } }, source_loc);
+    return arena.createNode(node);
+}
+
 // ============================================================================
 // AST Visitor Pattern for Traversal
 // ============================================================================
@@ -1050,6 +1089,12 @@ pub const AstVisitor = struct {
                     try self.visit(arena, error_set);
                 }
                 try self.visit(arena, error_union.payload_type);
+            },
+            .slice_type_expr => |slice_type| {
+                try self.visit(arena, slice_type.element_type);
+            },
+            .optional_type_expr => |optional_type| {
+                try self.visit(arena, optional_type.inner_type);
             },
             else => {}, // Leaf nodes
         }

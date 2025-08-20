@@ -84,6 +84,7 @@ pub const Token = union(enum) {
     Type: BaseToken, // Type
     Error: BaseToken, // error
     Struct: BaseToken, // struct
+    Union: BaseToken, // union
     Tag: BaseToken, // tag
     Enum: BaseToken, // enum
     True: BaseToken, // true

@@ -103,6 +103,12 @@ pub const JSCodegen = struct {
             .char => |char| try self.writeFormatted("\"{c}\"", .{char.value}),
             .bool_true => try self.write("true"),
             .bool_false => try self.write("false"),
+            .none => try self.write("null"), // None as null in JavaScript
+            .some => |some| {
+                // This would need special handling for wrapped value
+                _ = some;
+                try self.write("/* Some value */");
+            },
             .enum_member => |enum_member| {
                 // For enum members in JavaScript, we can use string literals or enum objects
                 try self.writeFormatted("\"{s}\"", .{enum_member.name});
@@ -1613,6 +1619,17 @@ pub const JSCodegen = struct {
             .guard => {
                 // TODO: Implement guard pattern matching
                 try self.write("/* Guard pattern not implemented yet */");
+            },
+            .some => |some_info| {
+                // Check if the optional value is present (not null/undefined)
+                try self.write("(__match_value !== null && __match_value !== undefined)");
+                
+                // TODO: Handle variable binding for some_info.bind_variable
+                _ = some_info.bind_variable;
+            },
+            .none_pattern => {
+                // Check if the optional value is absent (null or undefined)
+                try self.write("(__match_value === null || __match_value === undefined)");
             },
         }
     }

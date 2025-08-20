@@ -124,6 +124,7 @@ pub const keywords = std.StaticStringMap(Token).initComptime(.{
     .{ "true", Token{ .True = .{ .pos = 0 } } },
     .{ "false", Token{ .False = .{ .pos = 0 } } },
     .{ "struct", Token{ .Struct = .{ .pos = 0 } } },
+    .{ "union", Token{ .Union = .{ .pos = 0 } } },
     .{ "enum", Token{ .Enum = .{ .pos = 0 } } },
     .{ "tag", Token{ .Tag = .{ .pos = 0 } } },
     .{ "fn", Token{ .Fn = .{ .pos = 0 } } },
@@ -402,7 +403,7 @@ pub const LexerFile = struct {
                         self.advance(); // skip closing quote
                     }
                 },
-                'a'...'z', 'A'...'Z', '_' => {
+                'a'...'z', 'A'...'Z' => {
                     try self.parseIdentifierOrKeyword();
                 },
                 '/' => {
@@ -543,6 +544,10 @@ pub const LexerFile = struct {
                     }
                     self.advance();
                 },
+                '?' => {
+                    try self.tokens.append(Token{ .QuestionMark = .{ .pos = self.tokenize_state.current_pos } });
+                    self.advance();
+                },
                 '@' => {
                     // Handle at sign (used for attributes or special tokens)
                     // Check if this is @import
@@ -616,6 +621,20 @@ pub const LexerFile = struct {
                         try self.tokens.append(Token{ .Dot = .{ .pos = self.tokenize_state.current_pos } });
                     }
                     self.advance();
+                },
+                '_' => {
+                    // Check if this is a standalone underscore (wildcard) or part of identifier
+                    if ((self.tokenize_state.next_char >= 'a' and self.tokenize_state.next_char <= 'z') or
+                        (self.tokenize_state.next_char >= 'A' and self.tokenize_state.next_char <= 'Z') or
+                        (self.tokenize_state.next_char >= '0' and self.tokenize_state.next_char <= '9') or
+                        self.tokenize_state.next_char == '_') {
+                        // This is part of an identifier, parse as identifier
+                        try self.parseIdentifierOrKeyword();
+                    } else {
+                        // This is a standalone underscore (wildcard)
+                        try self.tokens.append(Token{ .Underscore = .{ .pos = self.tokenize_state.current_pos } });
+                        self.advance();
+                    }
                 },
                 else => {
                     // Invalid character

@@ -33,6 +33,24 @@ createMyStruct :: fn (a: i32, b: f64) MyError!MyStruct {
     }
 }
 
+createMyStructMaybe :: fn (i: i32, b: f64, c : bool) MyError!?MyStruct {
+    match c {
+    | true => {
+        return None
+        }
+    | false => {
+        match i {
+        | < 0 => {
+                return MyError.InvalidValue
+                }
+        | _ => {
+                return MyStruct{ .field1 = i, .field2 = b }
+                }
+            }
+        }
+    }
+}
+
 divide :: fn (a: i32, b: i32) MyError!i32 {
     return if (b == 0) MyError.DivisionByZero else (a / b)
 }
@@ -56,8 +74,11 @@ main :: fn () !void {
     first_element :: simple_gc_array[0]
     std.debug.print("GC Array - First element: {}\n", .{first_element})
 
-    // GC struct array example - demonstrates $ prefix with struct initialization
-    people :: $[MyStruct{ .field1 = 1, .field2 = 1.1 }, MyStruct{ .field1 = 2, .field2 = 2.2 }]
+    // GC struct array example - demonstrates $ prefix with struct initialization  
+    people :: $[
+        MyStruct{ .field1 = 1, .field2 = 1.1 },
+        MyStruct{ .field1 = 2, .field2 = 2.2 },
+    ]
     first_person :: people[0]
     std.debug.print("GC Struct Array - First person field1: {}\n", .{first_person.field1})
 

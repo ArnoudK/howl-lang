@@ -1,0 +1,9 @@
+// Simple optional type test with question mark
+
+getValue :: fn (x: i32) ?i32 {
+    return if (x < 0) None else x
+}
+
+main :: fn () void {
+    result :: getValue(42)
+}

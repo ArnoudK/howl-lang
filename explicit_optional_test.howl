@@ -1,0 +1,10 @@
+// Simple function call test
+
+getOpt :: fn () ?i32 {
+    return 42
+}
+
+main :: fn () i32 {
+    x: ?i32 = getOpt()  // Explicit type annotation should work
+    return 0
+}
