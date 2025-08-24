@@ -6,6 +6,7 @@ pub const CCodegenError = error{
     UnhandledNodeType,
     MissingFieldInStruct,
     UnsupportedOperation,
+    UnsupportedExpression,
     CompilationFailed,
 } || std.ArrayList(u8).Writer.Error || std.mem.Allocator.Error || std.fs.OpenSelfExeError || std.fs.GetAppDataDirError ||
     std.fs.GetAppDataDirError || std.fs.Dir.OpenError || std.fs.Dir.MakeError || std.fs.Dir.WriteFileError;

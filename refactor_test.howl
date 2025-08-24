@@ -1,0 +1,19 @@
+debug :: @import("debug")
+
+MyError :: error { 
+    MyError,
+    OtherError
+}
+
+MyStruct :: struct {
+    value: int32
+}
+
+new :: fn() MyError!MyStruct {
+    return MyStruct{ .value = 42 }
+}
+
+main :: fn() void {
+    result := try new()
+    debug.print("Success: {}\n", result.value)
+}

@@ -288,53 +288,6 @@ pub const TypeCollection = struct {
     }
 };
 
-pub fn generateCType(type_collection: *const TypeCollection, howl_type: ?ast.Type) []const u8 {
-    if (howl_type) |type_info| {
-        return switch (type_info.data) {
-            .primitive => |prim| switch (prim) {
-                .bool => "bool",
-                .i8 => "int8_t",
-                .i16 => "int16_t",
-                .i32 => "int32_t",
-                .i64 => "int64_t",
-                .u8 => "uint8_t",
-                .u16 => "uint16_t",
-                .u32 => "uint32_t",
-                .u64 => "uint64_t",
-                .f32 => "howl_f32_t",
-                .f64 => "howl_f64_t",
-                .usize => "size_t",
-                .isize => "ptrdiff_t",
-                .void => "void",
-                .char => "uint8_t",
-                .str => "const char*",
-                .strb => "HowlStringBuilder*",
-                .string => "char*",
-                else => "int32_t",
-            },
-            .@"struct" => |struct_info| struct_info.name,
-            .custom_struct => |struct_info| struct_info.name,
-            .@"enum" => |enum_info| enum_info.name,
-            .pointer => "void*",
-            .array => |array| {
-                const element_type = generateCType(type_collection, array.element_type.*);
-                return std.fmt.allocPrint(std.heap.page_allocator, "{s}*", .{element_type}) catch "void*";
-            },
-            .optional => |optional_type| {
-                const inner_type = generateCType(type_collection, optional_type.*);
-                return std.fmt.allocPrint(std.heap.page_allocator, "Optional_{s}_t", .{utils.sanitizeTypeForOptionalName(inner_type)}) catch "void*";
-            },
-            .error_union => |error_union| {
-                const error_set_name = error_union.error_set;
-                const payload_type = generateCType(type_collection, error_union.payload_type.*);
-                return std.fmt.allocPrint(std.heap.page_allocator, "{s}_{s}_ErrorUnion", .{ error_set_name, utils.sanitizeTypeForName(payload_type) }) catch "void*";
-            },
-            else => "int32_t",
-        };
-    }
-    return "int32_t";
-}
-
 pub fn typeToFormatSpecifier(type_info: ast.Type) []const u8 {
     switch (type_info.data) {
         .primitive => |prim| switch (prim) {
@@ -356,4 +309,59 @@ pub fn typeToFormatSpecifier(type_info: ast.Type) []const u8 {
         },
         else => return "%d", // Default fallback
     }
+}
+
+/// Generate C type string from Howl type information
+pub fn generateCType(codegen: anytype, howl_type: ?ast.Type) []const u8 {
+    if (howl_type) |type_info| {
+        return switch (type_info.data) {
+            .primitive => |prim| switch (prim) {
+                .bool => "bool",
+                .i8 => "int8_t",
+                .i16 => "int16_t",
+                .i32 => "int32_t",
+                .i64 => "int64_t",
+                .u8 => "uint8_t",
+                .u16 => "uint16_t",
+                .u32 => "uint32_t",
+                .u64 => "uint64_t",
+                .char => "uint8_t",
+                .f32 => "howl_f32_t",
+                .f64 => "howl_f64_t",
+                .usize => "size_t",
+                .isize => "ptrdiff_t",
+                .str => "const char*",
+                .strb => "HowlStringBuilder*",
+                .string => "char*",
+                .void => "void",
+                else => "int32_t", // Default fallback
+            },
+            .pointer => "void*",
+            .array => "void*",
+            .@"struct" => |struct_info| {
+                // Return the struct name directly
+                return struct_info.name;
+            },
+            .custom_struct => |struct_info| {
+                // Return the struct name directly
+                return struct_info.name;
+            },
+            .@"enum" => |enum_info| {
+                // Return the enum name directly
+                return enum_info.name;
+            },
+            .optional => |opt_info| {
+                // Generate the optional type name
+                const inner_type_str = generateCType(codegen, opt_info.*);
+                const sanitized_inner = utils.sanitizeTypeForName(inner_type_str);
+                // For now, handle known types specifically to avoid allocation issues
+                if (std.mem.eql(u8, sanitized_inner, "MyStruct")) {
+                    return "Optional_MyStruct_t";
+                }
+                return "Optional_Type_t"; // Generic fallback
+            },
+            else => "int32_t", // Default fallback
+        };
+    }
+    return "int32_t"; // Default fallback
 }

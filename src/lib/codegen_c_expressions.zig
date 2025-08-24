@@ -12,10 +12,10 @@ pub fn generateCBinaryExpression(
     arena: *const ast.AstArena,
     writer: Writer,
     binary_expr: anytype,
-    generateCExpressionRecursive: anytype,
+    exprGenerator: anytype,
 ) !void {
     try writer.writeAll("(");
-    try generateCExpressionRecursive(arena, writer, binary_expr.left);
+    try exprGenerator(arena, writer, binary_expr.left);
     try writer.writeAll(" ");
     
     const op_str = switch (binary_expr.op) {
@@ -37,7 +37,7 @@ pub fn generateCBinaryExpression(
     
     try writer.writeAll(op_str);
     try writer.writeAll(" ");
-    try generateCExpressionRecursive(arena, writer, binary_expr.right);
+    try exprGenerator(arena, writer, binary_expr.right);
     try writer.writeAll(")");
 }
 
@@ -364,4 +364,418 @@ fn generateBasicMatchExpression(arena: *const ast.AstArena, writer: Writer, matc
     _ = arena;
     _ = match_expr;
     try writer.writeAll("0 /* match expression should be handled as statement */");
+}
+
+/// Main expression generation function - delegates to recursive generator
+pub fn generateCExpression(
+    codegen: anytype,
+    writer: Writer,
+    node_id: ast.NodeId,
+) CCodegenError!void {
+    try generateCExpressionRecursive(codegen, writer, node_id);
+}
+
+/// Recursive expression generation - handles all expression types
+pub fn generateCExpressionRecursive(
+    codegen: anytype,
+    writer: Writer,
+    node_id: ast.NodeId,
+) CCodegenError!void {
+    const node = codegen.arena.getNodeConst(node_id) orelse return;
+
+    switch (node.data) {
+        .literal => |literal| {
+            try generateCLiteral(writer, literal);
+        },
+        .identifier => |identifier| {
+            try writer.writeAll(identifier.name);
+        },
+        .unary_expr => |unary_expr| {
+            // Handle unary expressions like -1, !condition, ~bits
+            const op_str = switch (unary_expr.op) {
+                .negate => "-",
+                .not => "!",
+                .bit_not => "~",
+                else => "/* unknown unary op */",
+            };
+            try writer.writeAll("(");
+            try writer.writeAll(op_str);
+            try generateCExpressionRecursive(codegen, writer, unary_expr.operand);
+            try writer.writeAll(")");
+        },
+        .binary_expr => |binary_expr| {
+            // Special handling for string concatenation
+            if (binary_expr.op == .concat) {
+                try writer.writeAll("howl_string_concat(");
+                try generateCExpressionRecursive(codegen, writer, binary_expr.left);
+                try writer.writeAll(", ");
+                try generateCExpressionRecursive(codegen, writer, binary_expr.right);
+                try writer.writeAll(")");
+            } else {
+                try writer.writeAll("(");
+                try generateCExpressionRecursive(codegen, writer, binary_expr.left);
+                try writer.writeAll(" ");
+                try writer.writeAll(binary_expr.op.toString());
+                try writer.writeAll(" ");
+                try generateCExpressionRecursive(codegen, writer, binary_expr.right);
+                try writer.writeAll(")");
+            }
+        },
+        .member_expr => |member_expr| {
+            // Handle member access like std.debug.print
+            try generateCMemberExpression(codegen, writer, member_expr);
+        },
+        .call_expr => |call_expr| {
+            // Check if this is a stdlib function call
+            if (try codegen.isStdlibFunctionCall(call_expr)) {
+                try codegen.generateCStdlibCall(writer, call_expr);
+            } else {
+                // Check if this is a member method call (like h.append())
+                const callee_node = codegen.arena.getNodeConst(call_expr.callee);
+                if (callee_node) |callee| {
+                    if (callee.data == .member_expr) {
+                        const member_expr = callee.data.member_expr;
+                        try generateCMemberMethodCall(codegen, writer, member_expr, call_expr.args.items);
+                    } else {
+                        // Generate regular function call
+                        try generateCExpressionRecursive(codegen, writer, call_expr.callee);
+                        try writer.writeAll("(");
+
+                        // Generate arguments
+                        for (call_expr.args.items, 0..) |arg_id, i| {
+                            if (i > 0) try writer.writeAll(", ");
+                            try generateCExpressionRecursive(codegen, writer, arg_id);
+                        }
+
+                        try writer.writeAll(")");
+                    }
+                } else {
+                    // Fallback
+                    try writer.writeAll("/* unknown call */");
+                }
+            }
+        },
+        .struct_init => |struct_init| {
+            // Handle anonymous struct syntax .{args}
+            if (struct_init.type_name == null) {
+                // This is an anonymous struct for function arguments
+                for (struct_init.fields.items, 0..) |field_init, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try generateCExpressionRecursive(codegen, writer, field_init.value);
+                }
+            } else {
+                // Named struct initialization: .TypeName{ .field = value, ... }
+                const type_name = struct_init.type_name.?;
+                
+                if (struct_init.use_gc) {
+                    // Garbage collected initialization: malloc and initialize
+                    try writer.print("({s}*)malloc(sizeof({s}))", .{type_name, type_name});
+                    // For now, we'll generate a simple malloc call. In a full implementation,
+                    // we would need to initialize the allocated memory with the struct values.
+                    // This is a basic starting point for GC support.
+                } else {
+                    // Generate constructor call: TypeName_init(field_values...)
+                    try writer.print("{s}_init(", .{type_name});
+
+                    // Generate field values in constructor order
+                    // TODO: Should match the order of fields in struct definition
+                    for (struct_init.fields.items, 0..) |field_init, i| {
+                        if (i > 0) try writer.writeAll(", ");
+                        try generateCExpressionRecursive(codegen, writer, field_init.value);
+                    }
+                    try writer.writeAll(")");
+                }
+            }
+        },
+        .array_init => |array_init| {
+            if (array_init.use_gc) {
+                // Garbage collected array: malloc and initialize
+                const num_elements = array_init.elements.items.len;
+                
+                // Determine the element type using centralized inference
+                const element_type = if (num_elements > 0) 
+                    codegen.inferNodeCType(array_init.elements.items[0])
+                else 
+                    "int32_t";
+                
+                try writer.print("malloc({d} * sizeof({s}))", .{num_elements, element_type});
+                // For now, this is a basic malloc call. In a full implementation,
+                // we would need to initialize the array elements properly.
+            } else {
+                // Generate C array literal syntax: {1, 2, 3}
+                try writer.writeAll("{");
+                for (array_init.elements.items, 0..) |element_id, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try generateCExpressionRecursive(codegen, writer, element_id);
+                }
+                try writer.writeAll("}");
+            }
+        },
+        .if_expr => |if_expr| {
+            // Generate C ternary operator: (condition ? then_value : else_value)
+            try writer.writeAll("(");
+            try generateCExpressionRecursive(codegen, writer, if_expr.condition);
+            try writer.writeAll(" ? ");
+            try generateCExpressionRecursive(codegen, writer, if_expr.then_branch);
+            try writer.writeAll(" : ");
+            if (if_expr.else_branch) |else_branch| {
+                try generateCExpressionRecursive(codegen, writer, else_branch);
+            } else {
+                try writer.writeAll("/* no else branch */");
+            }
+            try writer.writeAll(")");
+        },
+        .compile_target_expr => {
+            // @compile.target - output the target as a string literal
+            try writer.writeAll("\"c\"");
+        },
+        .compile_insert_expr => |compile_insert| {
+            // @compile.insert("code") - output the inserted code directly
+            // This should only be used inside function bodies, not expressions
+            try writer.writeAll(compile_insert.code);
+        },
+        .try_expr => |try_expr| {
+            // For try expressions in expression context
+            try writer.writeAll("({ ");
+            
+            // Determine the correct error union type from the expression being tried
+            const error_union_type = codegen.inferErrorUnionTypeFromExpression(try_expr.expression);
+            try writer.writeAll(error_union_type);
+            try writer.writeAll(" _temp = ");
+            try generateCExpressionRecursive(codegen, writer, try_expr.expression);
+            
+            if (codegen.current_function_is_main) {
+                // In main function, use if statement instead of ternary to avoid type mismatch
+                try writer.writeAll("; if (_temp.error < 0) exit(1); _temp.payload; })");
+            } else {
+                // In regular functions, propagate error using the correct error union type
+                try writer.writeAll("; if (_temp.error < 0) { ");
+                try writer.writeAll(error_union_type);
+                try writer.writeAll(" _propagated = {_temp.error, 0}; return _propagated; } _temp.payload; })");
+            }
+        },
+        .error_union_type => {
+            // Error union types don't generate expressions
+            try writer.writeAll("/* error_union_type */");
+        },
+        .error_literal => |error_literal| {
+            // Error literals generate as string constants
+            try writer.print("\"{s}\"", .{error_literal.name});
+        },
+        .index_expr => |index_expr| {
+            // Handle array/pointer indexing like array[index]
+            try generateCExpressionRecursive(codegen, writer, index_expr.object);
+            try writer.writeAll("[");
+            try generateCExpressionRecursive(codegen, writer, index_expr.index);
+            try writer.writeAll("]");
+        },
+        else => {
+            try writer.writeAll("/* Unknown expression */");
+        },
+    }
+}
+
+/// Generate C literal values
+pub fn generateCLiteral(writer: Writer, literal: ast.Literal) CCodegenError!void {
+    switch (literal) {
+        .integer => |int_literal| {
+            try writer.print("{d}", .{int_literal.value});
+        },
+        .float => |float_literal| {
+            // Format float with proper C syntax
+            if (float_literal.value == @floor(float_literal.value)) {
+                // If it's a whole number, format as "x.0f"
+                try writer.print("{d:.1}f", .{float_literal.value});
+            } else {
+                // If it has decimal places, format normally
+                try writer.print("{d}f", .{float_literal.value});
+            }
+        },
+        .string => |string_literal| {
+            try writer.print("\"{s}\"", .{string_literal.value});
+        },
+        .char => |char_literal| {
+            try writer.print("'{c}'", .{char_literal.value});
+        },
+        .bool_true => {
+            try writer.writeAll("true");
+        },
+        .bool_false => {
+            try writer.writeAll("false");
+        },
+        .enum_member => |enum_member| {
+            // For enum members, we generate the enum member name
+            // In C, enums are typically prefixed, e.g., ENUM_MEMBER
+            try writer.print("{s}", .{enum_member.name});
+        },
+        .none => {
+            // Generate NULL for None literal
+            try writer.writeAll("NULL");
+        },
+        .some => |_| {
+            // Generate Some literal - for now just generate a placeholder
+            try writer.writeAll("/* Some value */");
+        },
+    }
+}
+
+/// Generate C member expressions (object.field)
+pub fn generateCMemberExpression(
+    codegen: anytype,
+    writer: Writer,
+    member_expr: anytype,
+) CCodegenError!void {
+    const object_node = codegen.arena.getNodeConst(member_expr.object) orelse return;
+
+    // Handle error set member access (e.g., MyError.DivisionByZero)
+    if (object_node.data == .identifier) {
+        const identifier = object_node.data.identifier;
+        const member_name = member_expr.field;
+
+        // Check if this is an error set type
+        if (codegen.isErrorSetType(identifier.name)) {
+            try writer.print("{s}_{s}", .{ identifier.name, member_name });
+            return;
+        }
+
+        // Handle enum member access (e.g., MyEnum.a -> MyEnum_a)
+        if (codegen.isEnumType(identifier.name)) {
+            try writer.print("{s}_{s}", .{ identifier.name, member_expr.field });
+            return;
+        }
+
+        if (std.mem.eql(u8, member_name, "append")) {
+            try writer.print("HowlList_i32_append", .{});
+            return;
+        }
+
+        // Handle @compile.target and other compile-time member expressions  
+        if (std.mem.eql(u8, identifier.name, "compile")) {
+            if (std.mem.eql(u8, member_name, "target")) {
+                try writer.writeAll("\"c\"");
+                return;
+            } else if (std.mem.eql(u8, member_name, "arch")) {
+                try writer.writeAll("\"x86_64\""); // Default architecture
+                return;
+            } else if (std.mem.eql(u8, member_name, "os")) {
+                try writer.writeAll("\"linux\""); // Default OS
+                return;
+            }
+        }
+        
+        // Handle struct field access (e.g., my_struct.field1 -> my_struct.field1)
+        // This is a simple field access, not a method call
+        // Check if the identifier might be a struct instance variable
+        // For now, assume any identifier that's not an error set, enum, or special case is a struct instance
+        if (!codegen.isErrorSetType(identifier.name) and !codegen.isEnumType(identifier.name) and 
+            !std.mem.eql(u8, identifier.name, "compile")) {
+            // Generate C struct field access: object.field
+            try writer.print("{s}.{s}", .{ identifier.name, member_expr.field });
+            return;
+        }
+    }
+
+    // Fallback for unhandled member expressions
+    std.log.err("Member expressions are not yet supported in C target: {s}.{s}", .{ 
+        if (object_node.data == .identifier) object_node.data.identifier.name else "complex_object", 
+        member_expr.field 
+    });
+    return CCodegenError.UnsupportedOperation;
+}
+
+/// Generate C member method calls (object.method(args))
+pub fn generateCMemberMethodCall(
+    codegen: anytype,
+    writer: Writer,
+    member_expr: anytype,
+    args: []const ast.NodeId,
+) CCodegenError!void {
+    const object_node = codegen.arena.getNodeConst(member_expr.object) orelse return;
+
+    // Handle @compile.print special case - this is a compile-time function
+    if (object_node.data == .identifier) {
+        const object_name = object_node.data.identifier.name;
+        if (std.mem.eql(u8, object_name, "compile") and std.mem.eql(u8, member_expr.field, "print")) {
+            // @compile.print is a compile-time function - execute it now and generate no runtime code
+            if (args.len > 0) {
+                const arg_node = codegen.arena.getNodeConst(args[0]);
+                if (arg_node) |node| {
+                    if (node.data == .literal and node.data.literal == .string) {
+                        // Print the compile-time message
+                        std.debug.print("[@compile.print] {s}\n", .{node.data.literal.string.value});
+                    } else if (node.data == .binary_expr) {
+                        // Handle string concatenation like "Target: " + target
+                        std.debug.print("[@compile.print] (complex expression)\n", .{});
+                    }
+                }
+            }
+            // Generate no runtime C code for compile-time functions
+            try writer.writeAll("/* @compile.print executed at compile time */");
+            return;
+        }
+    }
+
+    // Handle std.List(Type).init() calls
+    if (object_node.data == .call_expr) {
+        const call_expr = object_node.data.call_expr;
+        const callee_node = codegen.arena.getNodeConst(call_expr.callee);
+        if (callee_node) |callee| {
+            if (callee.data == .member_expr) {
+                const std_list_member = callee.data.member_expr;
+                const std_node = codegen.arena.getNodeConst(std_list_member.object);
+                if (std_node) |std_obj| {
+                    if (std_obj.data == .identifier and
+                        std.mem.eql(u8, std_obj.data.identifier.name, "std") and
+                        std.mem.eql(u8, std_list_member.field, "List") and
+                        std.mem.eql(u8, member_expr.field, "init"))
+                    {
+                        // This is std.List(Type).init() - no arguments needed
+                        
+                        // Try to determine the type from the type argument
+                        if (call_expr.args.items.len > 0) {
+                            const type_arg = codegen.arena.getNodeConst(call_expr.args.items[0]);
+                            if (type_arg) |type_node| {
+                                if (type_node.data == .identifier) {
+                                    const type_name = type_node.data.identifier.name;
+                                    const c_type_name = utils.mapHowlTypeToCType(type_name);
+                                    try writer.print("HowlList_{s}_init()", .{utils.sanitizeTypeForName(c_type_name)});
+                                    return;
+                                }
+                            }
+                        }
+                        
+                        // Fallback to i32 if we can't determine the type
+                        try writer.writeAll("HowlList_i32_init()");
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    // Handle regular method calls like list.append(value)
+    if (object_node.data == .identifier) {
+        const object_name = object_node.data.identifier.name;
+        
+        if (std.mem.eql(u8, member_expr.field, "append")) {
+            // Handle list.append(value)
+            try writer.print("HowlList_i32_append(&{s}, ", .{object_name});
+            
+            if (args.len > 0) {
+                try generateCExpressionRecursive(codegen, writer, args[0]);
+            }
+            
+            try writer.writeAll(")");
+            return;
+        }
+        
+        if (std.mem.eql(u8, member_expr.field, "len")) {
+            // Handle list.len - this should be a property access, not a method call
+            try writer.print("{s}.len", .{object_name});
+            return;
+        }
+    }
+
+    // Fallback for unhandled method calls
+    try writer.writeAll("/* unhandled method call */");
 }

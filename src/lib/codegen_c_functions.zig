@@ -279,3 +279,87 @@ pub fn generateListImplementation(writer: Writer, list_type: []const u8) CCodege
     _ = writer;
     _ = list_type;
 }
+
+/// Generate main C function implementation
+pub fn generateCFunctionImplementation(
+    codegen: anytype,
+    writer: Writer,
+    func_decl: anytype,
+) CCodegenError!void {
+    // Special handling for main function
+    const is_main_function = std.mem.eql(u8, func_decl.name, "main");
+    
+    // Try to infer return type from function body if semantic analysis failed
+    const inferred_return_type = codegen.inferReturnTypeFromBody(func_decl.body);
+    
+    // Generate return type
+    const return_type_str = if (is_main_function) "int" else if (inferred_return_type) |inferred| inferred else if (func_decl.return_type) |return_type_node_id| blk: {
+        // Check if this is an error union type
+        const return_type_node = codegen.arena.getNodeConst(return_type_node_id);
+        if (return_type_node) |node| {
+            if (node.data == .error_union_type) {
+                const error_union = node.data.error_union_type;
+                if (error_union.error_set) |error_set_id| {
+                    const error_set_node = codegen.arena.getNodeConst(error_set_id);
+                    if (error_set_node) |es_node| {
+                        if (es_node.data == .identifier) {
+                            const error_set_name = es_node.data.identifier.name;
+                            
+                            // Get payload type to find the correct specialized struct
+                            const payload_type_info = codegen.getNodeType(error_union.payload_type);
+                            const payload_type_str = codegen.generateCType(payload_type_info);
+                            
+                            if (codegen.findErrorUnionStructName(error_set_name, payload_type_str)) |struct_name| {
+                                codegen.current_function_error_union_name = struct_name; // Set current function's error union type
+                                break :blk try codegen.allocator.dupe(u8, struct_name);
+                            } else {
+                                // Fallback to old naming if not found
+                                break :blk try std.fmt.allocPrint(codegen.allocator, "{s}_ErrorUnion", .{error_set_name});
+                            }
+                        }
+                    }
+                }
+                // Fallback for anonymous error union
+                break :blk "struct { int32_t error; int32_t payload; }";
+            }
+        }
+        const return_type_info = codegen.getNodeType(return_type_node_id);
+        break :blk codegen.generateCType(return_type_info);
+    } else "void";
+
+    try writer.print("{s} {s}(", .{ return_type_str, func_decl.name });
+
+    // Generate parameters
+    for (func_decl.params.items, 0..) |param, i| {
+        if (i > 0) try writer.writeAll(", ");
+        const param_type_str = if (param.type_annotation) |type_node_id| blk: {
+            const param_type_info = codegen.getNodeType(type_node_id);
+            break :blk codegen.generateCType(param_type_info);
+        } else "int32_t"; // Fallback if no type annotation
+        try writer.print("{s} {s}", .{ param_type_str, param.name });
+    }
+
+    try writer.writeAll(") {\n");
+
+    // Store previous error union name and restore it after function generation
+    const prev_error_union_name = codegen.current_function_error_union_name;
+    defer codegen.current_function_error_union_name = prev_error_union_name;
+
+    // Set main function flag for special handling
+    if (is_main_function) {
+        codegen.current_function_is_main = true;
+    }
+    defer if (is_main_function) {
+        codegen.current_function_is_main = false;
+    };
+
+    // Generate function body
+    try codegen.generateCFromAST(writer, func_decl.body, 1);
+
+    // Add return statement for main function
+    if (is_main_function) {
+        try writer.writeAll("    return 0;\n");
+    }
+
+    try writer.writeAll("}\n\n");
+}
