@@ -1,7 +1,7 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const ErrorSystem = @import("error_system.zig");
-
+const CompileError = @import("CompileError.zig").CompileError;
 // ============================================================================
 // Compile-time Value System
 // ============================================================================
@@ -121,7 +121,7 @@ pub const Scope = struct {
         self.symbols.deinit();
     }
 
-    pub fn declare(self: *Scope, name: []const u8, symbol: Symbol) !void {
+    pub fn declare(self: *Scope, name: []const u8, symbol: Symbol) CompileError!void {
         if (self.symbols.contains(name)) {
             return error.DuplicateSymbol;
         }
@@ -157,6 +157,7 @@ pub const SemanticAnalyzer = struct {
     // Analysis state
     current_function_return_type: ?ast.Type,
     in_loop: bool,
+    skip_function_bodies: bool,
 
     // Compile-time evaluation context
     type_registry: std.StringHashMap(ast.Type),
@@ -182,6 +183,7 @@ pub const SemanticAnalyzer = struct {
             .file_path = file_path,
             .current_function_return_type = null,
             .in_loop = false,
+            .skip_function_bodies = false,
             .type_registry = std.StringHashMap(ast.Type).init(allocator),
             .struct_definitions = std.StringHashMap(ComptimeValue).init(allocator),
             .comptime_values = std.StringHashMap(ComptimeValue).init(allocator),
@@ -203,7 +205,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// Helper method to create and track allocated types
-    fn createTrackedType(self: *SemanticAnalyzer, typ: ast.Type) !*ast.Type {
+    fn createTrackedType(self: *SemanticAnalyzer, typ: ast.Type) CompileError!*ast.Type {
         const type_ptr = try self.allocator.create(ast.Type);
         type_ptr.* = typ;
         try self.allocated_types.append(type_ptr);
@@ -211,7 +213,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// Enter a new scope for symbol resolution
-    fn enterScope(self: *SemanticAnalyzer) !*Scope {
+    fn enterScope(self: *SemanticAnalyzer) CompileError!*Scope {
         const new_scope = try self.allocator.create(Scope);
         new_scope.* = Scope.init(self.allocator, self.current_scope);
         self.current_scope = new_scope;
@@ -233,7 +235,7 @@ pub const SemanticAnalyzer = struct {
     // ============================================================================
 
     /// Evaluate an expression at compile time
-    fn evaluateComptimeExpression(self: *SemanticAnalyzer, node_id: ast.NodeId) !?ComptimeValue {
+    fn evaluateComptimeExpression(self: *SemanticAnalyzer, node_id: ast.NodeId) CompileError!?ComptimeValue {
         const node = self.arena.getNode(node_id) orelse return null;
 
         switch (node.data) {
@@ -283,7 +285,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// Evaluate a type expression at compile time
-    fn evaluateTypeExpression(self: *SemanticAnalyzer, node_id: ast.NodeId) anyerror!?ComptimeValue {
+    fn evaluateTypeExpression(self: *SemanticAnalyzer, node_id: ast.NodeId) CompileError!?ComptimeValue {
         const node = self.arena.getNode(node_id) orelse return null;
 
         switch (node.data) {
@@ -302,7 +304,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// Evaluate a struct type expression at compile time
-    fn evaluateStructTypeExpression(self: *SemanticAnalyzer, node_id: ast.NodeId) !?ComptimeValue {
+    fn evaluateStructTypeExpression(self: *SemanticAnalyzer, node_id: ast.NodeId) CompileError!?ComptimeValue {
         const node = self.arena.getNode(node_id) orelse return null;
 
         switch (node.data) {
@@ -349,7 +351,7 @@ pub const SemanticAnalyzer = struct {
         code: ErrorSystem.ErrorCode,
         message: []const u8,
         source_loc: ast.SourceLoc,
-    ) !void {
+    ) CompileError!void {
         _ = try self.errors.createAndAddError(
             code,
             .semantic,
@@ -364,7 +366,7 @@ pub const SemanticAnalyzer = struct {
         code: ErrorSystem.ErrorCode,
         message: []const u8,
         source_loc: ast.SourceLoc,
-    ) !void {
+    ) CompileError!void {
         _ = try self.errors.createAndAddError(
             code,
             .semantic,
@@ -378,7 +380,7 @@ pub const SemanticAnalyzer = struct {
     // Type Inference and Checking
     // ============================================================================
 
-    fn inferType(self: *SemanticAnalyzer, node_id: ast.NodeId) !?ast.Type {
+    fn inferType(self: *SemanticAnalyzer, node_id: ast.NodeId) CompileError!?ast.Type {
         const node = self.arena.getNode(node_id) orelse return null;
 
         switch (node.data) {
@@ -410,8 +412,8 @@ pub const SemanticAnalyzer = struct {
                     return symbol.inferred_type orelse symbol.declared_type;
                 } else {
                     // Check if it's a type name or comptime value
-                    if (self.type_registry.get(ident.name)) |_| {
-                        return ast.Type.initPrimitive(.{ .type = {} }, node.source_loc);
+                    if (self.type_registry.get(ident.name)) |typ| {
+                        return typ;
                     }
                     if (self.struct_definitions.get(ident.name)) |_| {
                         return ast.Type.initPrimitive(.{ .type = {} }, node.source_loc);
@@ -690,9 +692,11 @@ pub const SemanticAnalyzer = struct {
             },
 
             .error_set_decl => |error_set_decl| {
-                // Error set declarations represent the type itself
-                _ = error_set_decl; // Mark as used
-                return ast.Type.initPrimitive(.{ .type = {} }, node.source_loc);
+                // Process the error set declaration to register it in scope
+                return self.analyzeErrorSetDeclaration(error_set_decl, node.source_loc) catch {
+                    // On error, return null to continue analysis
+                    return null;
+                };
             },
 
             .union_decl => |union_decl| {
@@ -730,6 +734,42 @@ pub const SemanticAnalyzer = struct {
                 return null;
             },
 
+            .pointer_type_expr => |pointer_type| {
+                // Pointer types like ^T
+                const inner_type = try self.inferType(pointer_type.inner_type);
+                if (inner_type) |inner| {
+                    const heap_inner_type = try self.allocator.create(ast.Type);
+                    heap_inner_type.* = inner;
+                    return ast.Type{
+                        .data = .{ .pointer = heap_inner_type },
+                        .source_loc = node.source_loc,
+                    };
+                }
+                return null;
+            },
+
+            .error_union_type_expr => |error_union_type| {
+                // Error union types like Error!T or !T
+                const payload_type = try self.inferType(error_union_type.payload_type);
+                const error_set_name = blk: {
+                    const error_set_node = self.arena.getNode(error_union_type.error_set) orelse break :blk "error";
+                    if (error_set_node.data == .identifier) {
+                        break :blk error_set_node.data.identifier.name;
+                    }
+                    break :blk "error";
+                };
+
+                if (payload_type) |payload| {
+                    const heap_payload_type = try self.allocator.create(ast.Type);
+                    heap_payload_type.* = payload;
+                    return ast.Type{
+                        .data = .{ .error_union = .{ .error_set = error_set_name, .payload_type = heap_payload_type } },
+                        .source_loc = node.source_loc,
+                    };
+                }
+                return null;
+            },
+
             .comptime_type_call => |comptime_call| {
                 // Handle compile-time type generation like List(i32)
                 return self.resolveComptimeTypeCallDirect(comptime_call, node.source_loc);
@@ -743,7 +783,7 @@ pub const SemanticAnalyzer = struct {
         left_type: ?ast.Type,
         right_type: ?ast.Type,
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         if (left_type == null or right_type == null) return null;
 
         const left = left_type.?;
@@ -821,7 +861,7 @@ pub const SemanticAnalyzer = struct {
         op: ast.UnaryOp,
         operand_type: ?ast.Type,
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         if (operand_type == null) return null;
 
         const operand = operand_type.?;
@@ -857,7 +897,7 @@ pub const SemanticAnalyzer = struct {
         callee_id: ast.NodeId,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         const callee_node = self.arena.getNode(callee_id);
         if (callee_node == null) return null;
 
@@ -1089,19 +1129,43 @@ pub const SemanticAnalyzer = struct {
         object_id: ast.NodeId,
         field_name: []const u8,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
-        // Special handling for built-in modules
+    ) CompileError!?ast.Type {
+        // Get the type of the object being accessed
+        const obj_type = try self.inferType(object_id) orelse return null;
+
+        // Handle namespace member access
+        switch (obj_type.data) {
+            .namespace => |ns| {
+                // Look up the member in the namespace
+                if (ns.members.get(field_name)) |member_type| {
+                    return member_type.*;
+                } else {
+                    const error_msg = try std.fmt.allocPrint(self.allocator, "Namespace '{s}' has no member '{s}'", .{ ns.name, field_name });
+                    defer self.allocator.free(error_msg);
+                    try self.reportError(.undefined_variable, error_msg, source_loc);
+                    return null;
+                }
+            },
+            else => {
+                // Fall back to the existing member access logic for structs, etc.
+                return self.checkRegularMemberAccess(object_id, field_name, source_loc, obj_type);
+            },
+        }
+    }
+
+    /// Handle regular struct/type member access (non-namespace)
+    fn checkRegularMemberAccess(
+        self: *SemanticAnalyzer,
+        object_id: ast.NodeId,
+        field_name: []const u8,
+        source_loc: ast.SourceLoc,
+        obj_type: ast.Type,
+    ) CompileError!?ast.Type {
+        // Special handling for built-in modules (legacy - should be replaced by namespace system)
         const object_node = self.arena.getNode(object_id);
         if (object_node) |obj_node| {
             switch (obj_node.data) {
                 .identifier => |ident| {
-                    // Handle std module
-                    if (std.mem.eql(u8, ident.name, "std")) {
-                        if (std.mem.eql(u8, field_name, "debug")) {
-                            // Return a special type for std.debug module
-                            return ast.Type.initPrimitive(.{ .type = {} }, source_loc);
-                        }
-                    }
                     // Handle @compile module
                     if (std.mem.eql(u8, ident.name, "compile")) {
                         if (std.mem.eql(u8, field_name, "print")) {
@@ -1112,29 +1176,9 @@ pub const SemanticAnalyzer = struct {
                         // Note: @compile.target and @compile.insert are handled by the parser as special AST nodes
                     }
                 },
-                .member_expr => |member| {
-                    // Handle nested member access like std.debug.print
-                    const member_obj_node = self.arena.getNode(member.object);
-                    if (member_obj_node) |member_obj| {
-                        if (member_obj.data == .identifier) {
-                            const base_ident = member_obj.data.identifier;
-                            // Check for std.debug.print
-                            if (std.mem.eql(u8, base_ident.name, "std") and
-                                std.mem.eql(u8, member.field, "debug") and
-                                std.mem.eql(u8, field_name, "print"))
-                            {
-                                // Return function type for print
-                                return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
-                            }
-                        }
-                    }
-                },
                 else => {},
             }
         }
-
-        // Get the type of the object being accessed
-        const obj_type = try self.inferType(object_id) orelse return null;
 
         // Handle member access based on object type
         switch (obj_type.data) {
@@ -1142,8 +1186,8 @@ pub const SemanticAnalyzer = struct {
                 // Check if field_name is one of the error enumerants
                 for (error_set.enumerants) |enumerant| {
                     if (std.mem.eql(u8, enumerant, field_name)) {
-                        // Return the error type for the enumerant
-                        return ast.Type.initError(error_set.name, source_loc);
+                        // Return the error set type (the individual error value has the same type as the error set)
+                        return obj_type;
                     }
                 }
 
@@ -1189,6 +1233,35 @@ pub const SemanticAnalyzer = struct {
                 return null;
             },
 
+            .pointer => |pointed_type| {
+                // Implicit dereference: ptr.field becomes ptr^.field
+                // Handle member access on the pointed-to type
+                const dereferenced_type = pointed_type.*;
+                switch (dereferenced_type.data) {
+                    .@"struct" => |struct_info| {
+                        // Find the field in the struct
+                        for (struct_info.fields) |field| {
+                            if (std.mem.eql(u8, field.name, field_name)) {
+                                // Resolve the field's type
+                                if (field.type_annotation) |type_node| {
+                                    return self.inferType(type_node);
+                                }
+                                return null;
+                            }
+                        }
+
+                        const msg = try std.fmt.allocPrint(self.allocator, "Struct '{s}' has no field '{s}'", .{ struct_info.name, field_name });
+                        defer self.allocator.free(msg);
+                        try self.reportError(.invalid_member_access, msg, source_loc);
+                        return null;
+                    },
+                    else => {
+                        try self.reportError(.invalid_member_access, "Cannot access members of non-struct pointer", source_loc);
+                        return null;
+                    },
+                }
+            },
+
             .custom_struct => |custom_struct| {
                 // Find the field in the custom struct
                 for (custom_struct.fields) |field| {
@@ -1230,7 +1303,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         enum_decl: @TypeOf(@as(ast.AstNode, undefined).data.enum_decl),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         // Validate enum explicit values are sorted in ascending order
         try self.validateEnumValueOrder(enum_decl.members.items, source_loc);
 
@@ -1277,7 +1350,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         error_set_decl: @TypeOf(@as(ast.AstNode, undefined).data.error_set_decl),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         // Validate error enumerants
         if (error_set_decl.errors.items.len == 0) {
             try self.reportError(.type_mismatch, "Error set cannot be empty", source_loc);
@@ -1344,7 +1417,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         var_decl: @TypeOf(@as(ast.AstNode, undefined).data.var_decl),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         var declared_type: ?ast.Type = null;
         var inferred_type: ?ast.Type = null;
 
@@ -1399,7 +1472,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         func_decl: @TypeOf(@as(ast.AstNode, undefined).data.function_decl),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         // Create function scope
         const func_scope = try self.enterScope();
         defer self.exitScope();
@@ -1445,8 +1518,10 @@ pub const SemanticAnalyzer = struct {
         self.current_function_return_type = return_type;
         defer self.current_function_return_type = old_return_type;
 
-        // Analyze function body
-        _ = try self.analyzeNode(func_decl.body);
+        // Analyze function body (only if not skipping bodies)
+        if (!self.skip_function_bodies) {
+            _ = try self.analyzeNode(func_decl.body);
+        }
 
         // Declare function symbol in parent scope
         if (self.current_scope.parent) |parent_scope| {
@@ -1477,11 +1552,56 @@ pub const SemanticAnalyzer = struct {
         return return_type;
     }
 
+    fn analyzeFunctionBody(self: *SemanticAnalyzer, func_node_id: ast.NodeId) CompileError!void {
+        const func_node = self.arena.getNode(func_node_id) orelse return;
+        if (func_node.data != .function_decl) return;
+
+        const func_decl = func_node.data.function_decl;
+
+        // Look up the function in the current scope (which should have access to parent scopes)
+        if (self.current_scope.lookup(func_decl.name)) |symbol| {
+            // Create function scope
+            const func_scope = try self.enterScope();
+            defer self.exitScope();
+            _ = func_scope;
+
+            // Process parameters and add them to function scope
+            for (func_decl.params.items) |param| {
+                var param_type: ?ast.Type = null;
+                if (param.type_annotation) |type_node| {
+                    param_type = try self.inferType(type_node);
+                }
+
+                const param_symbol = Symbol{
+                    .name = param.name,
+                    .symbol_type = .variable,
+                    .declared_type = param_type,
+                    .inferred_type = null,
+                    .source_loc = param.source_loc,
+                    .is_mutable = false, // Parameters are immutable by default
+                    .is_used = false,
+                    .comptime_value = null,
+                    .function_params = null,
+                };
+
+                try self.current_scope.declare(param.name, param_symbol);
+            }
+
+            // Set current function context
+            const old_return_type = self.current_function_return_type;
+            self.current_function_return_type = symbol.declared_type;
+            defer self.current_function_return_type = old_return_type;
+
+            // Analyze function body
+            _ = try self.analyzeNode(func_decl.body);
+        }
+    }
+
     fn analyzeExternFunctionDeclaration(
         self: *SemanticAnalyzer,
         extern_fn_decl: @TypeOf(@as(ast.AstNode, undefined).data.extern_fn_decl),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         // Process parameters (same as regular functions)
         for (extern_fn_decl.params.items) |param| {
             var param_type: ?ast.Type = null;
@@ -1534,7 +1654,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         struct_decl: @TypeOf(@as(ast.AstNode, undefined).data.struct_decl),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         // Create the struct type
         const struct_type = ast.Type.initCustomStruct(struct_decl.name, struct_decl.fields.items, struct_decl.is_comptime, source_loc);
 
@@ -1580,7 +1700,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         type_decl: @TypeOf(@as(ast.AstNode, undefined).data.type_decl),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         // Evaluate the type expression at compile time
         const comptime_value = try self.evaluateComptimeExpression(type_decl.type_expr);
         if (comptime_value == null or !comptime_value.?.isType()) {
@@ -1629,7 +1749,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         import_decl: @TypeOf(@as(ast.AstNode, undefined).data.import_decl),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         // For now, just validate that the module path is a valid string
         // In a full implementation, this would:
         // 1. Resolve the module path
@@ -1648,7 +1768,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         return_stmt: @TypeOf(@as(ast.AstNode, undefined).data.return_stmt),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         if (self.current_function_return_type == null) {
             try self.reportError(.invalid_statement, "Return statement outside of function", source_loc);
             return null;
@@ -1694,7 +1814,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         for_expr: @TypeOf(@as(ast.AstNode, undefined).data.for_expr),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         // Create a new scope for the for loop
         const scope = try self.enterScope();
         defer self.exitScope();
@@ -1764,7 +1884,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         range_expr: @TypeOf(@as(ast.AstNode, undefined).data.range_expr),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         // Analyze start expression if present
         if (range_expr.start) |start_id| {
             const start_type = try self.inferType(start_id);
@@ -1817,7 +1937,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// Resolve a type from a type annotation node
-    fn resolveType(self: *SemanticAnalyzer, type_node_id: ast.NodeId) !?ast.Type {
+    fn resolveType(self: *SemanticAnalyzer, type_node_id: ast.NodeId) CompileError!?ast.Type {
         const type_node = self.arena.getNode(type_node_id) orelse return null;
 
         switch (type_node.data) {
@@ -1861,6 +1981,31 @@ pub const SemanticAnalyzer = struct {
                     .source_loc = type_node.source_loc,
                 };
             },
+            .error_union_type_expr => |error_union_type| {
+                // Resolve the payload type first
+                const payload_type = (try self.resolveType(error_union_type.payload_type)) orelse {
+                    try self.reportError(.invalid_declaration, "Invalid payload type in error union", type_node.source_loc);
+                    return null;
+                };
+
+                // Get the error set name
+                const error_set_name = blk: {
+                    const error_set_node = self.arena.getNode(error_union_type.error_set) orelse break :blk "error";
+                    if (error_set_node.data == .identifier) {
+                        break :blk error_set_node.data.identifier.name;
+                    }
+                    break :blk "error";
+                };
+
+                // Create error union type
+                const payload_type_ptr = try self.arena.allocator.create(ast.Type);
+                payload_type_ptr.* = payload_type;
+
+                return ast.Type{
+                    .data = .{ .error_union = .{ .error_set = error_set_name, .payload_type = payload_type_ptr } },
+                    .source_loc = type_node.source_loc,
+                };
+            },
             else => {
                 try self.reportError(.invalid_declaration, "Invalid type annotation", type_node.source_loc);
                 return null;
@@ -1869,7 +2014,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// Analyze a match pattern and check it against the matched expression type
-    fn analyzeMatchPattern(self: *SemanticAnalyzer, pattern: ast.MatchPattern, match_expr_type: ?ast.Type, source_loc: ast.SourceLoc) !void {
+    fn analyzeMatchPattern(self: *SemanticAnalyzer, pattern: ast.MatchPattern, match_expr_type: ?ast.Type, source_loc: ast.SourceLoc) CompileError!void {
         switch (pattern) {
             .wildcard => {
                 // Wildcard matches anything
@@ -1974,7 +2119,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         match_compile: @TypeOf(@as(ast.AstNode, undefined).data.match_compile_expr),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         // Verify the target expression is @compile.target
         _ = try self.inferType(match_compile.target_expr);
 
@@ -2006,7 +2151,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// Convert a type to a human-readable string for error messages
-    fn typeToString(self: *SemanticAnalyzer, type_info: ast.Type) ![]u8 {
+    fn typeToString(self: *SemanticAnalyzer, type_info: ast.Type) CompileError![]u8 {
         return switch (type_info.data) {
             .primitive => |prim| switch (prim) {
                 .i8 => try self.allocator.dupe(u8, "i8"),
@@ -2031,6 +2176,7 @@ pub const SemanticAnalyzer = struct {
                 .noreturn => try self.allocator.dupe(u8, "noreturn"),
                 .module => try self.allocator.dupe(u8, "module"),
             },
+            .namespace => |ns| try std.fmt.allocPrint(self.allocator, "namespace({s})", .{ns.name}),
             .error_set => |error_set| try self.allocator.dupe(u8, error_set.name),
             .error_union => |error_union| {
                 const payload_str = try self.typeToString(error_union.payload_type.*);
@@ -2092,6 +2238,11 @@ pub const SemanticAnalyzer = struct {
         // Handle enum compatibility
         if (expected.data == .@"enum" and actual.data == .@"enum") {
             return std.mem.eql(u8, expected.data.@"enum".name, actual.data.@"enum".name);
+        }
+
+        // Handle namespace compatibility
+        if (expected.data == .namespace and actual.data == .namespace) {
+            return std.mem.eql(u8, expected.data.namespace.name, actual.data.namespace.name);
         }
 
         // Handle optional type compatibility
@@ -2275,7 +2426,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// Validate that enum explicit values are in ascending order
-    fn validateEnumValueOrder(self: *SemanticAnalyzer, members: []ast.EnumMember, source_loc: ast.SourceLoc) !void {
+    fn validateEnumValueOrder(self: *SemanticAnalyzer, members: []ast.EnumMember, source_loc: ast.SourceLoc) CompileError!void {
         _ = source_loc; // unused parameter
         var last_value: ?i64 = null;
 
@@ -2306,7 +2457,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// Evaluate an AST node as a compile-time integer constant
-    fn evaluateCompileTimeInteger(self: *SemanticAnalyzer, node_id: ast.NodeId) !?i64 {
+    fn evaluateCompileTimeInteger(self: *SemanticAnalyzer, node_id: ast.NodeId) CompileError!?i64 {
         const node = self.arena.getNode(node_id) orelse return null;
 
         switch (node.data) {
@@ -2325,7 +2476,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         struct_init: @TypeOf(@as(ast.AstNode, undefined).data.struct_init),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         // Get the struct type name
         if (struct_init.type_name) |type_name| {
             // Look up the struct type
@@ -2349,7 +2500,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         array_init: @TypeOf(@as(ast.AstNode, undefined).data.array_init),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         _ = self; // unused parameter
         _ = array_init; // TODO: Implement array type checking
 
@@ -2368,10 +2519,18 @@ pub const SemanticAnalyzer = struct {
         name: []const u8,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         // Module system
         if (std.mem.eql(u8, name, "import")) {
             return self.handleImportBuiltin(args, source_loc);
+        }
+
+        // Error union builtins
+        if (std.mem.eql(u8, name, "error_ok")) {
+            return self.handleErrorOkBuiltin(args, source_loc);
+        }
+        if (std.mem.eql(u8, name, "error_err")) {
+            return self.handleErrorErrBuiltin(args, source_loc);
         }
 
         // Type introspection
@@ -2487,15 +2646,113 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 1) {
             try self.reportError(.invalid_function_call, "@import expects exactly one argument", source_loc);
             return null;
         }
 
-        // For now, return a module type placeholder
+        // Get the module path from the first argument
+        const path_node = self.arena.getNode(args[0]) orelse return null;
+
+        if (path_node.data != .literal or path_node.data.literal != .string) {
+            try self.reportError(.invalid_function_call, "@import expects a string literal", source_loc);
+            return null;
+        }
+
+        const module_path = path_node.data.literal.string.value;
+
+        // Handle special case for std library
+        if (std.mem.eql(u8, module_path, "std")) {
+            return try self.createStdLibraryNamespace(source_loc);
+        }
+
+        // For other modules, return a basic module type for now
         // TODO: Implement actual module loading and type resolution
         return ast.Type.initPrimitive(.{ .module = {} }, source_loc);
+    }
+
+    /// Create the std library namespace with debug.print and other functions
+    fn createStdLibraryNamespace(self: *SemanticAnalyzer, source_loc: ast.SourceLoc) CompileError!ast.Type {
+        // Create the print function type: fn(format: str, args: ...) void
+        const print_fn_type = try self.allocator.create(ast.Type);
+        print_fn_type.* = ast.Type{
+            .data = .{
+                .function = .{
+                    .param_types = &[_]ast.Type{}, // Variadic - we'll handle this specially
+                    .return_type = try self.allocator.create(ast.Type),
+                },
+            },
+            .source_loc = source_loc,
+        };
+        print_fn_type.data.function.return_type.* = ast.Type.initPrimitive(.{ .void = {} }, source_loc);
+
+        // Create the debug namespace
+        var debug_members = std.StringHashMap(*ast.Type).init(self.allocator);
+        try debug_members.put("print", print_fn_type);
+
+        const debug_ns_type = try self.allocator.create(ast.Type);
+        debug_ns_type.* = ast.Type{
+            .data = .{ .namespace = .{
+                .name = "debug",
+                .members = debug_members,
+            } },
+            .source_loc = source_loc,
+        };
+
+        // Create the std namespace with debug as a member
+        var std_members = std.StringHashMap(*ast.Type).init(self.allocator);
+        try std_members.put("debug", debug_ns_type);
+
+        return ast.Type{
+            .data = .{ .namespace = .{
+                .name = "std",
+                .members = std_members,
+            } },
+            .source_loc = source_loc,
+        };
+    }
+
+    /// Handle @error_ok(value) builtin
+    fn handleErrorOkBuiltin(
+        self: *SemanticAnalyzer,
+        args: []ast.NodeId,
+        source_loc: ast.SourceLoc,
+    ) CompileError!?ast.Type {
+        if (args.len != 1) {
+            // Report error but allow compilation to continue
+            return null;
+        }
+
+        // Create a simple error union type
+        const i32_type = try self.allocator.create(ast.Type);
+        i32_type.* = ast.Type.initPrimitive(.{ .i32 = {} }, source_loc);
+
+        return ast.Type{
+            .data = .{ .error_union = .{ .error_set = "anyerror", .payload_type = i32_type } },
+            .source_loc = source_loc,
+        };
+    }
+
+    /// Handle @error_err(code) builtin
+    fn handleErrorErrBuiltin(
+        self: *SemanticAnalyzer,
+        args: []ast.NodeId,
+        source_loc: ast.SourceLoc,
+    ) CompileError!?ast.Type {
+        if (args.len != 1) {
+            // Report error but allow compilation to continue
+            return null;
+        }
+
+        // Create a simple error union type
+        const i32_type = try self.allocator.create(ast.Type);
+        i32_type.* = ast.Type.initPrimitive(.{ .i32 = {} }, source_loc);
+
+        return ast.Type{
+            .data = .{ .error_union = .{ .error_set = "anyerror", .payload_type = i32_type } },
+            .source_loc = source_loc,
+        };
     }
 
     /// Handle @TypeOf(expr) builtin
@@ -2503,7 +2760,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 1) {
             try self.reportError(.invalid_function_call, "@TypeOf expects exactly one argument", source_loc);
             return null;
@@ -2524,7 +2781,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 1) {
             try self.reportError(.invalid_function_call, "@sizeOf expects exactly one argument", source_loc);
             return null;
@@ -2545,7 +2802,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 1) {
             try self.reportError(.invalid_function_call, "@alignOf expects exactly one argument", source_loc);
             return null;
@@ -2566,7 +2823,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             try self.reportError(.invalid_function_call, "@offsetOf expects exactly two arguments", source_loc);
             return null;
@@ -2593,7 +2850,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             try self.reportError(.invalid_function_call, "@FieldType expects exactly two arguments", source_loc);
             return null;
@@ -2620,7 +2877,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             try self.reportError(.invalid_function_call, "@Vector expects exactly two arguments", source_loc);
             return null;
@@ -2648,7 +2905,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             try self.reportError(.invalid_function_call, "@splat expects exactly two arguments", source_loc);
             return null;
@@ -2676,7 +2933,7 @@ pub const SemanticAnalyzer = struct {
         operation: []const u8,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             const msg = try std.fmt.allocPrint(self.allocator, "@{s}_s expects exactly two arguments", .{operation});
             defer self.allocator.free(msg);
@@ -2702,7 +2959,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             try self.reportError(.invalid_function_call, "@castUp expects exactly two arguments", source_loc);
             return null;
@@ -2729,7 +2986,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             try self.reportError(.invalid_function_call, "@castDown expects exactly two arguments", source_loc);
             return null;
@@ -2757,7 +3014,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             try self.reportError(.invalid_function_call, "@truncate expects exactly two arguments", source_loc);
             return null;
@@ -2784,7 +3041,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             try self.reportError(.invalid_function_call, "@intCast expects exactly two arguments", source_loc);
             return null;
@@ -2812,7 +3069,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             try self.reportError(.invalid_function_call, "@floatCast expects exactly two arguments", source_loc);
             return null;
@@ -2839,7 +3096,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 1) {
             try self.reportError(.invalid_function_call, "@panic expects exactly one argument", source_loc);
             return null;
@@ -2860,7 +3117,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 1) {
             try self.reportError(.invalid_function_call, "@compileError expects exactly one argument", source_loc);
             return null;
@@ -2880,7 +3137,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             try self.reportError(.invalid_function_call, "@memcpy expects exactly two arguments", source_loc);
             return null;
@@ -2903,7 +3160,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             try self.reportError(.invalid_function_call, "@memset expects exactly two arguments", source_loc);
             return null;
@@ -2927,7 +3184,7 @@ pub const SemanticAnalyzer = struct {
         operation: []const u8,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             const msg = try std.fmt.allocPrint(self.allocator, "@{s} expects exactly two arguments", .{operation});
             defer self.allocator.free(msg);
@@ -2952,7 +3209,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 1) {
             try self.reportError(.invalid_function_call, "@ArrayList expects exactly one type argument", source_loc);
             return null;
@@ -2984,7 +3241,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             try self.reportError(.invalid_function_call, "@arrayListInit expects exactly two arguments (type, allocator)", source_loc);
             return null;
@@ -3006,7 +3263,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             try self.reportError(.invalid_function_call, "@arrayListAppend expects exactly two arguments (list, item)", source_loc);
             return null;
@@ -3021,7 +3278,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 2) {
             try self.reportError(.invalid_function_call, "@arrayListGet expects exactly two arguments (list, index)", source_loc);
             return null;
@@ -3037,7 +3294,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 1) {
             try self.reportError(.invalid_function_call, "@arrayListLen expects exactly one argument (list)", source_loc);
             return null;
@@ -3052,7 +3309,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         if (args.len != 1) {
             try self.reportError(.invalid_function_call, "@arrayListClear expects exactly one argument (list)", source_loc);
             return null;
@@ -3067,7 +3324,7 @@ pub const SemanticAnalyzer = struct {
     // ============================================================================
 
     /// Analyze a node and perform appropriate semantic analysis
-    fn analyzeNode(self: *SemanticAnalyzer, node_id: ast.NodeId) anyerror!?ast.Type {
+    fn analyzeNode(self: *SemanticAnalyzer, node_id: ast.NodeId) CompileError!?ast.Type {
         const node = self.arena.getNode(node_id) orelse return null;
 
         switch (node.data) {
@@ -3112,7 +3369,7 @@ pub const SemanticAnalyzer = struct {
                 return ast.Type.initPrimitive(.{ .void = {} }, node.source_loc);
             },
             .block => |block| {
-                // Analyze all statements in the block
+                // Process all statements in the block
                 for (block.statements.items) |stmt_id| {
                     _ = try self.analyzeNode(stmt_id);
                 }
@@ -3143,7 +3400,7 @@ pub const SemanticAnalyzer = struct {
     // Error Handling Analysis
     // ============================================================================
 
-    fn analyzeTryExpression(self: *SemanticAnalyzer, try_expr: @TypeOf(@as(ast.AstNode, undefined).data.try_expr), source_loc: ast.SourceLoc) anyerror!?ast.Type {
+    fn analyzeTryExpression(self: *SemanticAnalyzer, try_expr: @TypeOf(@as(ast.AstNode, undefined).data.try_expr), source_loc: ast.SourceLoc) CompileError!?ast.Type {
         // Validate that try is used in a context where errors can be handled
         if (self.current_function_return_type == null) {
             try self.reportError(.invalid_statement, "Try expression used outside of function", source_loc);
@@ -3192,7 +3449,7 @@ pub const SemanticAnalyzer = struct {
         return expr_type;
     }
 
-    fn analyzeCatchExpression(self: *SemanticAnalyzer, catch_expr: @TypeOf(@as(ast.AstNode, undefined).data.catch_expr), source_loc: ast.SourceLoc) anyerror!?ast.Type {
+    fn analyzeCatchExpression(self: *SemanticAnalyzer, catch_expr: @TypeOf(@as(ast.AstNode, undefined).data.catch_expr), source_loc: ast.SourceLoc) CompileError!?ast.Type {
         // Analyze the expression being caught (not necessarily a try expression)
         const expr_type = try self.analyzeNode(catch_expr.expression);
 
@@ -3232,7 +3489,7 @@ pub const SemanticAnalyzer = struct {
         return null;
     }
 
-    fn analyzeErrorUnionType(self: *SemanticAnalyzer, error_union: @TypeOf(@as(ast.AstNode, undefined).data.error_union_type), source_loc: ast.SourceLoc) anyerror!?ast.Type {
+    fn analyzeErrorUnionType(self: *SemanticAnalyzer, error_union: @TypeOf(@as(ast.AstNode, undefined).data.error_union_type), source_loc: ast.SourceLoc) CompileError!?ast.Type {
         // Validate error set identifier
         const error_set_id = error_union.error_set orelse {
             try self.reportError(.type_mismatch, "Error union missing error set", source_loc);
@@ -3291,7 +3548,7 @@ pub const SemanticAnalyzer = struct {
         return result_type;
     }
 
-    pub fn analyzeProgram(self: *SemanticAnalyzer, root_node_id: ast.NodeId) !void {
+    pub fn analyzeProgram(self: *SemanticAnalyzer, root_node_id: ast.NodeId) CompileError!void {
         _ = try self.analyzeNode(root_node_id);
         // Check for unused variables (warning)
         self.checkUnusedSymbols();
@@ -3316,7 +3573,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         generic_type: @TypeOf(@as(ast.AstNode, undefined).data.generic_type_expr),
         source_loc: ast.SourceLoc,
-    ) anyerror!?ast.Type {
+    ) CompileError!?ast.Type {
         // Get the base type (e.g., "List" from "List(T)")
         const base_node = self.arena.getNode(generic_type.base_type) orelse return null;
 
@@ -3363,7 +3620,7 @@ pub const SemanticAnalyzer = struct {
         return null;
     }
 
-    fn inferEnumMemberType(self: *SemanticAnalyzer, member: @TypeOf(@as(ast.Literal, undefined).enum_member), source_loc: ast.SourceLoc) !?ast.Type {
+    fn inferEnumMemberType(self: *SemanticAnalyzer, member: @TypeOf(@as(ast.Literal, undefined).enum_member), source_loc: ast.SourceLoc) CompileError!?ast.Type {
         // Try to infer the enum type from context
         // For now, we'll use a special enum member type that needs to be resolved during type checking
 
@@ -3396,7 +3653,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         comptime_call: @TypeOf(@as(ast.AstNode, undefined).data.comptime_type_call),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         const function_node = self.arena.getNode(comptime_call.function) orelse return null;
 
         // Check if this is a simple identifier (e.g., List(i32))
@@ -3429,7 +3686,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         call_expr: @TypeOf(@as(ast.AstNode, undefined).data.call_expr),
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         const callee_node = self.arena.getNode(call_expr.callee) orelse return null;
 
         // Check if this is a simple identifier (e.g., List(i32))
@@ -3469,7 +3726,7 @@ pub const SemanticAnalyzer = struct {
         function_name: []const u8,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         if (std.mem.eql(u8, function_name, "List")) {
             return try self.createListType(args, source_loc);
         } else if (std.mem.eql(u8, function_name, "Optional")) {
@@ -3487,7 +3744,7 @@ pub const SemanticAnalyzer = struct {
         function_name: []const u8,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) !?ast.Type {
+    ) CompileError!?ast.Type {
         if (std.mem.eql(u8, function_name, "List")) {
             return try self.createListType(args, source_loc);
         } else if (std.mem.eql(u8, function_name, "HashMap")) {
@@ -3502,7 +3759,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) !ast.Type {
+    ) CompileError!ast.Type {
         if (args.len != 1) {
             try self.reportError(.type_mismatch, "List expects exactly one type parameter", source_loc);
             return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
@@ -3539,7 +3796,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) !ast.Type {
+    ) CompileError!ast.Type {
         if (args.len != 1) {
             try self.reportError(.type_mismatch, "Optional expects exactly one type parameter", source_loc);
             return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
@@ -3571,7 +3828,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) !ast.Type {
+    ) CompileError!ast.Type {
         if (args.len != 2) {
             try self.reportError(.type_mismatch, "Result expects exactly two type parameters", source_loc);
             return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
@@ -3586,7 +3843,7 @@ pub const SemanticAnalyzer = struct {
         self: *SemanticAnalyzer,
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
-    ) !ast.Type {
+    ) CompileError!ast.Type {
         if (args.len != 2) {
             try self.reportError(.type_mismatch, "HashMap expects exactly two type parameters", source_loc);
             return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
@@ -3597,7 +3854,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// Generate a unique type name for List(T)
-    fn generateListTypeName(self: *SemanticAnalyzer, element_type: ast.Type) ![]const u8 {
+    fn generateListTypeName(self: *SemanticAnalyzer, element_type: ast.Type) CompileError![]const u8 {
         const element_str = switch (element_type.data) {
             .primitive => |prim| switch (prim) {
                 .i32 => "i32",
@@ -3619,7 +3876,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// Generate a unique type name for Optional(T)
-    fn generateOptionalTypeName(self: *SemanticAnalyzer, inner_type: ast.Type) ![]const u8 {
+    fn generateOptionalTypeName(self: *SemanticAnalyzer, inner_type: ast.Type) CompileError![]const u8 {
         const inner_str = switch (inner_type.data) {
             .primitive => |prim| switch (prim) {
                 .i32 => "i32",
@@ -3636,7 +3893,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// Create fields for a List(T) struct
-    fn createListFields(self: *SemanticAnalyzer, element_type: ast.Type) ![]ast.Field {
+    fn createListFields(self: *SemanticAnalyzer, element_type: ast.Type) CompileError![]ast.Field {
         _ = element_type; // Will be used to create proper typed fields
 
         // For now, create generic fields

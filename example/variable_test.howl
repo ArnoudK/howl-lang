@@ -1,0 +1,5 @@
+// Simple variable test
+main :: fn () void {
+    x :: 42
+    y :: 24
+}

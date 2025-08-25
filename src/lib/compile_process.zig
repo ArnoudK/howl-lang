@@ -1,5 +1,6 @@
 const std = @import("std");
 const ast = @import("ast.zig");
+const CompileError = @import("CompileError.zig").CompileError;
 const ErrorSystem = @import("error_system.zig");
 const ErrorFormatter = @import("error_formatter.zig");
 const Lexer = @import("lexer_enhanced.zig");
@@ -9,6 +10,13 @@ const SemanticAnalyzer = @import("semantic_analyzer.zig").SemanticAnalyzer;
 const JSCodegen = @import("codegen_js.zig");
 const CCodegen = @import("codegen_c.zig");
 
+// Sea-of-nodes IR imports
+const SeaOfNodes = @import("sea_of_nodes_ir.zig").SeaOfNodes;
+const AstToIr = @import("ast_to_ir.zig");
+const IrOptimizer = @import("ir_optimizer.zig");
+const JsIrCodegen = @import("codegen_js_ir.zig");
+const CIrCodegen = @import("codegen_c_ir.zig");
+
 // ============================================================================
 // Compilation Process Manager
 // ============================================================================
@@ -17,6 +25,8 @@ pub const CompilePhase = enum {
     lexing,
     parsing,
     semantic_analysis,
+    ir_construction,
+    ir_optimization,
     codegen,
 };
 
@@ -32,6 +42,7 @@ pub const CompileResult = struct {
     warnings: usize,
     phase_completed: CompilePhase,
     target: CompileTarget,
+    ir: ?SeaOfNodes, // Sea-of-nodes IR for debugging/introspection
 
     pub fn deinit(self: *CompileResult, allocator: std.mem.Allocator) void {
         // Clean up error collector
@@ -39,6 +50,10 @@ pub const CompileResult = struct {
 
         if (self.generated_code) |code| {
             allocator.free(code);
+        }
+
+        if (self.ir) |*ir| {
+            ir.deinit();
         }
     }
 };
@@ -67,7 +82,7 @@ pub const Compiler = struct {
     source_map: ErrorSystem.SourceMap,
     source_maps: std.StringHashMap(ErrorSystem.SourceMap),
 
-    pub fn init(allocator: std.mem.Allocator, options: CompileOptions) !Compiler {
+    pub fn init(allocator: std.mem.Allocator, options: CompileOptions) CompileError!Compiler {
         var source_maps = std.StringHashMap(ErrorSystem.SourceMap).init(allocator);
         const source_map = try ErrorSystem.SourceMap.init(allocator, options.source_content);
         try source_maps.put(options.file_path, source_map);
@@ -97,7 +112,7 @@ pub const Compiler = struct {
     // Compilation Pipeline
     // ============================================================================
 
-    pub fn compile(self: *Compiler) !CompileResult {
+    pub fn compile(self: *Compiler) CompileError!CompileResult {
         // Use main allocator for error messages so they persist after compilation
         var errors = ErrorSystem.ErrorCollector.init(self.allocator);
         errors.max_errors = self.options.max_errors;
@@ -109,6 +124,7 @@ pub const Compiler = struct {
             .warnings = 0,
             .phase_completed = .lexing,
             .target = self.options.target,
+            .ir = null,
         };
 
         // Phase 1: Lexing
@@ -156,6 +172,7 @@ pub const Compiler = struct {
 
         // Phase 3: Semantic Analysis
         result.phase_completed = .semantic_analysis;
+        std.debug.print("Starting semantic analysis...\n", .{});
         var semantic_analyzer: ?SemanticAnalyzer = null;
         if (ast_root) |root| {
             semantic_analyzer = try self.performSemanticAnalysis(root, &result.errors);
@@ -163,27 +180,75 @@ pub const Compiler = struct {
 
         // Check for errors after semantic analysis - stop compilation if any errors exist
         if (result.errors.hasErrors()) {
+            std.debug.print("Semantic analysis failed with errors\n", .{});
             if (semantic_analyzer) |*analyzer| {
                 analyzer.deinit();
             }
             return result;
         }
+        std.debug.print("Semantic analysis completed successfully\n", .{});
 
-        // Phase 4: Code Generation
-        result.phase_completed = .codegen;
+        // Phase 3.5: Transform AST to Sea-of-Nodes IR
+        result.phase_completed = .ir_construction;
+        std.debug.print("Starting IR construction...\n", .{});
+        var sea_of_nodes_ir: ?SeaOfNodes = null;
         if (ast_root) |root| {
+            if (semantic_analyzer) |*analyzer| {
+                sea_of_nodes_ir = AstToIr.transformAstToIr(
+                    self.allocator,
+                    root,
+                    analyzer,
+                    &self.arena,
+                    &result.errors,
+                ) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => {
+                        std.debug.print("IR construction failed with error\n", .{});
+                        // IR construction errors are already reported
+                        analyzer.deinit();
+                        return result;
+                    },
+                };
+            }
+        }
+
+        // Check for errors after IR construction
+        if (result.errors.hasErrors()) {
+            std.debug.print("IR construction failed with errors\n", .{});
+            if (semantic_analyzer) |*analyzer| {
+                analyzer.deinit();
+            }
+            if (sea_of_nodes_ir) |*ir| {
+                ir.deinit();
+            }
+            return result;
+        }
+        std.debug.print("IR construction completed successfully\n", .{});
+
+        // Phase 3.6: IR Optimization (temporarily disabled for debugging)
+        result.phase_completed = .ir_optimization;
+        if (sea_of_nodes_ir) |*ir| {
+            _ = ir; // TODO: Re-enable optimizations after fixing IR construction issues
+        }
+
+        // Phase 4: Code Generation from IR
+        result.phase_completed = .codegen;
+        if (sea_of_nodes_ir) |*ir| {
             if (semantic_analyzer) |*analyzer| {
                 defer analyzer.deinit();
 
+                // Store IR for debugging/introspection
+                result.ir = ir.*;
+
                 switch (self.options.target) {
                     .c => {
-                        // Use the C backend
-                        const executable_result = try self.generateCExecutable(root, analyzer, &result.errors);
+                        // Use the C backend with IR
+                        const executable_result = try self.generateCExecutableFromIr(ir, analyzer, &result.errors);
                         result.generated_code = executable_result;
                     },
                     .javascript => {
-                        // Use JavaScript backend if available
-                        const js_result = try self.generateJavaScript(root, analyzer, &result.errors);
+                        // Use JavaScript backend with IR
+                        const js_result = try self.generateJavaScriptFromIr(ir, analyzer, &result.errors);
                         result.generated_code = js_result;
                     },
                 }
@@ -197,7 +262,7 @@ pub const Compiler = struct {
         return result;
     }
 
-    fn parseTokens(self: *Compiler, tokens: []const Token, errors: *ErrorSystem.ErrorCollector) !?ast.NodeId {
+    fn parseTokens(self: *Compiler, tokens: []const Token, errors: *ErrorSystem.ErrorCollector) CompileError!?ast.NodeId {
         var parser = ParserModule.Parser{
             .allocator = self.allocator,
             .tokens = tokens,
@@ -222,7 +287,7 @@ pub const Compiler = struct {
         return ast_root;
     }
 
-    fn performSemanticAnalysis(self: *Compiler, root_node: ast.NodeId, errors: *ErrorSystem.ErrorCollector) !SemanticAnalyzer {
+    fn performSemanticAnalysis(self: *Compiler, root_node: ast.NodeId, errors: *ErrorSystem.ErrorCollector) CompileError!SemanticAnalyzer {
         var analyzer = SemanticAnalyzer.init(
             self.allocator,
             &self.arena,
@@ -242,77 +307,57 @@ pub const Compiler = struct {
         return analyzer;
     }
 
-    fn generateJavaScript(self: *Compiler, root_node: ast.NodeId, analyzer: *const SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) ![]const u8 {
+    fn generateJavaScriptFromIr(self: *Compiler, ir: *SeaOfNodes, analyzer: *const SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) CompileError![]const u8 {
         _ = errors; // TODO: Use this for codegen error reporting
 
-        const js_code = JSCodegen.generateJS(
+        std.debug.print("Generating JavaScript from Sea-of-Nodes IR...\n", .{});
+
+        // Use the new IR-based JavaScript code generator
+        const js_code = JsIrCodegen.generateJavaScriptFromIr(
             self.allocator,
-            &self.arena,
+            ir,
             analyzer,
-            root_node,
-        ) catch |err| {
-            switch (err) {
-                error.OutOfMemory => return err,
-                else => {
-                    // TODO: Report codegen errors properly
-                    return try self.allocator.dupe(u8, "/* JavaScript code generation failed */");
-                },
-            }
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return err,
         };
 
         return js_code;
     }
 
-    fn generateCode(self: *Compiler, root_node: ast.NodeId, analyzer: *const SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) ![]const u8 {
-        // Legacy method - now delegates to generateJavaScript
-        return self.generateJavaScript(root_node, analyzer, errors);
-    }
-
-    // fn generateRealZir(self: *Compiler, root_node: ast.NodeId, analyzer: *const SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) !std.zig.Zir {
-    //     _ = errors; // TODO: Use this for codegen error reporting
-    //
-    //     var zir_generator = ZirGenerator.ZirGenerator.init(self.allocator, &self.arena, analyzer);
-    //     defer zir_generator.deinit();
-    //
-    //     const zir = zir_generator.generate(root_node) catch |err| {
-    //         switch (err) {
-    //             error.OutOfMemory => return err,
-    //             else => {
-    //                 // TODO: Report codegen errors properly
-    //                 // For now return an empty ZIR structure
-    //                 var empty_instructions = std.MultiArrayList(std.zig.Zir.Inst){};
-    //                 var empty_string_bytes = [_]u8{0};
-    //                 var empty_extra = [_]u32{0, 0};
-    //                 return std.zig.Zir{
-    //                     .instructions = empty_instructions.toOwnedSlice(),
-    //                     .string_bytes = empty_string_bytes[0..],
-    //                     .extra = empty_extra[0..],
-    //                 };
-    //             },
-    //         }
-    //     };
-
-    //     return zir;
-    // }
-
-    fn generateCExecutable(self: *Compiler, root_node: ast.NodeId, analyzer: *const SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) ![]const u8 {
+    fn generateCExecutableFromIr(self: *Compiler, ir: *SeaOfNodes, analyzer: *const SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) CompileError![]const u8 {
         _ = errors; // TODO: Use this for codegen error reporting
 
-        var c_codegen = CCodegen.CCodegen.init(self.allocator, &self.arena, analyzer);
-        defer c_codegen.deinit();
+        std.debug.print("Generating C code from Sea-of-Nodes IR...\n", .{});
 
-        const result = c_codegen.generate(root_node) catch |err| {
-            return err;
+        // Use the new IR-based C code generator with compilation
+        const c_code = CIrCodegen.generateAndCompileCFromIr(
+            self.allocator,
+            ir,
+            analyzer,
+        ) catch |err| {
+            switch (err) {
+                error.OutOfMemory => return err,
+                error.CCompilationFailed => {
+                    // C compilation failed, but still return the generated C code
+                    return CIrCodegen.generateCFromIr(self.allocator, ir, analyzer) catch {
+                        return try self.allocator.dupe(u8, "/* C IR code generation failed */");
+                    };
+                },
+                else => {
+                    // TODO: Report codegen errors properly
+                    return try self.allocator.dupe(u8, "/* C IR code generation failed */");
+                },
+            }
         };
 
-        return result;
+        return c_code;
     }
 
     // ============================================================================
     // Error Reporting and Output
     // ============================================================================
 
-    pub fn formatErrors(self: *Compiler, result: *const CompileResult, writer: anytype) !void {
+    pub fn formatErrors(self: *Compiler, result: *const CompileResult, writer: anytype) CompileError!void {
         const formatter = ErrorFormatter.ErrorFormatter.init(self.allocator);
 
         switch (self.options.output_format) {
@@ -333,7 +378,7 @@ pub const Compiler = struct {
         }
     }
 
-    pub fn printCompilationSummary(self: *Compiler, result: *const CompileResult, writer: anytype) !void {
+    pub fn printCompilationSummary(self: *Compiler, result: *const CompileResult, writer: anytype) CompileError!void {
         const error_count = result.errors.errorCount();
         const warning_count = result.errors.warningCount();
 
@@ -359,8 +404,18 @@ pub const Compiler = struct {
     // Diagnostics and Introspection
     // ============================================================================
 
-    pub fn dumpAST(self: *Compiler, root_node: ast.NodeId, writer: anytype, indent: usize) !void {
-        const node = self.arena.getNodeConst(root_node);
+    pub fn dumpIR(self: *Compiler, result: *const CompileResult, writer: anytype) CompileError!void {
+        _ = self;
+        if (result.ir) |*ir| {
+            try writer.print("=== Sea-of-Nodes IR Dump ===\n", .{});
+            try ir.dumpGraph(writer);
+        } else {
+            try writer.print("No IR available for dumping.\n", .{});
+        }
+    }
+
+    pub fn dumpAST(self: *Compiler, root_node: ast.NodeId, writer: anytype, indent: usize) CompileError!void {
+        const node = self.arena.getNode(root_node);
         if (node == null) {
             const spacing = try self.allocator.alloc(u8, indent);
             defer self.allocator.free(spacing);
@@ -438,8 +493,14 @@ pub const Compiler = struct {
     }
 
     pub fn getCompilationStats(self: *Compiler, result: *const CompileResult) CompilationStats {
+        var ir_nodes: usize = 0;
+        if (result.ir) |*ir| {
+            ir_nodes = ir.nodes.items.len;
+        }
+
         return CompilationStats{
-            .total_nodes = self.arena.nodes.items.len,
+            .total_ast_nodes = self.arena.nodes.items.len,
+            .total_ir_nodes = ir_nodes,
             .total_errors = result.errors.errorCount(),
             .total_warnings = result.errors.warningCount(),
             .phase_completed = result.phase_completed,
@@ -449,7 +510,8 @@ pub const Compiler = struct {
 };
 
 pub const CompilationStats = struct {
-    total_nodes: usize,
+    total_ast_nodes: usize,
+    total_ir_nodes: usize,
     total_errors: usize,
     total_warnings: usize,
     phase_completed: CompilePhase,

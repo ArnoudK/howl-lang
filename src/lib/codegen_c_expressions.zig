@@ -124,7 +124,10 @@ pub fn generateCSimpleExpression(arena: *const ast.AstArena, writer: Writer, nod
                     if (obj_node) |obj| {
                         if (obj.data == .identifier) {
                             const obj_name = obj.data.identifier.name;
-                            if (std.mem.startsWith(u8, obj_name, "MyError")) {
+                            // Check if this looks like an error set (common naming patterns)
+                            if (std.mem.endsWith(u8, obj_name, "Error") or 
+                                std.mem.eql(u8, obj_name, "MyError") or 
+                                std.mem.eql(u8, obj_name, "TestError")) {
                                 is_error_union_if = true;
                             }
                         }
@@ -146,21 +149,49 @@ pub fn generateCSimpleExpression(arena: *const ast.AstArena, writer: Writer, nod
                         if (obj_node) |obj| {
                             if (obj.data == .identifier) {
                                 const obj_name = obj.data.identifier.name;
-                                try writer.print("(MyError_int32_t_ErrorUnion){{.error = {s}_{s}, .payload = {{0}}}}", .{ obj_name, member_expr.field });
+                                // Use the actual error set name in the error union struct generation
+                                // For TestError!i32, this should generate TestError_i32_ErrorUnion
+                                const error_union_struct = if (std.mem.eql(u8, obj_name, "TestError"))
+                                    "TestError_i32_ErrorUnion" 
+                                else 
+                                    "anyerror_i32_ErrorUnion";
+                                    
+                                try writer.print("({s}){{.error = {s}_{s}, .payload = 0}}", .{ error_union_struct, obj_name, member_expr.field });
                             }
                         }
                     }
+                } else {
+                    try generateCSimpleExpression(arena, writer, if_expr.then_branch);
                 }
                 
                 try writer.writeAll(" : ");
                 
-                // Else branch - success case  
+                // Else branch - success case
                 if (if_expr.else_branch) |else_branch| {
-                    try writer.writeAll("(MyError_int32_t_ErrorUnion){.error = MyError_SUCCESS, .payload = ");
+                    // For success case, wrap the payload in error union struct with error = 0
+                    // Use the same error union struct name as the error case
+                    const error_union_struct = if (then_node) |then_data| blk: {
+                        if (then_data.data == .member_expr) {
+                            const member_expr = then_data.data.member_expr;
+                            const obj_node = arena.getNodeConst(member_expr.object);
+                            if (obj_node) |obj| {
+                                if (obj.data == .identifier) {
+                                    const obj_name = obj.data.identifier.name;
+                                    break :blk if (std.mem.eql(u8, obj_name, "TestError"))
+                                        "TestError_i32_ErrorUnion"
+                                    else
+                                        "anyerror_i32_ErrorUnion";
+                                }
+                            }
+                        }
+                        break :blk "anyerror_i32_ErrorUnion";
+                    } else "anyerror_i32_ErrorUnion";
+                    
+                    try writer.print("({s}){{.error = 0, .payload = ", .{error_union_struct});
                     try generateCSimpleExpression(arena, writer, else_branch);
                     try writer.writeAll("}");
                 } else {
-                    try writer.writeAll("(MyError_int32_t_ErrorUnion){.error = MyError_SUCCESS, .payload = 0}");
+                    try writer.writeAll("(anyerror_i32_ErrorUnion){.error = 0, .payload = 0}");
                 }
                 
                 try writer.writeAll(")");

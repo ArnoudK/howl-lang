@@ -231,7 +231,7 @@ pub const UnaryOp = enum {
             .negate => "-",
             .not => "!",
             .bit_not => "~",
-            .deref => "*",
+            .deref => "^",
             .address_of => "&",
         };
     }
@@ -276,18 +276,22 @@ pub const Type = struct {
             element_type: *Type,
             size: ?usize, // null for slices
         },
-        @"struct": struct {
-            name: []const u8,
-            fields: []Field,
-        },
-        @"enum": struct {
-            name: []const u8,
-            members: []EnumMember,
-        },
-        function: struct {
-            param_types: []Type,
-            return_type: *Type,
-        },
+         @"struct": struct {
+             name: []const u8,
+             fields: []Field,
+         },
+         @"enum": struct {
+             name: []const u8,
+             members: []EnumMember,
+         },
+         namespace: struct {
+             name: []const u8,
+             members: std.StringHashMap(*Type), // Named members of the namespace
+         },
+         function: struct {
+             param_types: []Type,
+             return_type: *Type,
+         },
         optional: *Type,
         union_type: struct {
             name: []const u8,
@@ -442,8 +446,9 @@ pub const Type = struct {
                 defer allocator.free(inner_str);
                 return try std.fmt.allocPrint(allocator, "?{s}", .{inner_str});
             },
-            .@"struct" => |s| try allocator.dupe(u8, s.name),
-            .custom_struct => |s| try allocator.dupe(u8, s.name),
+             .@"struct" => |s| try allocator.dupe(u8, s.name),
+             .namespace => |ns| try std.fmt.allocPrint(allocator, "namespace({s})", .{ns.name}),
+             .custom_struct => |s| try allocator.dupe(u8, s.name),
             .comptime_type => "comptime_type",
             .unknown => "unknown",
             else => "complex_type",
@@ -768,6 +773,13 @@ pub const AstNode = struct {
         optional_type_expr: struct {
             inner_type: NodeId, // ?T where this is T
         },
+        pointer_type_expr: struct {
+            inner_type: NodeId, // ^T where this is T
+        },
+        error_union_type_expr: struct {
+            error_set: NodeId,  // Error!T where this is Error
+            payload_type: NodeId, // Error!T where this is T
+        },
         struct_type_expr: struct {
             fields: std.ArrayList(Field),
         },
@@ -856,6 +868,8 @@ pub const AstNode = struct {
             .array_init,
             .slice_type_expr,
             .optional_type_expr,
+            .pointer_type_expr,
+            .error_union_type_expr,
             .generic_type_expr,
             .try_expr,
             .catch_expr,
@@ -1004,6 +1018,16 @@ pub fn createSliceTypeExpr(arena: *AstArena, source_loc: SourceLoc, element_type
 
 pub fn createOptionalTypeExpr(arena: *AstArena, source_loc: SourceLoc, inner_type: NodeId) !NodeId {
     const node = AstNode.init(.{ .optional_type_expr = .{ .inner_type = inner_type } }, source_loc);
+    return arena.createNode(node);
+}
+
+pub fn createPointerTypeExpr(arena: *AstArena, source_loc: SourceLoc, inner_type: NodeId) !NodeId {
+    const node = AstNode.init(.{ .pointer_type_expr = .{ .inner_type = inner_type } }, source_loc);
+    return arena.createNode(node);
+}
+
+pub fn createErrorUnionTypeExpr(arena: *AstArena, source_loc: SourceLoc, error_set: NodeId, payload_type: NodeId) !NodeId {
+    const node = AstNode.init(.{ .error_union_type_expr = .{ .error_set = error_set, .payload_type = payload_type } }, source_loc);
     return arena.createNode(node);
 }
 

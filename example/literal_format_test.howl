@@ -1,0 +1,2 @@
+// Test with literal value
+std.debug.print("Result: {}\n", 42)

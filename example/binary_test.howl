@@ -1,0 +1,4 @@
+// Binary expression test
+main :: fn () void {
+    result :: 2 + 3
+}

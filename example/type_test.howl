@@ -1,7 +1,7 @@
 // Test file for enum-based type system improvements
 // Testing various type name formats and mappings
 
-pub testTypes :: fn() void {
+pub testTypes :: fn () void {
     // Test lowercase types
     x1 := 42  // i64 by default
     y1 := true  // bool
@@ -10,7 +10,7 @@ pub testTypes :: fn() void {
     return
 }
 
-pub testU8 :: fn(data: u8) u8 {
+pub testU8 :: fn (data: u8) u8 {
     return data
 }
 
@@ -18,14 +18,14 @@ pub testU32 :: fn(data: U32) U32 {
     return data
 }
 
-pub testISize :: fn(data: isize) isize {
+pub testISize :: fn (data: isize) isize {
     return data
 }
 
-pub testUSize :: fn(data: USize) USize {
+pub testUSize :: fn (data: USize) USize {
     return data
 }
 
-pub testString :: fn(text: String) String {
+pub testString :: fn (text: String) String {
     return text
 }

@@ -103,6 +103,7 @@ fn printUsage(program_name: []const u8) !void {
     std.debug.print("  --no-warnings                   Disable warnings\n", .{});
     std.debug.print("  --stop-on-error                 Stop compilation on first error\n", .{});
     std.debug.print("  --stats                         Show compilation statistics\n", .{});
+    std.debug.print("  --dump-ir                       Dump Sea-of-Nodes IR to stderr\n", .{});
     std.debug.print("\nFormat Options:\n", .{});
     std.debug.print("  --check                         Check if file is formatted (exit code 1 if not)\n", .{});
     std.debug.print("  --indent-size=<n>               Indentation size (default: 4)\n", .{});
@@ -150,7 +151,7 @@ fn runLspServer(allocator: std.mem.Allocator) !void {
         const message = std.mem.trim(u8, message_bytes, " \t\r\n");
 
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, message, .{}) catch |err| {
-            std.log.err("Failed to parse JSON: {}\n", .{err});
+            std.log.err("Failed to parse JSON: {!}\n", .{err});
             continue;
         };
         defer parsed.deinit();
@@ -411,14 +412,14 @@ fn runFormatter(allocator: std.mem.Allocator, args: [][]const u8) !void {
 
     // Read source file
     const source_content = std.fs.cwd().readFileAlloc(allocator, file_path, 1024 * 1024) catch |err| {
-        std.debug.print("Error reading file '{s}': {}\n", .{ file_path, err });
+        std.debug.print("Error reading file '{s}': {!}\n", .{ file_path, err });
         return;
     };
     defer allocator.free(source_content);
 
     // Format the code
     const format_result = formatter.formatCode(allocator, source_content, options) catch |err| {
-        std.debug.print("Error formatting file: {}\n", .{err});
+        std.debug.print("Error formatting file: {!}\n", .{err});
         return;
     };
     defer format_result.deinit(allocator);
@@ -442,7 +443,7 @@ fn runFormatter(allocator: std.mem.Allocator, args: [][]const u8) !void {
     } else {
         // Write the formatted code back to the file
         std.fs.cwd().writeFile(.{ .sub_path = file_path, .data = format_result.formatted_code }) catch |err| {
-            std.debug.print("Error writing formatted file '{s}': {}\n", .{ file_path, err });
+            std.debug.print("Error writing formatted file '{s}': {!}\n", .{ file_path, err });
             return;
         };
         std.debug.print("Formatted file: {s}\n", .{file_path});
@@ -469,6 +470,7 @@ fn compileFile(allocator: std.mem.Allocator, file_path: []const u8, args: [][]co
     var enable_warnings = true;
     var stop_on_first_error = false;
     var show_stats = false;
+    var dump_ir = false;
 
     for (args) |arg| {
         // Skip the file path
@@ -506,6 +508,8 @@ fn compileFile(allocator: std.mem.Allocator, file_path: []const u8, args: [][]co
             stop_on_first_error = true;
         } else if (std.mem.eql(u8, arg, "--stats")) {
             show_stats = true;
+        } else if (std.mem.eql(u8, arg, "--dump-ir")) {
+            dump_ir = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
             std.debug.print("Unknown option: {s}\n", .{arg});
             return CompileResult{ .success = false, .generated_code = null, .target = target };
@@ -514,7 +518,7 @@ fn compileFile(allocator: std.mem.Allocator, file_path: []const u8, args: [][]co
 
     // Read source file
     const source_content = std.fs.cwd().readFileAlloc(allocator, file_path, 1024 * 1024) catch |err| {
-        std.debug.print("Error reading file '{s}': {}\n", .{ file_path, err });
+        std.debug.print("Error reading file '{s}': {!}\n", .{ file_path, err });
         return CompileResult{ .success = false, .generated_code = null, .target = target };
     };
     defer allocator.free(source_content);
@@ -532,14 +536,18 @@ fn compileFile(allocator: std.mem.Allocator, file_path: []const u8, args: [][]co
 
     // Initialize compiler
     var compiler = Compiler.init(allocator, options) catch |err| {
-        std.debug.print("Failed to initialize compiler: {}\n", .{err});
+        std.debug.print("Failed to initialize compiler: {!}\n", .{err});
         return CompileResult{ .success = false, .generated_code = null, .target = target };
     };
     defer compiler.deinit();
 
     // Compile
     var result = compiler.compile() catch |err| {
-        std.debug.print("Compilation failed with error: {}\n", .{err});
+        std.debug.print("Compilation failed with error: {!}\n", .{err});
+        std.debug.print("Stack trace:\n", .{});
+        if (@errorReturnTrace()) |trace| {
+            std.debug.dumpStackTrace(trace.*);
+        }
         return CompileResult{ .success = false, .generated_code = null, .target = target };
     };
     defer result.deinit(allocator);
@@ -578,9 +586,16 @@ fn compileFile(allocator: std.mem.Allocator, file_path: []const u8, args: [][]co
     if (show_stats) {
         const stats = compiler.getCompilationStats(&result);
         std.debug.print("\nCompilation Statistics:\n", .{});
-        std.debug.print("  Total AST nodes: {d}\n", .{stats.total_nodes});
+        std.debug.print("  Total AST nodes: {d}\n", .{stats.total_ast_nodes});
+        std.debug.print("  Total IR nodes: {d}\n", .{stats.total_ir_nodes});
         std.debug.print("  Phase completed: {s}\n", .{@tagName(stats.phase_completed)});
         std.debug.print("  Success: {}\n", .{stats.success});
+    }
+
+    // Dump IR if requested
+    if (dump_ir and result.success) {
+        std.debug.print("\n", .{});
+        try compiler.dumpIR(&result, std.io.getStdErr().writer());
     }
 
     return CompileResult{
@@ -588,26 +603,4 @@ fn compileFile(allocator: std.mem.Allocator, file_path: []const u8, args: [][]co
         .generated_code = generated_code,
         .target = target,
     };
-}
-
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
-
-test "use other module" {
-    try std.testing.expectEqual(@as(i32, 150), root.add(100, 50));
-}
-
-test "fuzz example" {
-    const Context = struct {
-        fn testOne(context: @This(), input: []const u8) anyerror!void {
-            _ = context;
-            // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-            try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
-        }
-    };
-    try std.testing.fuzz(Context{}, Context.testOne, .{});
 }

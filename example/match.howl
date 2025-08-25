@@ -1,0 +1,55 @@
+// Example for match expressions
+// Don't edit
+
+std :: @import("std")
+
+MyEnum :: enum {
+    A,
+    B,
+    C
+}
+
+main :: fn () !void {
+    
+    x :: 0
+    
+    match x {
+    |    0 => {
+            std.debug.print("x is zero\n")
+        }
+    |   1 => {
+            std.debug.print("x is one\n")
+        }
+    |   < 0 => {
+            std.debug.print("x is less than zero\n")
+        }
+    |   _ => {
+            std.debug.print("x is something else\n")
+        }
+    }   
+
+    y :: false
+    match y {
+    |   true => {
+            std.debug.print("y is true\n")
+        }
+    |   false => {
+            std.debug.print("y is false\n")
+        }
+    }
+
+    z : MyEnum : .A
+    
+    match z {
+    |   .A => {
+            std.debug.print("z is A\n")
+        }
+    |   .B => {
+            std.debug.print("z is B\n")
+        }
+    |   .C => {
+            std.debug.print("z is C\n")
+        }
+    }
+
+}

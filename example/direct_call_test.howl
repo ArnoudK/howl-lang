@@ -1,0 +1,2 @@
+// Direct call test
+std.debug.print("Hello World\n")

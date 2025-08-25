@@ -1,0 +1,4 @@
+// Minimal test for sea-of-nodes IR
+main :: fn () void {
+    x :: 42
+}

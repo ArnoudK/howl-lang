@@ -117,6 +117,7 @@ pub const ErrorCode = enum {
     // Codegen errors
     unsupported_operation,
     target_specific_error,
+    optimization_failed,
     
     // IO errors
     file_not_found,
@@ -158,6 +159,7 @@ pub const ErrorCode = enum {
             .compile_error => "E210",
             .unsupported_operation => "E300",
             .target_specific_error => "E301",
+            .optimization_failed => "E302",
             .file_not_found => "E400",
             .permission_denied => "E401",
             .out_of_memory => "E500",
@@ -197,6 +199,7 @@ pub const ErrorCode = enum {
             .compile_error => "Compile-time error",
             .unsupported_operation => "Unsupported operation",
             .target_specific_error => "Target-specific error",
+            .optimization_failed => "Optimization failed",
             .file_not_found => "File not found",
             .permission_denied => "Permission denied",
             .out_of_memory => "Out of memory",

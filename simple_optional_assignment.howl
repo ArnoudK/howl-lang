@@ -1,4 +1,0 @@
-main :: fn () i32 {
-    x: ?i32 = 42  // This should work - literal assignment
-    return 0
-}

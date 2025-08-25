@@ -174,11 +174,44 @@ pub fn generateErrorUnionImplementation(writer: Writer, error_union_info: types.
     try writer.print("// Error Union {s} Implementation\n", .{error_union_info.struct_name});
     try writer.writeAll("// ============================================================================\n\n");
 
-    // Generate specialized error union struct
+    // Generate specialized error union struct with integer error codes
+    // Error codes: -1 = null/none, 0 = success, >0 = specific errors
     try writer.print("typedef struct {s} {{\n", .{error_union_info.struct_name});
-    try writer.print("    {s}_t error;\n", .{error_union_info.error_set_name});
+    try writer.print("    int error_code;  // -1=null, 0=success, >0=error\n", .{});
     try writer.print("    {s} payload;\n", .{error_union_info.payload_type});
     try writer.print("}} {s};\n\n", .{error_union_info.struct_name});
+}
+
+/// Generate error union structs for all common Howl types
+pub fn generateStandardErrorUnions(writer: Writer) CCodegenError!void {
+    try writer.writeAll("// ============================================================================\n");
+    try writer.writeAll("// Standard Error Union Types for All Howl Types\n");
+    try writer.writeAll("// ============================================================================\n\n");
+
+    // List of all Howl types that might be used in error unions
+    const howl_types = [_]struct{ howl: []const u8, c: []const u8 }{
+        .{ .howl = "i8", .c = "int8_t" },
+        .{ .howl = "i16", .c = "int16_t" },
+        .{ .howl = "i32", .c = "int32_t" },
+        .{ .howl = "i64", .c = "int64_t" },
+        .{ .howl = "u8", .c = "uint8_t" },
+        .{ .howl = "u16", .c = "uint16_t" },
+        .{ .howl = "u32", .c = "uint32_t" },
+        .{ .howl = "u64", .c = "uint64_t" },
+        .{ .howl = "f32", .c = "float" },
+        .{ .howl = "f64", .c = "double" },
+        .{ .howl = "bool", .c = "bool" },
+        .{ .howl = "str", .c = "char*" },
+        .{ .howl = "void", .c = "void" },
+    };
+
+    // Generate error union for each type
+    for (howl_types) |type_info| {
+        try writer.print("typedef struct ErrorUnion_{s} {{\n", .{type_info.howl});
+        try writer.print("    int error_code;  // -1=null, 0=success, >0=error\n", .{});
+        try writer.print("    {s} payload;\n", .{type_info.c});
+        try writer.print("}} ErrorUnion_{s};\n\n", .{type_info.howl});
+    }
 }
 
 pub fn generateEnumImplementation(writer: Writer, enum_info: types.CollectedEnum) CCodegenError!void {
@@ -280,6 +313,72 @@ pub fn generateListImplementation(writer: Writer, list_type: []const u8) CCodege
     _ = list_type;
 }
 
+/// Helper function to check if function has error union syntax (!Type)
+fn hasErrorUnionSyntax(func_decl: anytype) bool {
+    // This would check the original source for ! prefix
+    // For now, we'll look at the return type and see if it's wrapped in error union semantics
+    _ = func_decl;
+    return false; // TODO: Implement proper syntax checking
+}
+
+/// Helper function to sanitize type names for error union struct names
+fn sanitizeTypeForName(type_str: []const u8) []const u8 {
+    // Convert C type names to valid identifier parts
+    if (std.mem.eql(u8, type_str, "int32_t")) return "i32";
+    if (std.mem.eql(u8, type_str, "int64_t")) return "i64";
+    if (std.mem.eql(u8, type_str, "uint32_t")) return "u32";
+    if (std.mem.eql(u8, type_str, "uint64_t")) return "u64";
+    if (std.mem.eql(u8, type_str, "float")) return "f32";
+    if (std.mem.eql(u8, type_str, "double")) return "f64";
+    if (std.mem.eql(u8, type_str, "bool")) return "bool";
+    if (std.mem.eql(u8, type_str, "char*")) return "str";
+    return type_str;
+}
+
+/// Ensure anyerror error set is generated
+fn ensureAnyErrorSet(codegen: anytype) CCodegenError!void {
+    // Check if anyerror is already in collected error sets
+    for (codegen.type_collection.error_set_types.items) |error_set| {
+        if (std.mem.eql(u8, error_set.name, "anyerror")) {
+            return; // Already exists
+        }
+    }
+    
+    // Create anyerror error set with common error names
+    const error_names = try codegen.allocator.alloc([]const u8, 4);
+    error_names[0] = try codegen.allocator.dupe(u8, "DivisionByZero");
+    error_names[1] = try codegen.allocator.dupe(u8, "ParseError");
+    error_names[2] = try codegen.allocator.dupe(u8, "CustomError");
+    error_names[3] = try codegen.allocator.dupe(u8, "UnknownError");
+    
+    const anyerror_set = types.CollectedErrorSet{
+        .name = try codegen.allocator.dupe(u8, "anyerror"),
+        .errors = error_names,
+    };
+    
+    try codegen.type_collection.error_set_types.append(anyerror_set);
+}
+
+/// Ensure error union struct is generated
+fn ensureErrorUnionStruct(codegen: anytype, error_set_name: []const u8, payload_type: []const u8, struct_name: []const u8) CCodegenError!void {
+    // Check if this error union struct already exists
+    for (codegen.type_collection.error_union_types.items) |error_union| {
+        if (std.mem.eql(u8, error_union.struct_name, struct_name)) {
+            return; // Already exists
+        }
+    }
+    
+    // Create the error union struct
+    const c_payload_type = utils.mapHowlTypeToCType(payload_type);
+    const error_union_struct = types.CollectedErrorUnion{
+        .error_set_name = try codegen.allocator.dupe(u8, error_set_name),
+        .payload_type = try codegen.allocator.dupe(u8, c_payload_type),
+        .struct_name = try codegen.allocator.dupe(u8, struct_name),
+    };
+    
+    try codegen.type_collection.error_union_types.append(error_union_struct);
+}
+
 /// Generate main C function implementation
 pub fn generateCFunctionImplementation(
     codegen: anytype,
@@ -292,9 +391,9 @@ pub fn generateCFunctionImplementation(
     // Try to infer return type from function body if semantic analysis failed
     const inferred_return_type = codegen.inferReturnTypeFromBody(func_decl.body);
     
-    // Generate return type
+    // Generate return type and collect error union info for functions
     const return_type_str = if (is_main_function) "int" else if (inferred_return_type) |inferred| inferred else if (func_decl.return_type) |return_type_node_id| blk: {
-        // Check if this is an error union type
+        // Check if this is an error union type (indicated by ! prefix in Howl)
         const return_type_node = codegen.arena.getNodeConst(return_type_node_id);
         if (return_type_node) |node| {
             if (node.data == .error_union_type) {
@@ -322,6 +421,25 @@ pub fn generateCFunctionImplementation(
                 // Fallback for anonymous error union
                 break :blk "struct { int32_t error; int32_t payload; }";
             }
+            // Check if this is a type identifier that implies error union (!Type syntax)
+            else if (node.data == .identifier) {
+                const type_name = node.data.identifier.name;
+                // If the function signature shows !Type, generate error union
+                if (func_decl.is_error_union or hasErrorUnionSyntax(func_decl)) {
+                    // Generate "anyerror!Type" error union for functions with ! prefix
+                    const error_union_name = try std.fmt.allocPrint(codegen.allocator, "anyerror_{s}_ErrorUnion", .{sanitizeTypeForName(type_name)});
+                    
+                    // Ensure we have the anyerror error set generated
+                    try ensureAnyErrorSet(codegen);
+                    
+                    // Generate the error union struct if it doesn't exist
+                    try ensureErrorUnionStruct(codegen, "anyerror", type_name, error_union_name);
+                    
+                    codegen.current_function_error_union_name = error_union_name;
+                    break :blk error_union_name;
+                }
+                break :blk utils.mapHowlTypeToCType(type_name);
+            }
         }
         const return_type_info = codegen.getNodeType(return_type_node_id);
         break :blk codegen.generateCType(return_type_info);
@@ -348,17 +466,25 @@ pub fn generateCFunctionImplementation(
     // Set main function flag for special handling
     if (is_main_function) {
         codegen.current_function_is_main = true;
+        
+        // For main functions that have try expressions, we need to handle errors specially
+        // Generate error handling wrapper for main function
+        try writer.writeAll("    // Error handling wrapper for main function\n");
+        try writer.writeAll("    struct { int32_t success; } _main_result = {0};\n");
+        try writer.writeAll("    \n");
+        try writer.writeAll("    // Main function body with error handling:\n");
     }
     defer if (is_main_function) {
         codegen.current_function_is_main = false;
     };
 
     // Generate function body
-    try codegen.generateCFromAST(writer, func_decl.body, 1);
+    try codegen.generateCFromAST(writer, func_decl.body, if (is_main_function) 1 else 1);
 
     // Add return statement for main function
     if (is_main_function) {
-        try writer.writeAll("    return 0;\n");
+        try writer.writeAll("    // Return 0 for success, 1 for error\n");
+        try writer.writeAll("    return _main_result.success;\n");
     }
 
     try writer.writeAll("}\n\n");

@@ -1,5 +1,0 @@
-pub main :: fn() !void {
-    // This should cause a parsing error if $ isn't handled
-    bad_syntax :: $missing_bracket
-    return
-}

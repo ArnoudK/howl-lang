@@ -1,0 +1,7 @@
+// Test multiple print calls
+main :: fn () !void {
+    std.debug.print("First message\n")
+    std.debug.print("Second message\n") 
+    x :: 42
+    std.debug.print("Third message\n")
+}

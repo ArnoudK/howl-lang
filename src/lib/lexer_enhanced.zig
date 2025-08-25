@@ -76,23 +76,6 @@ pub const Lexer = struct {
     }
 };
 
-/// Legacy error type for backward compatibility
-pub const ErrorType = enum {
-    CompileError,
-    LexerError,
-    ParserError,
-    SemanticError,
-    CompileExecutionError,
-};
-
-/// Legacy error struct for backward compatibility
-pub const CompileError = struct {
-    file_path: []const u8,
-    message: []const u8,
-    pos: usize,
-    error_type: ErrorType,
-};
-
 pub const keywords = std.StaticStringMap(Token).initComptime(.{
     .{ "pub", Token{ .Pub = .{ .pos = 0 } } },
     .{ "for", Token{ .For = .{ .pos = 0 } } },
@@ -548,6 +531,10 @@ pub const LexerFile = struct {
                     try self.tokens.append(Token{ .QuestionMark = .{ .pos = self.tokenize_state.current_pos } });
                     self.advance();
                 },
+                '^' => {
+                    try self.tokens.append(Token{ .Caret = .{ .pos = self.tokenize_state.current_pos } });
+                    self.advance();
+                },
                 '@' => {
                     // Handle at sign (used for attributes or special tokens)
                     // Check if this is @import
@@ -627,7 +614,8 @@ pub const LexerFile = struct {
                     if ((self.tokenize_state.next_char >= 'a' and self.tokenize_state.next_char <= 'z') or
                         (self.tokenize_state.next_char >= 'A' and self.tokenize_state.next_char <= 'Z') or
                         (self.tokenize_state.next_char >= '0' and self.tokenize_state.next_char <= '9') or
-                        self.tokenize_state.next_char == '_') {
+                        self.tokenize_state.next_char == '_')
+                    {
                         // This is part of an identifier, parse as identifier
                         try self.parseIdentifierOrKeyword();
                     } else {

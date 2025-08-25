@@ -1124,6 +1124,15 @@ pub const Formatter = struct {
                 try self.writeString("?");
                 try self.formatASTNodeInternal(optional_type.inner_type, arena, false);
             },
+            .pointer_type_expr => |pointer_type| {
+                try self.writeString("^");
+                try self.formatASTNodeInternal(pointer_type.inner_type, arena, false);
+            },
+            .error_union_type_expr => |error_union_type| {
+                try self.formatASTNodeInternal(error_union_type.error_set, arena, false);
+                try self.writeString("!");
+                try self.formatASTNodeInternal(error_union_type.payload_type, arena, false);
+            },
             .comptime_type_call => |comptime_call| {
                 try self.formatASTNodeInternal(comptime_call.function, arena, false);
                 try self.writeString("(");

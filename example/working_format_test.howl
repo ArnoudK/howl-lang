@@ -1,0 +1,2 @@
+// Working example with literals to understand the pattern
+std.debug.print("Values: {} and {}\n", 42, 24)

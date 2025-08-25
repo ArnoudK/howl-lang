@@ -1,5 +1,0 @@
-// Simple test for $ prefix
-fn main() {
-    // GC array with $ prefix
-    numbers: [3]i32 = $[1, 2, 3];
-}

@@ -1,9 +1,0 @@
-// Test function declaration only
-
-getOpt :: fn () ?i32 {
-    return 42
-}
-
-main :: fn () i32 {
-    return 0
-}

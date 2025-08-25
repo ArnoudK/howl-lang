@@ -1,0 +1,6 @@
+// Test Zig-style std.debug.print formatting
+main :: fn () !void {
+    result :: 42
+    name :: "Howl"
+    std.debug.print("Result: {}, Language: {}\n", result, name)
+}

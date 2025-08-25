@@ -1,0 +1,4 @@
+// Test program with hardcoded std usage  
+main :: fn () !void {
+    std.debug.print("Hello World\n", .{})
+}

@@ -20,6 +20,13 @@ pub const CompileProcess = @import("lib/compile_process.zig");
 pub const Lsp = @import("lib/lsp.zig");
 pub const LspServer = @import("lib/lsp_server.zig");
 
+// Export Sea-of-Nodes IR modules
+pub const SeaOfNodes = @import("lib/sea_of_nodes_ir.zig");
+pub const AstToIr = @import("lib/ast_to_ir.zig");
+pub const IrOptimizer = @import("lib/ir_optimizer.zig");
+pub const JsIrCodegen = @import("lib/codegen_js_ir.zig");
+pub const CIrCodegen = @import("lib/codegen_c_ir.zig");
+
 // Export legacy modules for backward compatibility
 pub const LexerEnhanced = @import("lib/lexer_enhanced.zig");
 pub const SemanticErrors = @import("lib/semantic_errors.zig");

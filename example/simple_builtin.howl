@@ -1,6 +1,6 @@
 std :: @import("std")
 
-pub main :: fn() !void {
+pub main :: fn () !void {
     // Simple builtin test
     size :: @sizeOf(i32)
     std.debug.print("Size: {}", .{size})

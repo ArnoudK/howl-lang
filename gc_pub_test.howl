@@ -1,6 +1,0 @@
-pub main :: fn() !void {
-    // Test GC arrays
-    gc_array :: $[1, 2, 3]
-    normal_array :: [10, 20, 30]
-    return
-}

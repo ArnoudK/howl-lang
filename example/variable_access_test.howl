@@ -1,0 +1,3 @@
+// Test variable access
+result :: 42
+other :: result

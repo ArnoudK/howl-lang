@@ -1,6 +1,0 @@
-// Even simpler test - direct return
-
-main :: fn () i32 {
-    value: ?i32 = 42
-    return 0
-}

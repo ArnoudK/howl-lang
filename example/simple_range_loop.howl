@@ -1,4 +1,4 @@
-fn main() {
+main :: fn () {
     for i in 0..5 {
         print(i);
     }
