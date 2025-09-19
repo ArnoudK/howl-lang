@@ -1,10 +1,5 @@
 const std = @import("std");
 const SeaOfNodes = @import("sea_of_nodes_ir.zig").SeaOfNodes;
-
-// Constants for type names to avoid magic strings
-const PRIMITIVE_TYPES = [_][]const u8{ "i64", "i32", "f64", "f32", "bool" };
-const DEFAULT_TYPE = "i64";
-const KNOWN_STRUCT_TYPE = "MyStruct";
 const IrNode = @import("sea_of_nodes_ir.zig").IrNode;
 const IrNodeId = @import("sea_of_nodes_ir.zig").IrNodeId;
 const IrOp = @import("sea_of_nodes_ir.zig").IrOp;
@@ -14,6 +9,15 @@ const ErrorSystem = @import("error_system.zig");
 const ast = @import("ast.zig");
 const SemanticAnalyzer = @import("semantic_analyzer.zig").SemanticAnalyzer;
 const CompileError = @import("CompileError.zig").CompileError;
+
+// Type system constants
+const TypeNames = struct {
+    pub const default = "i64";
+    pub const void_ptr = "void*";
+    pub const null_value = "NULL";
+    pub const known_struct = "MyStruct";
+    pub const primitives = [_][]const u8{ "i64", "i32", "f64", "f32", "bool" };
+};
 
 // ============================================================================
 // C IR Code Generator - Sea-of-Nodes IR to C Translation
@@ -306,104 +310,36 @@ const CIrCodegen = struct {
                 }
                 try self.node_values.put(node_id, var_name);
             },
-            .sub => {
-                if (node.inputs.len >= 2) {
-                    const left = self.node_values.get(node.inputs[0]) orelse "0";
-                    const right = self.node_values.get(node.inputs[1]) orelse "0";
-                    const var_name = try self.generateVariableName();
-                    try self.writeLineFormatted("i64 {s} = {s} - {s};", .{ var_name, left, right });
-                    try self.node_values.put(node_id, var_name);
-                }
-            },
-            .add => {
-                if (node.inputs.len >= 2) {
-                    const left = self.node_values.get(node.inputs[0]) orelse "0";
-                    const right = self.node_values.get(node.inputs[1]) orelse "0";
-                    const var_name = try self.generateVariableName();
-                    try self.writeLineFormatted("i64 {s} = {s} + {s};", .{ var_name, left, right });
-                    try self.node_values.put(node_id, var_name);
-                }
-            },
-            .lt => {
-                if (node.inputs.len >= 2) {
-                    const left = self.node_values.get(node.inputs[0]) orelse "0";
-                    const right = self.node_values.get(node.inputs[1]) orelse "0";
-                    const var_name = try self.generateVariableName();
-                    try self.writeLineFormatted("i64 {s} = {s} < {s};", .{ var_name, left, right });
-                    try self.node_values.put(node_id, var_name);
-                }
-            },
-            .div => {
-                if (node.inputs.len >= 2) {
-                    const left = self.node_values.get(node.inputs[0]) orelse "0";
-                    const right = self.node_values.get(node.inputs[1]) orelse "0";
-                    const var_name = try self.generateVariableName();
-                    try self.writeLineFormatted("i64 {s} = {s} / {s};", .{ var_name, left, right });
-                    try self.node_values.put(node_id, var_name);
-                }
-            },
-            .eq => {
-                if (node.inputs.len >= 2) {
-                    const left = self.node_values.get(node.inputs[0]) orelse "0";
-                    const right = self.node_values.get(node.inputs[1]) orelse "0";
-                    const var_name = try self.generateVariableName();
-                    try self.writeLineFormatted("i64 {s} = {s} == {s};", .{ var_name, left, right });
-                    try self.node_values.put(node_id, var_name);
-                }
-            },
-            .logical_and => {
-                if (node.inputs.len >= 2) {
-                    const left = self.node_values.get(node.inputs[0]) orelse "0";
-                    const right = self.node_values.get(node.inputs[1]) orelse "0";
-                    const var_name = try self.generateVariableName();
-                    try self.writeLineFormatted("i64 {s} = {s} && {s};", .{ var_name, left, right });
-                    try self.node_values.put(node_id, var_name);
-                }
-            },
+            .sub => try self.generateBinaryOp(node_id, node, "-"),
+            .add => try self.generateBinaryOp(node_id, node, "+"),
+            .lt => try self.generateBinaryOp(node_id, node, "<"),
+            .div => try self.generateBinaryOp(node_id, node, "/"),
+            .eq => try self.generateBinaryOp(node_id, node, "=="),
+            .logical_and => try self.generateBinaryOp(node_id, node, "&&"),
             .store => {
-                // Store operation: array[index] = value
                 if (node.inputs.len >= 3) {
-                    const array_ptr = self.node_values.get(node.inputs[0]) orelse "NULL";
-                    const index = self.node_values.get(node.inputs[1]) orelse "0";
-                    const value = self.node_values.get(node.inputs[2]) orelse "0";
+                    const array_ptr = self.getNodeValue(node.inputs[0]);
+                    const index = self.getNodeValue(node.inputs[1]);
+                    const value = self.getNodeValue(node.inputs[2]);
+                    const elem_type = self.getArrayElementType(array_ptr);
 
-                    // Determine element type from tracking map (defaults to i64)
-                    var elem_type: []const u8 = "i64";
-                    if (self.array_element_types.get(array_ptr)) |et| {
-                        elem_type = et;
-                    }
-
-                    // Generate typed array store: ((<elem_type>*)array_ptr)[index] = value
                     try self.writeLineFormatted("(({s}*){s})[{s}] = {s};", .{ elem_type, array_ptr, index, value });
-
-                    // Return the array pointer for chaining
                     try self.node_values.put(node_id, array_ptr);
                 } else {
-                    const var_name = try self.generateVariableName();
-                    try self.writeLineFormatted("i64 {s} = 0; /* malformed store */", .{var_name});
-                    try self.node_values.put(node_id, var_name);
+                    try self.generateMalformedError(node_id, "store");
                 }
             },
             .load => {
-                // Load operation: array[index]
                 if (node.inputs.len >= 2) {
-                    const array_ptr = self.node_values.get(node.inputs[0]) orelse "NULL";
-                    const index = self.node_values.get(node.inputs[1]) orelse "0";
+                    const array_ptr = self.getNodeValue(node.inputs[0]);
+                    const index = self.getNodeValue(node.inputs[1]);
                     const var_name = try self.generateVariableName();
+                    const elem_type = self.getArrayElementType(array_ptr);
 
-                    // Determine element type (default i64)
-                    var elem_type: []const u8 = "i64";
-                    if (self.array_element_types.get(array_ptr)) |et| {
-                        elem_type = et;
-                    }
-
-                    // Generate array load with correct element type
                     try self.writeLineFormatted("{s} {s} = (({s}*){s})[{s}];", .{ elem_type, var_name, elem_type, array_ptr, index });
                     try self.node_values.put(node_id, var_name);
                 } else {
-                    const var_name = try self.generateVariableName();
-                    try self.writeLineFormatted("i64 {s} = 0; /* malformed load */", .{var_name});
-                    try self.node_values.put(node_id, var_name);
+                    try self.generateMalformedError(node_id, "load");
                 }
             },
             .select => {
@@ -526,114 +462,44 @@ const CIrCodegen = struct {
                 }
             },
             .heap_alloc => {
-                // Handle heap allocation: malloc(sizeof(StructType)) or malloc(sizeof(ElementType) * size)
-                if (node.inputs.len >= 1) {
-                    const type_node_id = node.inputs[0];
+                const var_name = try self.generateVariableName();
+                const var_name_copy = try self.allocator.dupe(u8, var_name);
+                // Note: var_name_copy will be freed by hash map deinit, don't use defer here
 
-                    // Get type name with error handling
-                    const type_name = self.getActualStringContent(ir, type_node_id) catch {
-                        // If we can't get the type name, generate a fallback allocation
-                        const var_name = try self.generateVariableName();
-                        try self.writeLineFormatted("void* {s} = malloc(sizeof(void*)); /* failed to resolve type */", .{var_name});
-                        try self.node_values.put(node_id, var_name);
-                        const var_name_copy = try self.allocator.dupe(u8, var_name);
-                        try self.pointer_variables.put(var_name_copy, {});
-                        return;
-                    };
-                    defer self.allocator.free(type_name);
+                // Mark as pointer for cleanup
+                try self.pointer_variables.put(var_name_copy, {});
 
-                    const var_name = try self.generateVariableName();
-
-                    // Resolve the allocation size from IR inputs
-                    const size_value = self.resolveAllocationSize(ir, node) catch {
-                        // If we can't resolve size, default to 1
-                        const fallback_size = try self.allocator.dupe(u8, "1");
-                        defer self.allocator.free(fallback_size);
-
-                        // Generate allocation with fallback size
-                        if (self.isPrimitiveArrayType(type_name)) {
-                            try self.writeLineFormatted("{s}* {s} = malloc(sizeof({s}) * {s}); /* size resolution failed, using default */", .{ type_name, var_name, type_name, fallback_size });
-                        } else if (type_name.len > 0) {
-                            if (std.mem.eql(u8, type_name, KNOWN_STRUCT_TYPE)) {
-                                try self.writeLineFormatted("{s}* {s} = malloc(sizeof({s}) * {s}); /* size resolution failed, using default */", .{ KNOWN_STRUCT_TYPE, var_name, KNOWN_STRUCT_TYPE, fallback_size });
-                            } else {
-                                try self.writeLineFormatted("struct {s}* {s} = malloc(sizeof(struct {s}) * {s}); /* size resolution failed, using default */", .{ type_name, var_name, type_name, fallback_size });
-                            }
-                        } else {
-                            try self.writeLineFormatted("{s}* {s} = malloc(sizeof({s}) * {s}); /* unknown type and size resolution failed */", .{ DEFAULT_TYPE, var_name, DEFAULT_TYPE, fallback_size });
-                        }
-
-                        try self.node_values.put(node_id, var_name);
-                        const var_name_copy = try self.allocator.dupe(u8, var_name);
-                        try self.pointer_variables.put(var_name_copy, {});
-                        return;
-                    };
-                    defer self.allocator.free(size_value);
-
-                    // Generate appropriate malloc call based on type
-                    if (self.isPrimitiveArrayType(type_name)) {
-                        // For primitive arrays, use the element type directly
-                        try self.writeLineFormatted("{s}* {s} = malloc(sizeof({s}) * {s});", .{ type_name, var_name, type_name, size_value });
-                    } else {
-                        // For structs or other types, treat as array of that type
-                        if (type_name.len > 0) {
-                            // Check if it's a known struct type
-                            if (std.mem.eql(u8, type_name, KNOWN_STRUCT_TYPE)) {
-                                try self.writeLineFormatted("{s}* {s} = malloc(sizeof({s}) * {s});", .{ KNOWN_STRUCT_TYPE, var_name, KNOWN_STRUCT_TYPE, size_value });
-                            } else {
-                                try self.writeLineFormatted("struct {s}* {s} = malloc(sizeof(struct {s}) * {s});", .{ type_name, var_name, type_name, size_value });
-                            }
-                        } else {
-                            // Fallback for empty type name - assume default type array
-                            try self.writeLineFormatted("{s}* {s} = malloc(sizeof({s}) * {s}); /* unknown type, defaulting to {s} array */", .{ DEFAULT_TYPE, var_name, DEFAULT_TYPE, size_value, DEFAULT_TYPE });
-                        }
-                    }
-
+                if (node.inputs.len < 1) {
+                    try self.writeLineFormatted("{s} {s} = malloc(sizeof({s})); /* malformed heap_alloc */", .{ TypeNames.void_ptr, var_name, TypeNames.void_ptr });
                     try self.node_values.put(node_id, var_name);
-
-                    // Mark this variable as a pointer
-                    const var_name_copy = try self.allocator.dupe(u8, var_name);
-                    try self.pointer_variables.put(var_name_copy, {});
-
-                    // Record element type for arrays to enable proper array operations
-                    if (self.isPrimitiveArrayType(type_name)) {
-                        const elem_type_copy = try self.allocator.dupe(u8, type_name);
-                        try self.array_element_types.put(var_name_copy, elem_type_copy);
-                    } else if (type_name.len > 0) {
-                        // For struct types, record the struct type as element type
-                        if (std.mem.eql(u8, type_name, KNOWN_STRUCT_TYPE)) {
-                            const elem_type_copy = try self.allocator.dupe(u8, KNOWN_STRUCT_TYPE);
-                            try self.array_element_types.put(var_name_copy, elem_type_copy);
-                        } else {
-                            const elem_type_copy = try std.fmt.allocPrint(self.allocator, "struct {s}", .{type_name});
-                            try self.array_element_types.put(var_name_copy, elem_type_copy);
-                        }
-                    }
-                } else {
-                    const var_name = try self.generateVariableName();
-                    try self.writeLineFormatted("void* {s} = malloc(sizeof(void*)); /* malformed heap_alloc */", .{var_name});
-                    try self.node_values.put(node_id, var_name);
+                    return;
                 }
+
+                const type_name = self.getActualStringContent(ir, node.inputs[0]) catch {
+                    try self.writeLineFormatted("{s} {s} = malloc(sizeof({s})); /* failed to resolve type */", .{ TypeNames.void_ptr, var_name, TypeNames.void_ptr });
+                    try self.node_values.put(node_id, var_name);
+                    return;
+                };
+                defer self.allocator.free(type_name);
+
+                const size_value = self.resolveAllocationSize(ir, node) catch "1";
+                defer if (size_value.ptr != "1".ptr) self.allocator.free(size_value);
+
+                try self.generateMallocCall(var_name, type_name, size_value);
+                try self.recordArrayElementType(var_name_copy, type_name);
+                try self.node_values.put(node_id, var_name);
             },
             .struct_init => {
-                // Handle struct field initialization: ptr->field = value
                 if (node.inputs.len >= 3) {
-                    const object = self.node_values.get(node.inputs[0]) orelse "NULL";
-                    const field_name_node_id = node.inputs[1];
-                    const value = self.node_values.get(node.inputs[2]) orelse "0";
+                    const object = self.getNodeValue(node.inputs[0]);
+                    const field_name = try self.getFieldName(ir, node.inputs[1]);
+                    defer if (field_name.ptr != "unknown_field".ptr) self.allocator.free(field_name);
+                    const value = self.getNodeValue(node.inputs[2]);
 
-                    const field_name = try self.getActualStringContent(ir, field_name_node_id);
-                    defer self.allocator.free(field_name);
-
-                    // Generate the field assignment - assume object is a pointer
                     try self.writeLineFormatted("{s}->{s} = {s};", .{ object, field_name, value });
-
-                    // Return the same object pointer for chaining
                     try self.node_values.put(node_id, try self.allocator.dupe(u8, object));
                 } else {
-                    const var_name = try self.generateVariableName();
-                    try self.writeLineFormatted("i64 {s} = 0; /* malformed struct_init */", .{var_name});
-                    try self.node_values.put(node_id, var_name);
+                    try self.generateMalformedError(node_id, "struct_init");
                 }
             },
             .struct_literal => {
@@ -663,32 +529,22 @@ const CIrCodegen = struct {
                 try self.node_values.put(node_id, var_name);
             },
             .member_access => {
-                // Handle member access: object.field or object->field
                 if (node.inputs.len >= 2) {
-                    const object = self.node_values.get(node.inputs[0]) orelse "NULL";
-                    const field_name_node_id = node.inputs[1];
-
-                    const field_name = try self.getActualStringContent(ir, field_name_node_id);
-                    defer self.allocator.free(field_name);
+                    const object = self.getNodeValue(node.inputs[0]);
+                    const field_name = try self.getFieldName(ir, node.inputs[1]);
+                    defer if (field_name.ptr != "unknown_field".ptr) self.allocator.free(field_name);
 
                     const var_name = try self.generateVariableName();
+                    const result_type = if (node.output_type) |t|
+                        try self.getTypeString(t)
+                    else
+                        TypeNames.default;
 
-                    // Determine result type from node.output_type if available
-                    var result_type: []const u8 = "i64";
-                    if (node.output_type) |t| {
-                        result_type = try self.getTypeString(t);
-                    }
-
-                    if (self.pointer_variables.contains(object)) {
-                        try self.writeLineFormatted("{s} {s} = {s}->{s};", .{ result_type, var_name, object, field_name });
-                    } else {
-                        try self.writeLineFormatted("{s} {s} = {s}.{s};", .{ result_type, var_name, object, field_name });
-                    }
+                    const access_op = if (self.pointer_variables.contains(object)) "->" else ".";
+                    try self.writeLineFormatted("{s} {s} = {s}{s}{s};", .{ result_type, var_name, object, access_op, field_name });
                     try self.node_values.put(node_id, var_name);
                 } else {
-                    const var_name = try self.generateVariableName();
-                    try self.writeLineFormatted("i64 {s} = 0; /* malformed member_access */", .{var_name});
-                    try self.node_values.put(node_id, var_name);
+                    try self.generateMalformedError(node_id, "member_access");
                 }
             },
             .return_ => {
@@ -716,14 +572,7 @@ const CIrCodegen = struct {
                             if (self.current_function_returns_error_union) {
                                 const error_union_type = self.getCurrentErrorUnionTypeName();
                                 if (t_is_union) {
-                                    var return_tval = tval;
-                                    // Special handling for main function - convert empty struct to 0
-                                    if (std.mem.eql(u8, self.current_function_name, "main") and
-                                        std.mem.eql(u8, return_tval, "/* empty struct */"))
-                                    {
-                                        return_tval = "0";
-                                    }
-                                    try self.writeLineFormatted("return {s};", .{return_tval});
+                                    try self.writeLineFormatted("return {s};", .{self.normalizeMainReturnValue(tval)});
                                 } else if (t_is_error_set) {
                                     {
                                         const invalid_init = try self.getErrorUnionPayloadInvalid(self.current_function_return_type.?);
@@ -734,14 +583,7 @@ const CIrCodegen = struct {
                                     try self.writeLineFormatted("return ({s}){{ .error_code = 0, .payload = {s} }};", .{ error_union_type, wrapped_payload });
                                 }
                             } else {
-                                var return_tval = tval;
-                                // Special handling for main function - convert empty struct to 0
-                                if (std.mem.eql(u8, self.current_function_name, "main") and
-                                    std.mem.eql(u8, return_tval, "/* empty struct */"))
-                                {
-                                    return_tval = "0";
-                                }
-                                try self.writeLineFormatted("return {s};", .{return_tval});
+                                try self.writeLineFormatted("return {s};", .{self.normalizeMainReturnValue(tval)});
                             }
                             self.dedent();
                             try self.writeLineFormatted("}} else {{", .{});
@@ -775,14 +617,7 @@ const CIrCodegen = struct {
                                         try self.writeLineFormatted("return ({s}){{ .error_code = {s}, .payload = {s} }};", .{ error_union_type, fval, invalid_init_f });
                                     }
                                 } else {
-                                    var final_fval = fval;
-                                    // Special handling for main function - convert empty struct to 0
-                                    if (std.mem.eql(u8, self.current_function_name, "main") and
-                                        std.mem.eql(u8, final_fval, "/* empty struct */"))
-                                    {
-                                        final_fval = "0";
-                                    }
-                                    const wrapped_payload = try self.getWrappedPayloadForReturn(final_fval, false);
+                                    const wrapped_payload = try self.getWrappedPayloadForReturn(self.normalizeMainReturnValue(fval), false);
                                     try self.writeLineFormatted("return ({s}){{ .error_code = 0, .payload = {s} }};", .{ error_union_type, wrapped_payload });
                                 }
                             } else {
@@ -828,14 +663,7 @@ const CIrCodegen = struct {
                                             try self.writeLineFormatted("return ({s}){{ .error_code = {s}, .payload = {s} }};", .{ error_union_type, return_val, invalid_ret_init });
                                         }
                                     } else {
-                                        var final_return_val = return_val;
-                                        // Special handling for main function - convert empty struct to 0
-                                        if (std.mem.eql(u8, self.current_function_name, "main") and
-                                            std.mem.eql(u8, final_return_val, "/* empty struct */"))
-                                        {
-                                            final_return_val = "0";
-                                        }
-                                        const wrapped_payload = try self.getWrappedPayloadForReturn(final_return_val, false);
+                                        const wrapped_payload = try self.getWrappedPayloadForReturn(self.normalizeMainReturnValue(return_val), false);
                                         try self.writeLineFormatted("return ({s}){{ .error_code = 0, .payload = {s} }};", .{ error_union_type, wrapped_payload });
                                     }
                                 }
@@ -851,13 +679,7 @@ const CIrCodegen = struct {
                             try self.writeLineFormatted("return {s};", .{return_val});
                         }
                     } else {
-                        var return_val = self.node_values.get(ret_id) orelse "0";
-                        // Special handling for main function - convert empty struct to 0
-                        if (std.mem.eql(u8, self.current_function_name, "main") and
-                            std.mem.eql(u8, return_val, "/* empty struct */"))
-                        {
-                            return_val = "0";
-                        }
+                        const return_val = self.normalizeMainReturnValue(self.getNodeValue(ret_id));
                         try self.writeLineFormatted("return {s};", .{return_val});
                     }
                 }
@@ -1264,12 +1086,80 @@ const CIrCodegen = struct {
 
     /// Check if a type name represents a primitive numeric type that can be used in arrays
     fn isPrimitiveArrayType(_: *CIrCodegen, type_name: []const u8) bool {
-        for (PRIMITIVE_TYPES) |primitive_type| {
+        for (TypeNames.primitives) |primitive_type| {
             if (std.mem.eql(u8, type_name, primitive_type)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /// Generate a malloc call for the given type and size
+    fn generateMallocCall(self: *CIrCodegen, var_name: []const u8, type_name: []const u8, size_value: []const u8) CompileError!void {
+        if (self.isPrimitiveArrayType(type_name)) {
+            try self.writeLineFormatted("{s}* {s} = malloc(sizeof({s}) * {s});", .{ type_name, var_name, type_name, size_value });
+        } else if (type_name.len > 0) {
+            // For struct types, use the typedef name directly since generateTypeDefinitions creates typedefs
+            try self.writeLineFormatted("{s}* {s} = malloc(sizeof({s}) * {s});", .{ type_name, var_name, type_name, size_value });
+        } else {
+            try self.writeLineFormatted("{s}* {s} = malloc(sizeof({s}) * {s}); /* unknown type */", .{ TypeNames.default, var_name, TypeNames.default, size_value });
+        }
+    }
+
+    /// Record the element type for array operations
+    fn recordArrayElementType(self: *CIrCodegen, var_name: []const u8, type_name: []const u8) CompileError!void {
+        if (self.isPrimitiveArrayType(type_name)) {
+            const elem_type_copy = try self.allocator.dupe(u8, type_name);
+            try self.array_element_types.put(var_name, elem_type_copy);
+        } else if (type_name.len > 0) {
+            // For struct types, use the typedef name directly since generateTypeDefinitions creates typedefs
+            const elem_type_copy = try self.allocator.dupe(u8, type_name);
+            try self.array_element_types.put(var_name, elem_type_copy);
+        }
+    }
+
+    /// Get a safe value from node_values map with fallback
+    fn getNodeValue(self: *CIrCodegen, node_id: IrNodeId) []const u8 {
+        return self.node_values.get(node_id) orelse "0";
+    }
+
+    /// Generate a malformed node error with consistent format
+    fn generateMalformedError(self: *CIrCodegen, node_id: IrNodeId, operation: []const u8) CompileError!void {
+        const var_name = try self.generateVariableName();
+        try self.writeLineFormatted("i64 {s} = 0; /* malformed {s} */", .{ var_name, operation });
+        try self.node_values.put(node_id, var_name);
+    }
+
+    /// Get field name from IR node with error handling
+    fn getFieldName(self: *CIrCodegen, ir: *const SeaOfNodes, field_node_id: IrNodeId) CompileError![]const u8 {
+        return self.getActualStringContent(ir, field_node_id) catch "unknown_field";
+    }
+
+    /// Convert empty struct values to 0 for main function returns
+    fn normalizeMainReturnValue(self: *CIrCodegen, value: []const u8) []const u8 {
+        return if (std.mem.eql(u8, self.current_function_name, "main") and
+            std.mem.eql(u8, value, "/* empty struct */"))
+            "0"
+        else
+            value;
+    }
+
+    /// Get the element type for an array variable
+    fn getArrayElementType(self: *CIrCodegen, array_var: []const u8) []const u8 {
+        return self.array_element_types.get(array_var) orelse TypeNames.default;
+    }
+
+    /// Generate code for a binary operation
+    fn generateBinaryOp(self: *CIrCodegen, node_id: IrNodeId, node: *const IrNode, op: []const u8) CompileError!void {
+        if (node.inputs.len >= 2) {
+            const left = self.getNodeValue(node.inputs[0]);
+            const right = self.getNodeValue(node.inputs[1]);
+            const var_name = try self.generateVariableName();
+            try self.writeLineFormatted("i64 {s} = {s} {s} {s};", .{ var_name, left, op, right });
+            try self.node_values.put(node_id, var_name);
+        } else {
+            try self.generateMalformedError(node_id, "binary_op");
+        }
     }
 
     /// Get the C type string from a type annotation node
@@ -2297,8 +2187,13 @@ fn compileCFile(allocator: std.mem.Allocator, source_file: []const u8, output_na
 
     if (result.term.Exited != 0) {
         std.debug.print("C compilation failed with exit code: {d}\n", .{result.term.Exited});
+        std.debug.print("Command: clang -std=c99 -Wall -Wextra -O2 -o {s} {s}\n", .{ output_name, source_file });
         if (result.stderr.len > 0) {
-            std.debug.print("Error output:\n{s}\n", .{result.stderr});
+            std.debug.print("Compiler error output:\n{s}\n", .{result.stderr});
+        } else if (result.stdout.len > 0) {
+            std.debug.print("Compiler output:\n{s}\n", .{result.stdout});
+        } else {
+            std.debug.print("No additional error details available from compiler.\n", .{});
         }
         return error.CCompilationFailed;
     }

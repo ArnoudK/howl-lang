@@ -325,8 +325,6 @@ pub const Compiler = struct {
     }
 
     fn generateCExecutableFromIr(self: *Compiler, ir: *SeaOfNodes, analyzer: *SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) CompileError![]const u8 {
-        _ = errors; // TODO: Use this for codegen error reporting
-
         std.debug.print("Generating C code from Sea-of-Nodes IR...\n", .{});
 
         // Use the new IR-based C code generator with compilation
@@ -338,10 +336,18 @@ pub const Compiler = struct {
             switch (err) {
                 error.OutOfMemory => return err,
                 error.CCompilationFailed => {
-                    // C compilation failed, but still return the generated C code
-                    return CIrCodegen.generateCFromIr(self.allocator, ir, analyzer) catch {
-                        return try self.allocator.dupe(u8, "/* C IR code generation failed */");
-                    };
+                    // C compilation failed - record the error and stop compilation
+                    std.debug.print("C compilation failed. Stopping compilation process.\n", .{});
+                    // Record the error in the error system to ensure compilation is marked as failed
+                    const span = ErrorSystem.SourceSpan.single(self.options.file_path, 0, 0, 0);
+                    _ = try errors.createAndAddError(
+                        .target_specific_error,
+                        .codegen,
+                        .fatal,
+                        "C compilation failed - see error output above",
+                        span,
+                    );
+                    return err;
                 },
                 else => {
                     // TODO: Report codegen errors properly
