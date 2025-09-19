@@ -5,35 +5,35 @@
 std :: @import("std")
 
 
-MyError :: error { 
+MyErrorA :: error { 
     DivisionByZero,
     UnknownError,
     InvalidValue,
 }
 
-MyEnum :: enum { 
+MyEnumB :: enum { 
     Value1,
     Value2,
     Value3,
 } 
 
-MyStruct :: struct {
+MyStructB :: struct {
     field1: i32,
     field2: f64,
 }
 
-createMyStruct :: fn (a: i32, b: f64) MyError!MyStruct {
+createMyStructB :: fn (a: i32, b: f64) MyErrorA!MyStructB {
     match a {
     |   < 0 => {
-                return MyError.InvalidValue
+                return MyErrorA.InvalidValue
             }
     |    _   => {
-                return MyStruct{ .field1 = a, .field2 = b }
+                return MyStructB{ .field1 = a, .field2 = b }
            }
     }
 }
 
-createMyStructMaybe :: fn (i: i32, b: f64, c : bool) MyError!?MyStruct {
+createMyStructBMaybe :: fn (i: i32, b: f64, c : bool) MyErrorA!?MyStructB {
     match c {
     | true => {
         return None
@@ -41,18 +41,18 @@ createMyStructMaybe :: fn (i: i32, b: f64, c : bool) MyError!?MyStruct {
     | false => {
         match i {
         | < 0 => {
-                return MyError.InvalidValue
+                return  .InvalidValue
                 }
         | _ => {
-                return MyStruct{ .field1 = i, .field2 = b }
+                return MyStructB{ .field1 = i, .field2 = b }
                 }
             }
         }
     }
 }
 
-divide :: fn (a: i32, b: i32) MyError!i32 {
-    return if (b == 0) MyError.DivisionByZero else (a / b)
+divide :: fn (a: i32, b: i32) MyErrorA!i32 {
+    return if (b == 0) MyErrorA.DivisionByZero else (a / b)
 }
 
 main :: fn () !void {
@@ -61,12 +61,12 @@ main :: fn () !void {
     result :: try divide(10, 2)
     std.debug.print("Result of division: {}\n", .{result}) // Result of division: 5
 
-    std.debug.print("Enum value: {}\n", .{MyEnum.Value1}) // Enum value: 0
+    std.debug.print("Enum value: {}\n", .{MyEnumB.Value1}) // Enum value: 0
 
-    my_struct :: try createMyStruct(42, 3.14)
+    my_struct :: try createMyStructB(42, 3.14)
     std.debug.print("MyStruct: {{field1: {}, field2: {}}}\n", .{my_struct.field1, my_struct.field2}) // MyStruct: {{field1: 42, field2: 3.140000000000000}}
 
-    my_struct2 :: try createMyStruct(-1, 2.71) // This will exit the program with: "Error: 3" 
+    my_struct2 :: try createMyStructB(-1, 2.71) // This will exit the program with: "Error: 3" 
     std.debug.print("MyStruct2: {{field1: {}, field2: {}}}\n", .{my_struct2.field1, my_struct2.field2})
 
     // GC array example - demonstrates $ prefix for heap allocation
@@ -76,8 +76,8 @@ main :: fn () !void {
 
     // GC struct array example - demonstrates $ prefix with struct initialization  
     people :: $[
-        MyStruct{ .field1 = 1, .field2 = 1.1 },
-        MyStruct{ .field1 = 2, .field2 = 2.2 },
+        MyStructB{ .field1 = 1, .field2 = 1.1 },
+        MyStructB{ .field1 = 2, .field2 = 2.2 },
     ]
     first_person :: people[0]
     std.debug.print("GC Struct Array - First person field1: {}\n", .{first_person.field1})

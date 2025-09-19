@@ -432,6 +432,16 @@ pub const SeaOfNodes = struct {
         return node_id;
     }
 
+    /// Create a namespace node
+    pub fn createNamespace(self: *SeaOfNodes, name: []const u8) !IrNodeId {
+        const node_id = try self.createNode(.constant, &.{}, ast.SourceLoc.invalid());
+        if (self.getNodeMut(node_id)) |node| {
+            // Use a string constant to represent the namespace
+            node.data = IrNodeData{ .constant = IrConstant{ .string = try self.allocator.dupe(u8, name) } };
+        }
+        return node_id;
+    }
+
     /// Create a parameter node
     pub fn createParameter(self: *SeaOfNodes, index: u32, name: []const u8, param_type: ast.Type, source_loc: ast.SourceLoc) !IrNodeId {
         const node_id = try self.createNode(.parameter, &.{}, source_loc);

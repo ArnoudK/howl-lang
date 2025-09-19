@@ -859,8 +859,11 @@ pub const Parser = struct {
             return ast.createTryExpr(self.arena, source_loc, expr);
         }
 
-        // Handle @import specifically
+        // Handle @import as a builtin function call
         if (self.match(&[_]std.meta.Tag(Token){.Import})) {
+            // Create an identifier node for "@import"
+            const import_ident = try ast.createIdentifier(self.arena, source_loc, "@import");
+
             // Skip whitespace after @import
             while (self.check(.Whitespace)) {
                 _ = self.advance();
@@ -874,9 +877,8 @@ pub const Parser = struct {
                 _ = self.advance();
             }
 
-            // Expect string literal for the module path
-            const module_path_token = try self.consume(.StringLiteral, .unexpected_token, "Expected string literal for module path");
-            const module_path = if (module_path_token == .StringLiteral) module_path_token.StringLiteral.value else "error";
+            // Parse the argument (module path)
+            const arg = try self.parseExpression();
 
             // Skip whitespace before )
             while (self.check(.Whitespace)) {
@@ -886,7 +888,14 @@ pub const Parser = struct {
             // Expect closing parenthesis
             _ = try self.consume(.RightParen, .unexpected_token, "Expected ')' after module path");
 
-            return self.arena.createNode(ast.AstNode.init(.{ .import_decl = .{ .module_path = module_path } }, source_loc));
+            // Create a call expression: @import(arg)
+            var args = std.ArrayList(ast.NodeId).init(self.allocator);
+            try args.append(arg);
+
+            return self.arena.createNode(ast.AstNode.init(.{ .call_expr = .{
+                .callee = import_ident,
+                .args = args,
+            } }, source_loc));
         }
 
         // Handle other built-in functions like @import and compile-time expressions
@@ -1309,7 +1318,7 @@ pub const Parser = struct {
                     }
 
                     // Get the name
-                    const name = if (name_token == .Identifier) name_token.Identifier.value else "error";
+                    const name = if (name_token == .Identifier) try self.arena.allocator.dupe(u8, name_token.Identifier.value) else try self.arena.allocator.dupe(u8, "error");
                     const source_loc = self.getCurrentSourceLoc();
 
                     // Parse the initializer expression
@@ -1343,7 +1352,7 @@ pub const Parser = struct {
                         _ = self.advance();
                     }
 
-                    const name = if (name_token == .Identifier) name_token.Identifier.value else "error";
+                    const name = if (name_token == .Identifier) try self.arena.allocator.dupe(u8, name_token.Identifier.value) else try self.arena.allocator.dupe(u8, "error");
                     const source_loc = self.getCurrentSourceLoc();
 
                     if (self.check(.Equals)) {
@@ -1412,7 +1421,7 @@ pub const Parser = struct {
                     }
 
                     // Get the name
-                    const name = if (name_token == .Identifier) name_token.Identifier.value else "error";
+                    const name = if (name_token == .Identifier) try self.arena.allocator.dupe(u8, name_token.Identifier.value) else try self.arena.allocator.dupe(u8, "error");
                     const source_loc = self.getCurrentSourceLoc();
 
                     // Check what follows the double colon
@@ -1510,7 +1519,7 @@ pub const Parser = struct {
 
         // Parse function name
         const name_token = try self.consume(.Identifier, .expected_identifier, "Expected function name");
-        const name = if (name_token == .Identifier) name_token.Identifier.value else "error";
+        const name = if (name_token == .Identifier) try self.arena.allocator.dupe(u8, name_token.Identifier.value) else try self.arena.allocator.dupe(u8, "error");
 
         // Require space before ::
         if (!self.check(.Whitespace)) {
@@ -1576,7 +1585,7 @@ pub const Parser = struct {
                 }
 
                 const param_name_token = try self.consume(.Identifier, .expected_identifier, "Expected parameter name");
-                const param_name = if (param_name_token == .Identifier) param_name_token.Identifier.value else "error";
+                const param_name = if (param_name_token == .Identifier) try self.arena.allocator.dupe(u8, param_name_token.Identifier.value) else try self.arena.allocator.dupe(u8, "error");
 
                 // Skip whitespace after parameter name
                 while (self.check(.Whitespace)) {
@@ -2821,10 +2830,15 @@ pub const Parser = struct {
             if (token == .Identifier) {
                 const identifier = try ast.createIdentifier(self.arena, source_loc, token.Identifier.value);
 
-                // Check for error union syntax: ErrorSet!Type
+                // Check for error union syntax: ErrorSet!Type or ErrorSet!?Type
                 if (self.check(.Exclamation)) {
                     _ = self.advance(); // consume !
+
+                    // Check if the payload type starts with ? (optional)
                     const payload_type = try self.parseType();
+
+                    // The payload_type node will already be an optional_type_expr if it starts with ?
+                    // The semantic analyzer will handle this correctly
                     return ast.createErrorUnionTypeExpr(self.arena, source_loc, identifier, payload_type);
                 }
 

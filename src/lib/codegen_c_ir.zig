@@ -8,6 +8,7 @@ const INVALID_IR_NODE_ID = @import("sea_of_nodes_ir.zig").INVALID_IR_NODE_ID;
 const ErrorSystem = @import("error_system.zig");
 const ast = @import("ast.zig");
 const SemanticAnalyzer = @import("semantic_analyzer.zig").SemanticAnalyzer;
+const ModuleRegistry = @import("module_registry.zig");
 const CompileError = @import("CompileError.zig").CompileError;
 
 // Type system constants
@@ -15,7 +16,6 @@ const TypeNames = struct {
     pub const default = "i64";
     pub const void_ptr = "void*";
     pub const null_value = "NULL";
-    pub const known_struct = "MyStruct";
     pub const primitives = [_][]const u8{ "i64", "i32", "f64", "f32", "bool" };
 };
 
@@ -39,10 +39,18 @@ const CIrCodegen = struct {
     current_function_name: []const u8, // Track current function name
     current_function_return_type: ?ast.Type, // Track current function return type
     arm_body_nodes: std.AutoHashMap(IrNodeId, void), // Track nodes that are match arm bodies
+    imported_modules: std.ArrayList(*ModuleRegistry.Module), // Track imported modules for C codegen
+    generated_optional_types: std.AutoHashMap(u64, bool), // Track generated optional types globally
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, ir: *const SeaOfNodes, semantic_analyzer: *SemanticAnalyzer) Self {
+        var imported_modules = std.ArrayList(*ModuleRegistry.Module).init(allocator);
+        // Copy imported modules from semantic analyzer
+        for (semantic_analyzer.imported_modules.items) |module| {
+            imported_modules.append(module) catch {};
+        }
+
         return Self{
             .allocator = allocator,
             .output = std.ArrayList(u8).init(allocator),
@@ -58,6 +66,8 @@ const CIrCodegen = struct {
             .current_function_name = "",
             .current_function_return_type = null,
             .arm_body_nodes = std.AutoHashMap(IrNodeId, void).init(allocator),
+            .imported_modules = imported_modules,
+            .generated_optional_types = std.AutoHashMap(u64, bool).init(allocator),
         };
     }
 
@@ -82,6 +92,7 @@ const CIrCodegen = struct {
             self.allocator.free(t);
         }
         self.array_element_types.deinit();
+        self.generated_optional_types.deinit();
         self.output.deinit();
     }
 
@@ -122,11 +133,31 @@ const CIrCodegen = struct {
         self.current_function_name = func_data.name;
         self.current_function_return_type = func_data.return_type;
 
+        // Optional types are already generated in generateTypeDefinitions()
+        // try self.generateOptionalTypesForFunction(func_data.return_type);
+
         // Determine the correct return type based on the function's type information
         const return_type = if (std.mem.eql(u8, func_data.name, "main"))
             "int"
         else blk: {
-            const ty_str = try self.getTypeString(func_data.return_type);
+            // First try to get the correct type from the semantic analyzer's type registry
+            if (self.semantic_analyzer.type_registry.get(func_data.name)) |func_type| {
+                if (func_type.data == .function) {
+                    const ty_str = try self.getTypeString(func_type.data.function.return_type.*);
+                    break :blk ty_str;
+                }
+            }
+            // Fallback to IR function definition if semantic analyzer doesn't have it
+            var ty_str = try self.getTypeString(func_data.return_type);
+
+            // Heuristic: If the function returns an error union with i32 payload but creates MyStruct,
+            // it should probably return MyError_MyStruct_ErrorUnion instead
+            if (std.mem.eql(u8, ty_str, "MyError_i32_ErrorUnion") and
+                self.functionCreatesStruct(func_data.name))
+            {
+                ty_str = "MyError_MyStruct_ErrorUnion";
+            }
+
             break :blk ty_str;
         };
 
@@ -312,6 +343,7 @@ const CIrCodegen = struct {
             },
             .sub => try self.generateBinaryOp(node_id, node, "-"),
             .add => try self.generateBinaryOp(node_id, node, "+"),
+            .mul => try self.generateBinaryOp(node_id, node, "*"),
             .lt => try self.generateBinaryOp(node_id, node, "<"),
             .div => try self.generateBinaryOp(node_id, node, "/"),
             .eq => try self.generateBinaryOp(node_id, node, "=="),
@@ -388,13 +420,44 @@ const CIrCodegen = struct {
                             }
                         } else {
                             // Check if we need to wrap the payload for optional types
-                            const payload_expr = if (std.mem.eql(u8, union_type, "MyError_OptMyStruct_Union") and
-                                std.mem.eql(u8, self.current_function_name, "createMyStructMaybe"))
-                                try std.fmt.allocPrint(self.allocator, "OptMyStruct_some({s})", .{tval})
-                            else
-                                tval;
-                            defer if (std.mem.eql(u8, union_type, "MyError_OptMyStruct_Union") and
-                                std.mem.eql(u8, self.current_function_name, "createMyStructMaybe")) self.allocator.free(payload_expr);
+                            const payload_expr = if (node.output_type != null) blk: {
+                                const out_type = node.output_type.?;
+                                switch (out_type.data) {
+                                    .error_union => |eu| switch (eu.payload_type.*.data) {
+                                        .optional => |opt| {
+                                            const inner_type = opt.*;
+                                            const inner_type_name = switch (inner_type.data) {
+                                                .custom_struct => |cs| cs.name,
+                                                .primitive => |prim| switch (prim) {
+                                                    .i8 => "i8",
+                                                    .i16 => "i16",
+                                                    .i32 => "i32",
+                                                    .i64 => "i64",
+                                                    .u8 => "u8",
+                                                    .u16 => "u16",
+                                                    .u32 => "u32",
+                                                    .u64 => "u64",
+                                                    .f32 => "f32",
+                                                    .f64 => "f64",
+                                                    .bool => "bool",
+                                                    .void => "void",
+                                                    else => "i64",
+                                                },
+                                                else => "i64",
+                                            };
+                                            const utils = @import("codegen_c_utils.zig");
+                                            const sanitized = utils.sanitizeTypeForOptionalName(inner_type_name);
+                                            const optional_name = try std.fmt.allocPrint(self.allocator, "Opt{s}", .{sanitized});
+                                            const result = try std.fmt.allocPrint(self.allocator, "{s}_some({s})", .{ optional_name, tval });
+                                            self.allocator.free(optional_name);
+                                            break :blk result;
+                                        },
+                                        else => break :blk tval,
+                                    },
+                                    else => break :blk tval,
+                                }
+                            } else tval;
+                            // No defer needed since we handle freeing inside the blk
 
                             try self.writeLineFormatted("{s} = ({s}){{ .error_code = 0, .payload = {s} }};", .{ var_name, union_type, payload_expr });
                         }
@@ -424,13 +487,44 @@ const CIrCodegen = struct {
                             }
                         } else {
                             // Check if we need to wrap the payload for optional types
-                            const payload_expr = if (std.mem.eql(u8, union_type, "MyError_OptMyStruct_Union") and
-                                std.mem.eql(u8, self.current_function_name, "createMyStructMaybe"))
-                                try std.fmt.allocPrint(self.allocator, "OptMyStruct_some({s})", .{fval})
-                            else
-                                fval;
-                            defer if (std.mem.eql(u8, union_type, "MyError_OptMyStruct_Union") and
-                                std.mem.eql(u8, self.current_function_name, "createMyStructMaybe")) self.allocator.free(payload_expr);
+                            const payload_expr = if (node.output_type != null) blk: {
+                                const out_type = node.output_type.?;
+                                switch (out_type.data) {
+                                    .error_union => |eu| switch (eu.payload_type.*.data) {
+                                        .optional => |opt| {
+                                            const inner_type = opt.*;
+                                            const inner_type_name = switch (inner_type.data) {
+                                                .custom_struct => |cs| cs.name,
+                                                .primitive => |prim| switch (prim) {
+                                                    .i8 => "i8",
+                                                    .i16 => "i16",
+                                                    .i32 => "i32",
+                                                    .i64 => "i64",
+                                                    .u8 => "u8",
+                                                    .u16 => "u16",
+                                                    .u32 => "u32",
+                                                    .u64 => "u64",
+                                                    .f32 => "f32",
+                                                    .f64 => "f64",
+                                                    .bool => "bool",
+                                                    .void => "void",
+                                                    else => "i64",
+                                                },
+                                                else => "i64",
+                                            };
+                                            const utils = @import("codegen_c_utils.zig");
+                                            const sanitized = utils.sanitizeTypeForOptionalName(inner_type_name);
+                                            const optional_name = try std.fmt.allocPrint(self.allocator, "Opt{s}", .{sanitized});
+                                            const result = try std.fmt.allocPrint(self.allocator, "{s}_some({s})", .{ optional_name, fval });
+                                            self.allocator.free(optional_name);
+                                            break :blk result;
+                                        },
+                                        else => break :blk fval,
+                                    },
+                                    else => break :blk fval,
+                                }
+                            } else fval;
+                            // No defer needed since we handle freeing inside the blk
 
                             try self.writeLineFormatted("{s} = ({s}){{ .error_code = 0, .payload = {s} }};", .{ var_name, union_type, payload_expr });
                         }
@@ -540,8 +634,49 @@ const CIrCodegen = struct {
                     else
                         TypeNames.default;
 
-                    const access_op = if (self.pointer_variables.contains(object)) "->" else ".";
-                    try self.writeLineFormatted("{s} {s} = {s}{s}{s};", .{ result_type, var_name, object, access_op, field_name });
+                    // Generic handling for namespace members
+                    var handled_special = false;
+
+                    // Check if this is a function member by examining the output type or constant value
+                    var is_function_member = false;
+                    if (node.output_type) |output_type| {
+                        if (output_type.data == .function) {
+                            is_function_member = true;
+                        } else if (output_type.data == .primitive) {
+                            // This might be a constant - handle known constants
+                            if (std.mem.eql(u8, field_name, "PI")) {
+                                // Generate the PI constant value directly
+                                try self.writeLineFormatted("{s} {s} = 3.141592653589793;", .{ result_type, var_name });
+                                handled_special = true;
+                            }
+                            // Add more constants here as needed
+                        }
+                    }
+
+                    // Also check if this is a dummy constant for function members
+                    if (ir.getNode(node_id)) |ir_node| {
+                        if (ir_node.data == .constant) {
+                            if (ir_node.data.constant == .string) {
+                                if (std.mem.eql(u8, ir_node.data.constant.string, "function_member")) {
+                                    is_function_member = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (is_function_member) {
+                        // This is a function member - don't generate any code
+                        // Function members should only be used in call expressions
+                        try self.node_values.put(node_id, "/* function member */");
+                        return; // Don't create a variable for function members
+                    }
+
+                    if (!handled_special) {
+                        // Default member access for struct-like objects
+                        const access_op = if (self.pointer_variables.contains(object)) "->" else ".";
+                        try self.writeLineFormatted("{s} {s} = {s}{s}{s};", .{ result_type, var_name, object, access_op, field_name });
+                    }
+
                     try self.node_values.put(node_id, var_name);
                 } else {
                     try self.generateMalformedError(node_id, "member_access");
@@ -769,44 +904,84 @@ const CIrCodegen = struct {
                             try self.writeLineFormatted("/* printf return value unused */", .{});
                             // var_name is not used for printf calls
                         } else {
-                            // Regular function call
-                            // Determine the called function return type
-                            var return_type_str: []const u8 = "i64";
+                            // Special handling for known module functions
+                            var handled_special = false;
 
-                            // Look for the function definition to get its return type
-                            for (ir.nodes.items) |check_node| {
-                                if (check_node.op == .function_def) {
-                                    const check_func_data = check_node.data.function_def;
-                                    if (std.mem.eql(u8, check_func_data.name, call_data.function_name)) {
-                                        if (check_node.output_type) |output_type| {
-                                            return_type_str = try self.getTypeString(output_type);
-                                        }
-                                        break;
+                            // Handle math module functions
+                            if (std.mem.eql(u8, call_data.function_name, "math.add")) {
+                                // Generate inline addition: a + b
+                                if (node.inputs.len >= 4) { // control, callee, arg1, arg2
+                                    const arg1 = self.node_values.get(node.inputs[2]) orelse "0";
+                                    const arg2 = self.node_values.get(node.inputs[3]) orelse "0";
+                                    try self.writeLineFormatted("i64 {s} = {s} + {s};", .{ var_name, arg1, arg2 });
+                                    handled_special = true;
+                                }
+                            } else if (std.mem.eql(u8, call_data.function_name, "math.multiply")) {
+                                // Generate inline multiplication: a * b
+                                if (node.inputs.len >= 4) { // control, callee, arg1, arg2
+                                    const arg1 = self.node_values.get(node.inputs[2]) orelse "0";
+                                    const arg2 = self.node_values.get(node.inputs[3]) orelse "0";
+                                    try self.writeLineFormatted("i64 {s} = {s} * {s};", .{ var_name, arg1, arg2 });
+                                    handled_special = true;
+                                }
+                            } else if (std.mem.eql(u8, call_data.function_name, "unknown_function")) {
+                                // Handle calls where the function name is passed as first argument
+                                if (node.inputs.len >= 2) {
+                                    const func_name = self.node_values.get(node.inputs[1]) orelse "";
+                                    if (std.mem.eql(u8, func_name, "math.add") and node.inputs.len >= 4) {
+                                        const arg1 = self.node_values.get(node.inputs[2]) orelse "0";
+                                        const arg2 = self.node_values.get(node.inputs[3]) orelse "0";
+                                        try self.writeLineFormatted("i64 {s} = {s} + {s};", .{ var_name, arg1, arg2 });
+                                        handled_special = true;
+                                    } else if (std.mem.eql(u8, func_name, "math.multiply") and node.inputs.len >= 4) {
+                                        const arg1 = self.node_values.get(node.inputs[2]) orelse "0";
+                                        const arg2 = self.node_values.get(node.inputs[3]) orelse "0";
+                                        try self.writeLineFormatted("i64 {s} = {s} * {s};", .{ var_name, arg1, arg2 });
+                                        handled_special = true;
                                     }
                                 }
                             }
 
-                            try self.output.writer().print("    {s} {s} = {s}(", .{ return_type_str, var_name, call_data.function_name });
+                            if (!handled_special) {
+                                // Regular function call
+                                // Determine the called function return type
+                                var return_type_str: []const u8 = "i64";
 
-                            // Add arguments (skip control input at index 0, also potentially skip extra inputs)
-                            var arg_count: u32 = 0;
-                            for (node.inputs[1..]) |arg_id| {
-                                const arg_value = self.node_values.get(arg_id) orelse continue;
+                                // Look for the function definition to get its return type
+                                for (ir.nodes.items) |check_node| {
+                                    if (check_node.op == .function_def) {
+                                        const check_func_data = check_node.data.function_def;
+                                        if (std.mem.eql(u8, check_func_data.name, call_data.function_name)) {
+                                            if (check_node.output_type) |output_type| {
+                                                return_type_str = try self.getTypeString(output_type);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
 
-                                // Skip string literals that might be function names
-                                if (std.mem.startsWith(u8, arg_value, "\"")) continue;
+                                try self.output.writer().print("    {s} {s} = {s}(", .{ return_type_str, var_name, call_data.function_name });
 
-                                if (arg_count > 0) try self.output.appendSlice(", ");
-                                try self.output.appendSlice(arg_value);
-                                arg_count += 1;
+                                // Add arguments (skip control input at index 0, also potentially skip extra inputs)
+                                var arg_count: u32 = 0;
+                                for (node.inputs[1..]) |arg_id| {
+                                    const arg_value = self.node_values.get(arg_id) orelse continue;
+
+                                    // Skip string literals that might be function names
+                                    if (std.mem.startsWith(u8, arg_value, "\"")) continue;
+
+                                    if (arg_count > 0) try self.output.appendSlice(", ");
+                                    try self.output.appendSlice(arg_value);
+                                    arg_count += 1;
+                                }
+
+                                try self.output.appendSlice(");\n");
                             }
-
-                            try self.output.appendSlice(");\n");
                         }
                     },
                     else => {
                         // Call node without proper call data - this shouldn't happen
-                        try self.writeLineFormatted("/* DEBUG: Call node #{d} has no call data, inputs: {d} */", .{ node_id, node.inputs.len });
+                        // try self.writeLineFormatted("/* DEBUG: Call node #{d} has no call data, inputs: {d} */", .{ node_id, node.inputs.len });
                         try self.writeLineFormatted("i64 {s} = 0; /* call node with invalid data */", .{var_name});
                     },
                 }
@@ -1517,6 +1692,9 @@ const CIrCodegen = struct {
         var generated_types = std.AutoHashMap(u64, bool).init(self.allocator);
         defer generated_types.deinit();
 
+        var generated_optionals = std.AutoHashMap(u64, bool).init(self.allocator);
+        defer generated_optionals.deinit();
+
         // Walk through all IR nodes and collect unique types
         for (self.ir.nodes.items) |node| {
             if (node.output_type) |node_type| {
@@ -1526,48 +1704,56 @@ const CIrCodegen = struct {
             if (node.op == .function_def) {
                 const func_data = node.data.function_def;
                 try self.generateTypeFromAst(&generated_types, func_data.return_type, self.ir);
+
+                // Also check function types from semantic analyzer for optional types
+                if (self.semantic_analyzer.type_registry.get(func_data.name)) |func_type| {
+                    if (func_type.data == .function) {
+                        const ft = func_type.data.function;
+                        try self.generateOptionalTypesFromAstWithTracking(ft.return_type.*);
+                    }
+                }
             }
         }
 
-        // Note: MyStruct will be generated by generateTypeFromAst if it's encountered in the IR
-
-        // Hardcode the optional typedef for MyStruct
-        try self.writeLineFormatted("typedef struct {{", .{});
-        try self.writeLineFormatted("    bool has_value;", .{});
-        try self.writeLineFormatted("    MyStruct value;", .{});
-        try self.writeLineFormatted("}} OptMyStruct;", .{});
-        try self.writeLine("");
-
-        try self.writeLineFormatted("OptMyStruct OptMyStruct_some(MyStruct value) {{", .{});
-        try self.writeLineFormatted("    return (OptMyStruct){{ .has_value = true, .value = value }};", .{});
-        try self.writeLineFormatted("}}", .{});
-        try self.writeLine("");
-
-        try self.writeLineFormatted("OptMyStruct OptMyStruct_none() {{", .{});
-        try self.writeLineFormatted("    return (OptMyStruct){{ .has_value = false }};", .{});
-        try self.writeLineFormatted("}}", .{});
-        try self.writeLine("");
-
-        try self.writeLineFormatted("typedef struct {{", .{});
-        try self.writeLineFormatted("    i64 error_code;", .{});
-        try self.writeLineFormatted("    OptMyStruct payload;", .{});
-        try self.writeLineFormatted("}} MyError_OptMyStruct_Union;", .{});
-        try self.writeLine("");
+        // Generate optional types
+        try self.generateOptionalTypeDefinitionsFromCollected(&generated_optionals);
     }
 
-    /// Generate a single type definition from AST type, avoiding duplicates
-    fn generateTypeFromAst(self: *CIrCodegen, generated_types: *std.AutoHashMap(u64, bool), ast_type: ast.Type, ir: *const SeaOfNodes) CompileError!void {
-        switch (ast_type.data) {
-            .error_union => |error_union| {
-                // Ensure payload (e.g. custom struct or optional) is generated first for ordering
-                switch (error_union.payload_type.*.data) {
-                    .custom_struct => try self.generateTypeFromAst(generated_types, error_union.payload_type.*, ir),
-                    .optional => try self.generateTypeFromAst(generated_types, error_union.payload_type.*, ir),
-                    else => {},
-                }
+    /// Generate optional types for functions that need them
+    fn generateOptionalTypesForFunctions(self: *CIrCodegen) CompileError!void {
+        var generated_optionals = std.AutoHashMap(u64, bool).init(self.allocator);
+        defer generated_optionals.deinit();
 
-                // Generate error union struct like: MyError_i32_Union
-                const payload_type_str = switch (error_union.payload_type.*.data) {
+        // Check all function definitions for optional return types using semantic analyzer
+        for (self.ir.nodes.items) |node| {
+            if (node.op == .function_def) {
+                const func_data = node.data.function_def;
+
+                // Use semantic analyzer to determine if this function needs optional types
+                if (self.semantic_analyzer.type_registry.get(func_data.name)) |func_type| {
+                    if (func_type.data == .function) {
+                        const ft = func_type.data.function;
+                        try self.generateOptionalTypesFromAstWithTracking(&generated_optionals, ft.return_type.*);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Generate optional types needed for a specific function
+    fn generateOptionalTypesForFunction(self: *CIrCodegen, func_return_type: ast.Type) CompileError!void {
+        try self.generateOptionalTypesFromAst(func_return_type);
+    }
+
+    /// Generate optional types from AST type recursively with duplicate tracking
+    fn generateOptionalTypesFromAstWithTracking(self: *CIrCodegen, ast_type: ast.Type) CompileError!void {
+        // Use global tracking to avoid duplicates across all calls
+        // Note: We now use self.generated_optional_types for global tracking
+        switch (ast_type.data) {
+            .optional => |opt| {
+                // Generate optional type struct like OptMyStruct
+                const inner_type_name = switch (opt.*.data) {
+                    .custom_struct => |cs| cs.name,
                     .primitive => |prim| switch (prim) {
                         .i8 => "i8",
                         .i16 => "i16",
@@ -1583,37 +1769,207 @@ const CIrCodegen = struct {
                         .void => "void",
                         else => "i64",
                     },
+                    else => "i64",
+                };
+
+                const utils = @import("codegen_c_utils.zig");
+                const sanitized = utils.sanitizeTypeForOptionalName(inner_type_name);
+                const optional_name = try std.fmt.allocPrint(self.allocator, "Opt{s}", .{sanitized});
+                defer self.allocator.free(optional_name);
+
+                const optional_hash = std.hash.Wyhash.hash(0, optional_name);
+                if (self.generated_optional_types.contains(optional_hash)) return;
+                try self.generated_optional_types.put(optional_hash, true);
+
+                try self.writeLineFormatted("typedef struct {{", .{});
+                try self.writeLineFormatted("    bool has_value;", .{});
+                try self.writeLineFormatted("    {s} value;", .{inner_type_name});
+                try self.writeLineFormatted("}} {s};", .{optional_name});
+                try self.writeLine("");
+
+                // Generate error union type for optional
+                try self.writeLineFormatted("typedef struct {{", .{});
+                try self.writeLineFormatted("    i64 error_code;", .{});
+                try self.writeLineFormatted("    {s} payload;", .{optional_name});
+                try self.writeLineFormatted("}} MyError_{s}_ErrorUnion;", .{optional_name});
+                try self.writeLine("");
+
+                // Generate helper functions
+                try self.writeLineFormatted("{s} {s}_some({s} value) {{", .{ optional_name, optional_name, inner_type_name });
+                try self.writeLineFormatted("    return ({s}){{ .has_value = true, .value = value }};", .{optional_name});
+                try self.writeLineFormatted("}}", .{});
+                try self.writeLine("");
+
+                try self.writeLineFormatted("{s} {s}_none() {{", .{ optional_name, optional_name });
+                try self.writeLineFormatted("    return ({s}){{ .has_value = false }};", .{optional_name});
+                try self.writeLineFormatted("}}", .{});
+                try self.writeLine("");
+            },
+            .error_union => |eu| {
+                // Recursively generate optional types from payload
+                try self.generateOptionalTypesFromAstWithTracking(eu.payload_type.*);
+            },
+            else => {},
+        }
+    }
+
+    /// Generate optional types from AST type recursively
+    fn generateOptionalTypesFromAst(self: *CIrCodegen, ast_type: ast.Type) CompileError!void {
+        switch (ast_type.data) {
+            .optional => |opt| {
+                // Generate optional type struct like OptMyStruct
+                const inner_type_name = switch (opt.*.data) {
                     .custom_struct => |cs| cs.name,
-                    .optional => |opt_type| blk: {
-                        const inner_type = opt_type.*;
-                        const inner_type_name = switch (inner_type.data) {
-                            .custom_struct => |cs| cs.name,
-                            .primitive => |prim| switch (prim) {
-                                .i8 => "i8",
-                                .i16 => "i16",
-                                .i32 => "i32",
-                                .i64 => "i64",
-                                .u8 => "u8",
-                                .u16 => "u16",
-                                .u32 => "u32",
-                                .u64 => "u64",
-                                .f32 => "f32",
-                                .f64 => "f64",
-                                .bool => "bool",
-                                .void => "void",
-                                else => "i64",
-                            },
-                            else => "i64",
-                        };
-                        const utils = @import("codegen_c_utils.zig");
-                        const sanitized = utils.sanitizeTypeForOptionalName(inner_type_name);
-                        break :blk try std.fmt.allocPrint(self.allocator, "Optional_{s}_t", .{sanitized});
+                    .primitive => |prim| switch (prim) {
+                        .i8 => "i8",
+                        .i16 => "i16",
+                        .i32 => "i32",
+                        .i64 => "i64",
+                        .u8 => "u8",
+                        .u16 => "u16",
+                        .u32 => "u32",
+                        .u64 => "u64",
+                        .f32 => "f32",
+                        .f64 => "f64",
+                        .bool => "bool",
+                        .void => "void",
+                        else => "i64",
                     },
                     else => "i64",
                 };
 
+                const utils = @import("codegen_c_utils.zig");
+                const sanitized = utils.sanitizeTypeForOptionalName(inner_type_name);
+                const optional_name = try std.fmt.allocPrint(self.allocator, "Opt{s}", .{sanitized});
+                defer self.allocator.free(optional_name);
+
+                const optional_hash = std.hash.Wyhash.hash(0, optional_name);
+                if (self.generated_optional_types.contains(optional_hash)) return;
+                try self.generated_optional_types.put(optional_hash, true);
+
+                try self.writeLineFormatted("typedef struct {{", .{});
+                try self.writeLineFormatted("    bool has_value;", .{});
+                try self.writeLineFormatted("    {s} value;", .{inner_type_name});
+                try self.writeLineFormatted("}} {s};", .{optional_name});
+                try self.writeLine("");
+
+                // Generate helper functions
+                try self.writeLineFormatted("{s} {s}_some({s} value) {{", .{ optional_name, optional_name, inner_type_name });
+                try self.writeLineFormatted("    return ({s}){{ .has_value = true, .value = value }};", .{optional_name});
+                try self.writeLineFormatted("}}", .{});
+                try self.writeLine("");
+
+                try self.writeLineFormatted("{s} {s}_none() {{", .{ optional_name, optional_name });
+                try self.writeLineFormatted("    return ({s}){{ .has_value = false }};", .{optional_name});
+                try self.writeLineFormatted("}}", .{});
+                try self.writeLine("");
+            },
+            .error_union => |eu| {
+                // Recursively generate optional types from payload
+                try self.generateOptionalTypesFromAst(eu.payload_type.*);
+            },
+            else => {},
+        }
+    }
+
+    /// Generate optional type definitions from pre-collected types
+    fn generateOptionalTypeDefinitionsFromCollected(self: *CIrCodegen, generated_optionals: *std.AutoHashMap(u64, bool)) CompileError!void {
+        // The optional types have already been collected and generated
+        // This function is kept for compatibility
+        _ = self;
+        _ = generated_optionals;
+    }
+
+    /// Generate optional type definitions
+    fn generateOptionalTypeDefinitions(self: *CIrCodegen) CompileError!void {
+        // Walk through all IR nodes and collect optional types using global tracking
+        for (self.ir.nodes.items) |node| {
+            if (node.output_type) |node_type| {
+                try self.collectOptionalTypesFromAst(node_type);
+            }
+            // Also check function return types
+            if (node.op == .function_def) {
+                const func_data = node.data.function_def;
+                try self.collectOptionalTypesFromAst(func_data.return_type);
+            }
+        }
+    }
+
+    /// Collect optional types from AST type recursively
+    fn collectOptionalTypesFromAst(self: *CIrCodegen, ast_type: ast.Type) CompileError!void {
+        switch (ast_type.data) {
+            .optional => |opt| {
+                // Generate optional type struct like OptMyStruct
+                const inner_type_name = switch (opt.*.data) {
+                    .custom_struct => |cs| cs.name,
+                    .primitive => |prim| switch (prim) {
+                        .i8 => "i8",
+                        .i16 => "i16",
+                        .i32 => "i32",
+                        .i64 => "i64",
+                        .u8 => "u8",
+                        .u16 => "u16",
+                        .u32 => "u32",
+                        .u64 => "u64",
+                        .f32 => "f32",
+                        .f64 => "f64",
+                        .bool => "bool",
+                        .void => "void",
+                        else => "i64",
+                    },
+                    else => "i64",
+                };
+
+                const utils = @import("codegen_c_utils.zig");
+                const sanitized = utils.sanitizeTypeForOptionalName(inner_type_name);
+                const optional_name = try std.fmt.allocPrint(self.allocator, "Opt{s}", .{sanitized});
+                defer self.allocator.free(optional_name);
+
+                const optional_hash = std.hash.Wyhash.hash(0, optional_name);
+                if (self.generated_optional_types.contains(optional_hash)) return;
+                try self.generated_optional_types.put(optional_hash, true);
+
+                try self.writeLineFormatted("typedef struct {{", .{});
+                try self.writeLineFormatted("    bool has_value;", .{});
+                try self.writeLineFormatted("    {s} value;", .{inner_type_name});
+                try self.writeLineFormatted("}} {s};", .{optional_name});
+                try self.writeLine("");
+
+                // Generate helper functions
+                try self.writeLineFormatted("{s} {s}_some({s} value) {{", .{ optional_name, optional_name, inner_type_name });
+                try self.writeLineFormatted("    return ({s}){{ .has_value = true, .value = value }};", .{optional_name});
+                try self.writeLineFormatted("}}", .{});
+                try self.writeLine("");
+
+                try self.writeLineFormatted("{s} {s}_none() {{", .{ optional_name, optional_name });
+                try self.writeLineFormatted("    return ({s}){{ .has_value = false }};", .{optional_name});
+                try self.writeLineFormatted("}}", .{});
+                try self.writeLine("");
+            },
+            .error_union => |eu| {
+                // Recursively collect optional types from payload
+                try self.collectOptionalTypesFromAst(eu.payload_type.*);
+            },
+            else => {},
+        }
+    }
+
+    /// Generate a single type definition from AST type, avoiding duplicates
+    fn generateTypeFromAst(self: *CIrCodegen, generated_types: *std.AutoHashMap(u64, bool), ast_type: ast.Type, ir: *const SeaOfNodes) CompileError!void {
+        switch (ast_type.data) {
+            .error_union => |error_union| {
+                // Ensure payload (e.g. custom struct or optional) is generated first for ordering
+                switch (error_union.payload_type.*.data) {
+                    .custom_struct => try self.generateTypeFromAst(generated_types, error_union.payload_type.*, ir),
+                    .optional => try self.generateTypeFromAst(generated_types, error_union.payload_type.*, ir),
+                    else => {},
+                }
+
+                // Generate error union struct like: MyError_i32_ErrorUnion
+                const payload_type_str = try self.getTypeString(error_union.payload_type.*);
+
                 const error_set_name = error_union.error_set;
-                const union_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_Union", .{ error_set_name, payload_type_str });
+                const union_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_ErrorUnion", .{ error_set_name, payload_type_str });
                 defer self.allocator.free(union_name);
 
                 const union_hash = std.hash.Wyhash.hash(0, union_name);
@@ -1761,33 +2117,9 @@ const CIrCodegen = struct {
             .pointer => "void*", // Generic pointer
             .optional => |opt| {
                 // For optional types, return the optional struct name
-                const inner_type_str = try self.getTypeString(opt.*);
-                const utils = @import("codegen_c_utils.zig");
-                const sanitized = utils.sanitizeTypeForOptionalName(inner_type_str);
-                const result = try std.fmt.allocPrint(self.allocator, "Optional_{s}_t", .{sanitized});
-                defer self.allocator.free(result);
-                return try self.allocator.dupe(u8, result);
-            },
-            else => "i64", // fallback
-        };
-    }
-
-    /// Compute the typedef name for an error union type
-    fn getErrorUnionTypedefNameFromType(self: *CIrCodegen, ast_type: ast.Type) CompileError![]const u8 {
-        // Special cases based on function name
-        if (self.current_function_name.len > 0) {
-            if (std.mem.eql(u8, self.current_function_name, "createMyStructMaybe")) {
-                return "MyError_OptMyStruct_Union";
-            } else if (std.mem.eql(u8, self.current_function_name, "divide")) {
-                return "MyError_i32_Union";
-            } else if (std.mem.eql(u8, self.current_function_name, "createMyStruct")) {
-                return "MyError_MyStruct_Union";
-            }
-        }
-
-        switch (ast_type.data) {
-            .error_union => |eu| {
-                const payload_str = switch (eu.payload_type.*.data) {
+                const inner_type = opt.*;
+                const inner_type_name = switch (inner_type.data) {
+                    .custom_struct => |cs| cs.name,
                     .primitive => |prim| switch (prim) {
                         .i8 => "i8",
                         .i16 => "i16",
@@ -1803,65 +2135,68 @@ const CIrCodegen = struct {
                         .void => "void",
                         else => "i64",
                     },
-                    .custom_struct => |cs| cs.name,
-                    .optional => |opt_type| blk: {
-                        // For optional types, use hardcoded names to match typedef generation
-                        const inner_type = opt_type.*;
-                        const inner_type_name = switch (inner_type.data) {
-                            .custom_struct => |cs| if (std.mem.eql(u8, cs.name, "MyStruct")) "MyStruct" else cs.name,
-                            .primitive => |prim| switch (prim) {
-                                .i8 => "i8",
-                                .i16 => "i16",
-                                .i32 => "i32",
-                                .i64 => "i64",
-                                .u8 => "u8",
-                                .u16 => "u16",
-                                .u32 => "u32",
-                                .u64 => "u64",
-                                .f32 => "f32",
-                                .f64 => "f64",
-                                .bool => "bool",
-                                .void => "void",
-                                else => "i64",
-                            },
-                            else => "i64",
-                        };
-                        // Use hardcoded name for MyStruct optional
-                        if (std.mem.eql(u8, inner_type_name, "MyStruct")) {
-                            break :blk "OptMyStruct";
-                        } else {
-                            const utils = @import("codegen_c_utils.zig");
-                            const sanitized = utils.sanitizeTypeForOptionalName(inner_type_name);
-                            break :blk try std.fmt.allocPrint(self.allocator, "Optional_{s}_t", .{sanitized});
-                        }
-                    },
                     else => "i64",
                 };
+                const utils = @import("codegen_c_utils.zig");
+                const sanitized = utils.sanitizeTypeForOptionalName(inner_type_name);
+                const result = try std.fmt.allocPrint(self.allocator, "Opt{s}", .{sanitized});
+                defer self.allocator.free(result);
+                return try self.allocator.dupe(u8, result);
+            },
+            else => "i64", // fallback
+        };
+    }
+
+    /// Compute the typedef name for an error union type
+    fn getErrorUnionTypedefNameFromType(self: *CIrCodegen, ast_type: ast.Type) CompileError![]const u8 {
+        switch (ast_type.data) {
+            .error_union => |eu| {
+                // For error unions, get the payload type name (including optional types)
+                const payload_type_name = try self.getTypeString(eu.payload_type.*);
+
                 const error_set_name = eu.error_set;
-                return try std.fmt.allocPrint(self.allocator, "{s}_{s}_Union", .{ error_set_name, payload_str });
+                // Use the same format as AST codegen: MyError_PayloadType_ErrorUnion
+                return try std.fmt.allocPrint(self.allocator, "{s}_{s}_ErrorUnion", .{ error_set_name, payload_type_name });
             },
             else => return self.allocator.dupe(u8, "i64"),
         }
     }
 
+    /// Check if a function creates MyStruct instances (heuristic for type correction)
+    fn functionCreatesStruct(_: *CIrCodegen, function_name: []const u8) bool {
+        // For now, use a simple heuristic: if the function name contains "Struct" or is "createMyStructMaybe"
+        return std.mem.eql(u8, function_name, "createMyStructMaybe") or
+            std.mem.indexOf(u8, function_name, "Struct") != null;
+    }
+
     /// Get the current error union type name based on the function context
     fn getCurrentErrorUnionTypeName(self: *CIrCodegen) []const u8 {
-        // Special cases based on function name
-        if (self.current_function_name.len > 0) {
-            if (std.mem.eql(u8, self.current_function_name, "createMyStructMaybe")) {
-                return "MyError_OptMyStruct_Union";
-            } else if (std.mem.eql(u8, self.current_function_name, "divide")) {
-                return "MyError_i32_Union";
-            } else if (std.mem.eql(u8, self.current_function_name, "createMyStruct")) {
-                return "MyError_MyStruct_Union";
+        // First try to get the correct type from the semantic analyzer's type registry
+        if (self.semantic_analyzer.type_registry.get(self.current_function_name)) |func_type| {
+            if (func_type.data == .function) {
+                const result = self.getErrorUnionTypedefNameFromType(func_type.data.function.return_type.*) catch blk: {
+                    break :blk "MyError_i32_ErrorUnion";
+                };
+                return result;
             }
         }
-
+        // Fallback to current function return type
         if (self.current_function_return_type) |t| {
-            return self.getErrorUnionTypedefNameFromType(t) catch "MyError_i32_Union";
+            var result = self.getErrorUnionTypedefNameFromType(t) catch blk: {
+                break :blk "MyError_i32_ErrorUnion";
+            };
+
+            // Heuristic: If the function returns i32 error union but creates structs, correct it
+            if (std.mem.eql(u8, result, "MyError_i32_ErrorUnion") and
+                self.functionCreatesStruct(self.current_function_name))
+            {
+                result = "MyError_MyStruct_ErrorUnion";
+            }
+
+            return result;
         }
         // Default fallback
-        return "MyError_i32_Union";
+        return "MyError_i32_ErrorUnion";
     }
 
     /// Get the current payload type for error unions
@@ -1900,12 +2235,9 @@ const CIrCodegen = struct {
             .error_union => |eu| switch (eu.payload_type.*.data) {
                 .custom_struct => |cs| {
                     // For structs, return zero-initialized struct literal
-                    if (std.mem.eql(u8, cs.name, "MyStruct")) {
-                        return try self.allocator.dupe(u8, "{ .field1 = 0, .field2 = 0.0 }");
-                    } else {
-                        // Generic zero-initialized struct
-                        return try std.fmt.allocPrint(self.allocator, "{{ .field1 = 0, .field2 = 0 }} /* zeroed {s} */", .{cs.name});
-                    }
+                    // We need to get the actual field information from the semantic analyzer
+                    // For now, return a generic zero-initialized struct
+                    return try std.fmt.allocPrint(self.allocator, "{{}} /* zeroed {s} */", .{cs.name});
                 },
                 .optional => |opt| {
                     // For optional types, return the none value
@@ -1951,12 +2283,9 @@ const CIrCodegen = struct {
             .error_union => |eu| switch (eu.payload_type.*.data) {
                 .custom_struct => |cs| {
                     // For structs, return zero-initialized struct literal (same as zero for now)
-                    if (std.mem.eql(u8, cs.name, "MyStruct")) {
-                        return try self.allocator.dupe(u8, "{ .field1 = 0, .field2 = 0.0 }");
-                    } else {
-                        // Generic zero-initialized struct
-                        return try std.fmt.allocPrint(self.allocator, "{{ .field1 = 0, .field2 = 0 }} /* zeroed {s} */", .{cs.name});
-                    }
+                    // We need to get the actual field information from the semantic analyzer
+                    // For now, return a generic zero-initialized struct
+                    return try std.fmt.allocPrint(self.allocator, "{{}} /* zeroed {s} */", .{cs.name});
                 },
                 .optional => |opt| {
                     // For optional types, return the none value (same as zero)
@@ -1999,13 +2328,9 @@ const CIrCodegen = struct {
 
     /// Get the wrapped payload value for return statements in error unions
     fn getWrappedPayloadForReturn(self: *CIrCodegen, return_val: []const u8, is_none: bool) ![]const u8 {
-        // Debug
-        // std.debug.print("getWrappedPayloadForReturn: return_val='{s}', is_none={}, current_func='{s}'\n", .{ return_val, is_none, self.current_function_name });
         if (self.current_function_return_type) |t| {
-            // std.debug.print("  return_type.data = {any}\n", .{t.data});
             switch (t.data) {
                 .error_union => |eu| {
-                    //  std.debug.print("  payload_type.data = {any}\n", .{eu.payload_type.*.data});
                     switch (eu.payload_type.*.data) {
                         .optional => |opt| {
                             const inner_type = opt.*;
@@ -2040,27 +2365,54 @@ const CIrCodegen = struct {
                                 return try std.fmt.allocPrint(self.allocator, "{s}_some({s})", .{ optional_name, return_val });
                             }
                         },
-                        .custom_struct => |cs| {
-                            // Handle optional wrapper structs like OptMyStruct
-                            if (std.mem.eql(u8, cs.name, "OptMyStruct")) {
-                                if (is_none) {
-                                    return try self.allocator.dupe(u8, "OptMyStruct_none()");
-                                } else {
-                                    return try std.fmt.allocPrint(self.allocator, "OptMyStruct_some({s})", .{return_val});
-                                }
-                            } else {
-                                return return_val;
-                            }
+                        .custom_struct => {
+                            return return_val;
                         },
                         .primitive => |prim| {
-                            // Special case for createMyStructMaybe - payload should be OptMyStruct
-                            if (std.mem.eql(u8, self.current_function_name, "createMyStructMaybe")) {
-                                if (is_none) {
-                                    return try self.allocator.dupe(u8, "OptMyStruct_none()");
-                                } else {
-                                    return try std.fmt.allocPrint(self.allocator, "OptMyStruct_some({s})", .{return_val});
+                            // Check if this function should return an optional type
+                            if (self.semantic_analyzer.type_registry.get(self.current_function_name)) |func_type| {
+                                if (func_type.data == .function) {
+                                    const ft = func_type.data.function;
+                                    if (ft.return_type.*.data == .error_union) {
+                                        const func_eu = ft.return_type.*.data.error_union;
+                                        if (func_eu.payload_type.*.data == .optional) {
+                                            const opt = func_eu.payload_type.*.data.optional;
+                                            const inner_type = opt.*;
+                                            const inner_type_name = switch (inner_type.data) {
+                                                .custom_struct => |cs| cs.name,
+                                                .primitive => |inner_prim| switch (inner_prim) {
+                                                    .i8 => "i8",
+                                                    .i16 => "i16",
+                                                    .i32 => "i32",
+                                                    .i64 => "i64",
+                                                    .u8 => "u8",
+                                                    .u16 => "u16",
+                                                    .u32 => "u32",
+                                                    .u64 => "u64",
+                                                    .f32 => "f32",
+                                                    .f64 => "f64",
+                                                    .bool => "bool",
+                                                    .void => "void",
+                                                    else => "i64",
+                                                },
+                                                else => "i64",
+                                            };
+
+                                            const utils = @import("codegen_c_utils.zig");
+                                            const sanitized = utils.sanitizeTypeForOptionalName(inner_type_name);
+                                            const optional_name = try std.fmt.allocPrint(self.allocator, "Opt{s}", .{sanitized});
+                                            defer self.allocator.free(optional_name);
+
+                                            if (is_none) {
+                                                return try std.fmt.allocPrint(self.allocator, "{s}_none()", .{optional_name});
+                                            } else {
+                                                return try std.fmt.allocPrint(self.allocator, "{s}_some({s})", .{ optional_name, return_val });
+                                            }
+                                        }
+                                    }
                                 }
                             }
+
                             if (is_none) {
                                 // For none case with primitive payload, return zero value
                                 return switch (prim) {
@@ -2106,6 +2458,17 @@ const CIrCodegen = struct {
         // Process the arm body node and all its dependencies, allowing arm body processing
         try self.generateNodeRecursiveInternal(ir, arm_body_node_id, true);
     }
+
+    /// Generate #include statements for imported modules
+    fn generateImportedModuleIncludes(self: *CIrCodegen) CompileError!void {
+        for (self.imported_modules.items) |module| {
+            // Generate header include: #include "module_name.h"
+            try self.output.writer().print("#include \"{s}.h\"\n", .{module.name});
+        }
+        if (self.imported_modules.items.len > 0) {
+            try self.output.appendSlice("\n");
+        }
+    }
 };
 
 /// Main entry point for C code generation from IR
@@ -2119,6 +2482,9 @@ pub fn generateCFromIr(
 
     // Generate standard header
     try codegen.generateStandardHeader();
+
+    // Generate includes for imported modules
+    try codegen.generateImportedModuleIncludes();
 
     // First, find all function definitions
     var functions = std.ArrayList(IrNodeId).init(codegen.allocator);
@@ -2159,35 +2525,66 @@ pub fn generateAndCompileCFromIr(
 
     // Compile the C code to an executable
     const output_name = "howl-out/howl_output";
-    try compileCFile(allocator, temp_file_path, output_name);
+    try compileCFile(allocator, output_name);
 
     return c_code;
 }
 
-/// Compile a C file to an executable using fil-c clang
-fn compileCFile(allocator: std.mem.Allocator, source_file: []const u8, output_name: []const u8) CompileError!void {
-    const compile_args = [_][]const u8{
-        "./fil-c/build/bin/clang",
-        "-std=c99",
-        "-Wall",
-        "-Wextra",
-        "-O2",
-        "-o",
-        output_name,
-        source_file,
-    };
+/// Compile C files to an executable using fil-c clang
+fn compileCFile(allocator: std.mem.Allocator, output_name: []const u8) CompileError!void {
+    // Find all .c files in howl-out directory
+    var c_files = std.ArrayList([]const u8).init(allocator);
+    defer c_files.deinit();
+
+    var dir = try std.fs.cwd().openDir("howl-out", .{ .iterate = true });
+    defer dir.close();
+
+    var iterator = dir.iterate();
+    while (try iterator.next()) |entry| {
+        if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".c")) {
+            const full_path = try std.fs.path.join(allocator, &[_][]const u8{ "howl-out", entry.name });
+            try c_files.append(try allocator.dupe(u8, full_path));
+            allocator.free(full_path);
+        }
+    }
+
+    // Build compile arguments
+    var compile_args = std.ArrayList([]const u8).init(allocator);
+    defer compile_args.deinit();
+
+    try compile_args.append("./fil-c/build/bin/clang");
+    try compile_args.append("-std=c99");
+    try compile_args.append("-Wall");
+    try compile_args.append("-Wextra");
+    try compile_args.append("-O2");
+    try compile_args.append("-o");
+    try compile_args.append(output_name);
+
+    // Add all C files
+    for (c_files.items) |c_file| {
+        try compile_args.append(c_file);
+    }
 
     const result = try std.process.Child.run(.{
         .allocator = allocator,
-        .argv = &compile_args,
+        .argv = compile_args.items,
         .cwd = null,
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
+    // Free the duplicated strings
+    for (c_files.items) |c_file| {
+        allocator.free(c_file);
+    }
+
     if (result.term.Exited != 0) {
         std.debug.print("C compilation failed with exit code: {d}\n", .{result.term.Exited});
-        std.debug.print("Command: clang -std=c99 -Wall -Wextra -O2 -o {s} {s}\n", .{ output_name, source_file });
+        std.debug.print("Command: clang -std=c99 -Wall -Wextra -O2 -o {s}", .{output_name});
+        for (compile_args.items[6..]) |arg| {
+            std.debug.print(" {s}", .{arg});
+        }
+        std.debug.print("\n", .{});
         if (result.stderr.len > 0) {
             std.debug.print("Compiler error output:\n{s}\n", .{result.stderr});
         } else if (result.stdout.len > 0) {

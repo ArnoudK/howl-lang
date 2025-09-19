@@ -1,0 +1,15 @@
+// Math module - Basic mathematical functions
+
+add :: fn(a: i32, b: i32) i32 {
+    return a + b
+}
+
+minus :: fn(a: i32, b: i32) i32 {
+    return a - b
+}
+
+multiply :: fn(a: i32, b: i32) i32 {
+    return a * b
+}
+
+PI :: 3.14159

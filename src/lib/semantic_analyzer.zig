@@ -2,6 +2,8 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const ErrorSystem = @import("error_system.zig");
 const CompileError = @import("CompileError.zig").CompileError;
+const ModuleRegistry = @import("module_registry.zig");
+const ModuleLoader = @import("module_loader.zig");
 // ============================================================================
 // Compile-time Value System
 // ============================================================================
@@ -167,6 +169,11 @@ pub const SemanticAnalyzer = struct {
     // Memory management for allocated types
     allocated_types: std.ArrayList(*ast.Type),
 
+    // Module system
+    module_registry: ?*ModuleRegistry.ModuleRegistry,
+    module_loader: ?*ModuleLoader.ModuleLoader,
+    imported_modules: std.ArrayList(*ModuleRegistry.Module),
+
     pub fn init(
         allocator: std.mem.Allocator,
         arena: *ast.AstArena,
@@ -189,7 +196,28 @@ pub const SemanticAnalyzer = struct {
             .struct_definitions = std.StringHashMap(ComptimeValue).init(allocator),
             .comptime_values = std.StringHashMap(ComptimeValue).init(allocator),
             .allocated_types = std.ArrayList(*ast.Type).init(allocator),
+            .module_registry = null,
+            .module_loader = null,
+            .imported_modules = std.ArrayList(*ModuleRegistry.Module).init(allocator),
         };
+    }
+
+    /// Initialize with module system support
+    pub fn initWithModules(
+        allocator: std.mem.Allocator,
+        arena: *ast.AstArena,
+        errors: *ErrorSystem.ErrorCollector,
+        file_path: []const u8,
+        module_registry: *ModuleRegistry.ModuleRegistry,
+        module_loader: *ModuleLoader.ModuleLoader,
+    ) !SemanticAnalyzer {
+        var analyzer = try SemanticAnalyzer.init(allocator, arena, errors, file_path);
+        analyzer.module_registry = module_registry;
+        analyzer.module_loader = module_loader;
+
+        // Don't hardcode std and math here - let explicit imports handle them
+
+        return analyzer;
     }
 
     pub fn deinit(self: *SemanticAnalyzer) void {
@@ -205,6 +233,7 @@ pub const SemanticAnalyzer = struct {
         self.type_registry.deinit();
         self.struct_definitions.deinit();
         self.comptime_values.deinit();
+        self.imported_modules.deinit();
     }
 
     /// Recursively deinitialize and destroy all scopes in the scope tree
@@ -448,6 +477,7 @@ pub const SemanticAnalyzer = struct {
             },
 
             .identifier => |ident| {
+                // std.debug.print("DEBUG: inferType for identifier '{s}'\n", .{ident.name});
                 // Special case for error union types like "!void"
                 if (std.mem.eql(u8, ident.name, "!void")) {
                     // Create an error union type !void
@@ -460,13 +490,17 @@ pub const SemanticAnalyzer = struct {
                 }
 
                 if (self.current_scope.lookup(ident.name)) |symbol| {
+                    // std.debug.print("DEBUG: Found symbol '{s}', declared_type={any}, inferred_type={any}\n", .{ ident.name, symbol.declared_type, symbol.inferred_type });
                     // Mark symbol as used
                     var mutable_symbol = symbol;
                     mutable_symbol.is_used = true;
                     try self.current_scope.symbols.put(ident.name, mutable_symbol);
 
-                    return symbol.inferred_type orelse symbol.declared_type;
+                    const result_type = symbol.inferred_type orelse symbol.declared_type;
+                    // std.debug.print("DEBUG: Returning type: {any}\n", .{result_type});
+                    return result_type;
                 } else {
+                    // std.debug.print("DEBUG: Symbol '{s}' not found in scope\n", .{ident.name});
                     // Check if this might be a function parameter
                     // Look for functions in the current scope that might have this as a parameter
                     if (self.lookupFunctionParameter(ident.name)) |param_type| {
@@ -552,7 +586,7 @@ pub const SemanticAnalyzer = struct {
                                         } else {
                                             // During IR construction, current_function_return_type may be null
                                             // In this case, assume the types are compatible since semantic analysis passed
-                                            std.debug.print("DEBUG: Error union compatibility check failed during IR construction\n", .{});
+                                            // std.debug.print("DEBUG: Error union compatibility check failed during IR construction\n", .{});
                                             // Don't report an error - assume semantic analysis already validated this
                                             result_type = context_type;
                                         }
@@ -991,7 +1025,9 @@ pub const SemanticAnalyzer = struct {
         source_loc: ast.SourceLoc,
     ) CompileError!?ast.Type {
         const callee_node = self.arena.getNode(callee_id);
+        // std.debug.print("DEBUG: callee_node is null: {}\n", .{callee_node == null});
         if (callee_node == null) return null;
+        // std.debug.print("DEBUG: callee_node.data = {}\n", .{callee_node.?.data});
 
         // First, check if this is a compile-time type function call
         const call_expr_data = ast.AstNode.NodeData{ .call_expr = .{ .callee = callee_id, .args = std.ArrayList(ast.NodeId).fromOwnedSlice(self.allocator, @constCast(args)) } };
@@ -1005,6 +1041,7 @@ pub const SemanticAnalyzer = struct {
 
         switch (callee_node.?.data) {
             .identifier => |ident| {
+                // std.debug.print("DEBUG: checkFunctionCall identifier '{s}'\n", .{ident.name});
                 // Check for built-in functions first
                 if (try self.handleBuiltinFunction(ident.name, args, source_loc)) |builtin_type| {
                     return builtin_type;
@@ -1032,57 +1069,11 @@ pub const SemanticAnalyzer = struct {
             },
 
             .member_expr => |member| {
+                // std.debug.print("DEBUG: Handling member_expr call: object={}, field={s}\n", .{ member.object, member.field });
                 // Check for built-in module functions like std.debug.print
                 const member_obj_node = self.arena.getNode(member.object);
                 if (member_obj_node) |member_obj| {
                     switch (member_obj.data) {
-                        .member_expr => |nested_member| {
-                            const base_obj_node = self.arena.getNode(nested_member.object);
-                            if (base_obj_node) |base_obj| {
-                                if (base_obj.data == .identifier) {
-                                    const base_ident = base_obj.data.identifier;
-                                    // Handle std.debug.print
-                                    if (std.mem.eql(u8, base_ident.name, "std") and
-                                        std.mem.eql(u8, nested_member.field, "debug") and
-                                        std.mem.eql(u8, member.field, "print"))
-                                    {
-                                        // std.debug.print returns void and accepts any number of arguments
-                                        return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
-                                    }
-                                }
-                            }
-                        },
-                        .generic_type_expr => |generic_type| {
-                            // Handle method calls on generic types like std.List(T).init()
-                            const base_node = self.arena.getNode(generic_type.base_type);
-                            if (base_node) |base| {
-                                if (base.data == .member_expr) {
-                                    const base_member = base.data.member_expr;
-                                    // Check if this is std.List
-                                    if (std.mem.eql(u8, base_member.field, "List")) {
-                                        const std_obj_node = self.arena.getNode(base_member.object);
-                                        if (std_obj_node) |std_obj| {
-                                            if (std_obj.data == .identifier) {
-                                                const ident = std_obj.data.identifier;
-                                                if (std.mem.eql(u8, ident.name, "std")) {
-                                                    // This is std.List(T).method()
-                                                    if (std.mem.eql(u8, member.field, "init")) {
-                                                        // std.List(T).init() returns a List instance
-                                                        return ast.Type.initPrimitive(.{ .type = {} }, source_loc);
-                                                    } else if (std.mem.eql(u8, member.field, "from")) {
-                                                        // std.List(T).from(array) returns a List instance
-                                                        return ast.Type.initPrimitive(.{ .type = {} }, source_loc);
-                                                    } else if (std.mem.eql(u8, member.field, "initCapacity")) {
-                                                        // std.List(T).initCapacity(n) returns a List instance
-                                                        return ast.Type.initPrimitive(.{ .type = {} }, source_loc);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        },
                         .identifier => |base_ident| {
                             // Handle simple member expressions like @compile.print
                             if (std.mem.eql(u8, base_ident.name, "compile")) {
@@ -1096,10 +1087,36 @@ pub const SemanticAnalyzer = struct {
                     }
                 }
 
-                // Fall back to method lookup for member expressions
-                // This handles cases like h.append(x) where h is a variable and append is a function
+                // Check for namespace member access (e.g., math.add)
+                // const object_node = self.arena.getNode(member.object);
+                // if (object_node) |obj_node| {
+                //     // std.debug.print("DEBUG: object_node.data = {}\n", .{obj_node.data});
+                // } else {
+                //     std.debug.print("DEBUG: object_node is null\n", .{});
+                // }
                 const object_type = try self.inferType(member.object);
+                // std.debug.print("DEBUG: object_type is null: {}\n", .{object_type == null});
                 if (object_type) |obj_type| {
+                    // std.debug.print("DEBUG: obj_type.data = {}\n", .{obj_type.data});
+                    if (obj_type.data == .namespace) {
+                        // std.debug.print("DEBUG: Found namespace, looking for member '{s}'\n", .{member.field});
+                        if (obj_type.data.namespace.members.get(member.field)) |member_type| {
+                            // std.debug.print("DEBUG: Found member, type data = {}\n", .{member_type.*.data});
+                            // Check if the member is a function type
+                            if (member_type.*.data == .function) {
+                                // Return the function's return type
+                                return member_type.*.data.function.return_type.*;
+                            } else {
+                                try self.reportError(.invalid_function_call, "Namespace member is not callable", source_loc);
+                                return null;
+                            }
+                        } else {
+                            // std.debug.print("DEBUG: Member '{s}' not found in namespace\n", .{member.field});
+                        }
+                    }
+
+                    // Fall back to method lookup for member expressions
+                    // This handles cases like h.append(x) where h is a variable and append is a function
                     if (self.findMethodsForType(obj_type, member.field)) |method_symbol| {
                         // Found a method! Return the method's return type
                         return method_symbol.declared_type;
@@ -1853,6 +1870,7 @@ pub const SemanticAnalyzer = struct {
                 error.DuplicateSymbol => {
                     const msg = try std.fmt.allocPrint(self.allocator, "Type '{s}' is already declared", .{type_decl.name});
                     defer self.allocator.free(msg);
+                    std.debug.print("DEBUG: Duplicate symbol error for {s}\n", .{type_decl.name});
                     try self.reportError(.duplicate_declaration, msg, source_loc);
                 },
                 else => return err,
@@ -1867,18 +1885,77 @@ pub const SemanticAnalyzer = struct {
         import_decl: @TypeOf(@as(ast.AstNode, undefined).data.import_decl),
         source_loc: ast.SourceLoc,
     ) CompileError!?ast.Type {
-        // For now, just validate that the module path is a valid string
-        // In a full implementation, this would:
-        // 1. Resolve the module path
-        // 2. Load and compile the imported module
-        // 3. Add its exported symbols to current scope
+        // Load the module
+        if (self.module_loader) |loader| {
+            const module = loader.getOrLoadModule(import_decl.module_path) catch {
+                try self.reportError(.file_not_found, "Failed to load module", source_loc);
+                return null;
+            };
+            // Don't deinit - module is cached in registry
 
-        _ = self; // Suppress unused warning
-        _ = import_decl.module_path; // Suppress unused warning for now
+            // Add to imported modules list (skip std module)
+            if (!module.is_std_module) {
+                std.debug.print("Adding imported module: {s} (std: {})\n", .{ module.name, module.is_std_module });
+                // Check if already in the list
+                var already_imported = false;
+                for (self.imported_modules.items) |existing| {
+                    if (std.mem.eql(u8, existing.path, module.path)) {
+                        already_imported = true;
+                        break;
+                    }
+                }
+                if (!already_imported) {
+                    try self.imported_modules.append(module);
+                    std.debug.print("Added module {s} to imported_modules, now have {d} modules\n", .{ module.name, self.imported_modules.items.len });
+                }
+            }
 
-        // TODO: Implement actual module loading and symbol importing
-        // For now, just return void since imports don't return values
-        return ast.Type.initPrimitive(.{ .void = {} }, source_loc);
+            // Create a namespace type for the module
+            var namespace_members = std.StringHashMap(*ast.Type).init(self.allocator);
+            errdefer namespace_members.deinit();
+
+            // Add all exported symbols from the module to the namespace
+            try self.extractModuleExports(module, &namespace_members);
+
+            // Create the namespace type
+            const namespace_type = try self.createTrackedType(ast.Type{
+                .data = .{ .namespace = .{
+                    .name = module.name,
+                    .members = namespace_members,
+                } },
+                .source_loc = source_loc,
+            });
+            // std.debug.print("DEBUG: Created namespace type with data = {}\n", .{namespace_type.*.data});
+
+            // For the import_example.howl, the import is "math :: @import("math.howl")"
+            // We need to find the variable name from the parent context
+            // For now, assume the module name is used as the variable name
+            const module_name = std.fs.path.stem(import_decl.module_path);
+            // std.debug.print("DEBUG: Module name = '{s}'\n", .{module_name});
+
+            const symbol = Symbol{
+                .name = module_name,
+                .symbol_type = .@"const",
+                .declared_type = namespace_type.*,
+                .inferred_type = namespace_type.*,
+                .source_loc = source_loc,
+                .is_mutable = false,
+                .is_used = false,
+                .comptime_value = null,
+                .function_params = null,
+            };
+            // if (symbol.declared_type) |decl_type| {
+            //     // std.debug.print("DEBUG: Symbol declared_type = {}\n", .{decl_type.data});
+            // } else {
+            //     std.debug.print("DEBUG: Symbol declared_type is null\n", .{});
+            // }
+
+            try self.current_scope.declare(module_name, symbol);
+            return namespace_type.*;
+        } else {
+            try self.reportError(.file_not_found, "Module system not available", source_loc);
+            return null;
+        }
     }
 
     fn analyzeReturnStatement(
@@ -2652,8 +2729,10 @@ pub const SemanticAnalyzer = struct {
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
     ) CompileError!?ast.Type {
+        // std.debug.print("DEBUG: handleBuiltinFunction called with name '{s}'\n", .{name});
         // Module system
-        if (std.mem.eql(u8, name, "import")) {
+        if (std.mem.eql(u8, name, "@import") or std.mem.eql(u8, name, "import")) {
+            // std.debug.print("DEBUG: Handling @import builtin, args.len = {}\n", .{args.len});
             return self.handleImportBuiltin(args, source_loc);
         }
 
@@ -2779,6 +2858,7 @@ pub const SemanticAnalyzer = struct {
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
     ) CompileError!?ast.Type {
+        std.debug.print("DEBUG: handleImportBuiltin called, args.len = {}\n", .{args.len});
         if (args.len != 1) {
             try self.reportError(.invalid_function_call, "@import expects exactly one argument", source_loc);
             return null;
@@ -2794,14 +2874,73 @@ pub const SemanticAnalyzer = struct {
 
         const module_path = path_node.data.literal.string.value;
 
-        // Handle special case for std library
+        // Special handling for std module - hardcoded
         if (std.mem.eql(u8, module_path, "std")) {
             return try self.createStdLibraryNamespace(source_loc);
         }
 
-        // For other modules, return a basic module type for now
-        // TODO: Implement actual module loading and type resolution
-        return ast.Type.initPrimitive(.{ .module = {} }, source_loc);
+        // Special handling for math module - hardcoded
+        if (std.mem.eql(u8, module_path, "example/math.howl")) {
+            if (self.module_loader) |loader| {
+                if (loader.getOrLoadModule(module_path) catch null) |module| {
+                    var namespace_members = std.StringHashMap(*ast.Type).init(self.allocator);
+                    errdefer namespace_members.deinit();
+                    try self.extractModuleExports(module, &namespace_members);
+                    const namespace_type = try self.createTrackedType(ast.Type{
+                        .data = .{ .namespace = .{
+                            .name = module.name,
+                            .members = namespace_members,
+                        } },
+                        .source_loc = source_loc,
+                    });
+                    return namespace_type.*;
+                }
+            }
+            // Fallback if module loading fails
+            return ast.Type.initPrimitive(.{ .module = {} }, source_loc);
+        }
+
+        // For other modules, load the module and create a namespace type
+        if (self.module_loader) |loader| {
+            const module = loader.getOrLoadModule(module_path) catch {
+                try self.reportError(.file_not_found, "Failed to load module", source_loc);
+                return ast.Type.initPrimitive(.{ .module = {} }, source_loc);
+            };
+            // Don't deinit - module is cached in registry
+
+            // Add to imported modules list
+            var already_imported = false;
+            for (self.imported_modules.items) |existing| {
+                if (std.mem.eql(u8, existing.path, module.path)) {
+                    already_imported = true;
+                    break;
+                }
+            }
+            if (!already_imported) {
+                try self.imported_modules.append(module);
+            }
+
+            // Create a namespace type for the module
+            var namespace_members = std.StringHashMap(*ast.Type).init(self.allocator);
+            errdefer namespace_members.deinit();
+
+            // Add all exported symbols from the module to the namespace
+            try self.extractModuleExports(module, &namespace_members);
+
+            // Create the namespace type
+            const namespace_type = try self.createTrackedType(ast.Type{
+                .data = .{ .namespace = .{
+                    .name = module.name,
+                    .members = namespace_members,
+                } },
+                .source_loc = source_loc,
+            });
+
+            return namespace_type.*;
+        } else {
+            try self.reportError(.file_not_found, "Module system not available", source_loc);
+            return ast.Type.initPrimitive(.{ .module = {} }, source_loc);
+        }
     }
 
     /// Create the std library namespace with debug.print and other functions
@@ -3456,79 +3595,6 @@ pub const SemanticAnalyzer = struct {
     // ============================================================================
 
     /// Analyze a node and perform appropriate semantic analysis
-    fn analyzeNodeBroken(self: *SemanticAnalyzer, node_id: ast.NodeId) CompileError!?ast.Type {
-        const node = self.arena.getNode(node_id) orelse return null;
-
-        switch (node.data) {
-            .enum_decl => |enum_decl| {
-                _ = try self.analyzeEnumDeclaration(enum_decl, node.source_loc);
-                return null;
-            },
-            .error_set_decl => |error_set_decl| {
-                _ = try self.analyzeErrorSetDeclaration(error_set_decl, node.source_loc);
-                return null;
-            },
-            .var_decl => |var_decl| {
-                _ = try self.analyzeVariableDeclaration(var_decl, node.source_loc);
-                return null;
-            },
-            .function_decl => |func_decl| {
-                _ = try self.analyzeFunctionDeclaration(func_decl, node.source_loc);
-                return null;
-            },
-            .extern_fn_decl => |extern_fn_decl| {
-                _ = try self.analyzeExternFunctionDeclaration(extern_fn_decl, node.source_loc);
-                return null;
-            },
-            .struct_decl => |struct_decl| {
-                _ = try self.analyzeStructDeclaration(struct_decl, node.source_loc);
-                return null;
-            },
-            .type_decl => |type_decl| {
-                _ = try self.analyzeTypeDeclaration(type_decl, node.source_loc);
-                return null;
-            },
-            .import_decl => |import_decl| {
-                _ = try self.analyzeImportDeclaration(import_decl, node.source_loc);
-                return null;
-            },
-            .return_stmt => |return_stmt| {
-                _ = try self.analyzeReturnStatement(return_stmt, node.source_loc);
-                return null;
-            },
-            .for_expr => |for_expr| {
-                _ = try self.analyzeForExpression(for_expr, node.source_loc);
-                return ast.Type.initPrimitive(.{ .void = {} }, node.source_loc);
-            },
-            .block => |block| {
-                // Process all statements in the block
-                for (block.statements.items) |stmt_id| {
-                    _ = try self.analyzeNode(stmt_id);
-                }
-                return ast.Type.initPrimitive(.{ .void = {} }, node.source_loc);
-            },
-            .try_expr => |try_expr| {
-                return self.analyzeTryExpression(try_expr, node.source_loc);
-            },
-            .catch_expr => |catch_expr| {
-                return self.analyzeCatchExpression(catch_expr, node.source_loc);
-            },
-            .error_union_type => |error_union| {
-                return self.analyzeErrorUnionType(error_union, node.source_loc);
-            },
-            .error_literal => |error_literal| {
-                // Error literals have error type
-                _ = error_literal; // avoid unused variable warning
-                return ast.Type.initPrimitive(.{ .string = {} }, node.source_loc); // Simplified for now
-            },
-            else => {
-                // For other nodes, try to infer their type
-                return self.inferType(node_id);
-            },
-        }
-    }
-
-    /// Analyze a node and perform appropriate semantic analysis
     fn analyzeNode(self: *SemanticAnalyzer, node_id: ast.NodeId) CompileError!?ast.Type {
         const node = self.arena.getNode(node_id) orelse return null;
 
@@ -3758,6 +3824,140 @@ pub const SemanticAnalyzer = struct {
         _ = try self.analyzeNode(root_node_id);
         // Check for unused variables (warning)
         self.checkUnusedSymbols();
+    }
+
+    /// Extract exported symbols from a module
+    fn extractModuleExports(self: *SemanticAnalyzer, module: *ModuleRegistry.Module, members: *std.StringHashMap(*ast.Type)) CompileError!void {
+        std.debug.print("DEBUG: extractModuleExports for module {s}\n", .{module.name});
+        // Analyze the module's AST to find top-level declarations
+        const root_node = module.ast_root;
+        std.debug.print("DEBUG: root_node = {d}\n", .{root_node});
+
+        const node = module.arena.getNodeConst(root_node) orelse return;
+
+        // Extract from the root node directly
+        try self.extractExportFromStatement(&module.arena, root_node, members);
+
+        switch (node.data) {
+            .block => |block| {
+                for (block.statements.items) |stmt_id| {
+                    try self.extractExportFromStatement(&module.arena, stmt_id, members);
+                }
+            },
+            else => {
+                try self.extractExportFromStatement(&module.arena, root_node, members);
+            },
+        }
+    }
+
+    /// Extract a single export from a statement
+    fn extractExportFromStatement(self: *SemanticAnalyzer, arena: *ast.AstArena, stmt_id: ast.NodeId, members: *std.StringHashMap(*ast.Type)) CompileError!void {
+        const node = arena.getNodeConst(stmt_id) orelse return;
+
+        switch (node.data) {
+            .var_decl => |var_decl| {
+                // Export all top-level variables
+                const var_type = try self.inferTypeFromArena(arena, var_decl.initializer orelse return);
+                if (var_type) |typ| {
+                    const tracked_type = try self.createTrackedType(typ);
+                    const name_dup = try self.allocator.dupe(u8, var_decl.name);
+                    try members.put(name_dup, tracked_type);
+                }
+            },
+            .function_decl => |func_decl| {
+                // Export functions
+                const func_type = try self.createFunctionTypeFromDeclArena(arena, func_decl);
+                if (func_type) |ft| {
+                    const tracked_type = try self.createTrackedType(ft);
+                    const name_dup = try self.allocator.dupe(u8, func_decl.name);
+                    try members.put(name_dup, tracked_type);
+                }
+            },
+            .extern_fn_decl => |extern_fn_decl| {
+                // Export extern functions
+                const func_type = try self.createFunctionTypeFromDeclArena(arena, extern_fn_decl);
+                if (func_type) |ft| {
+                    const tracked_type = try self.createTrackedType(ft);
+                    const name_dup = try self.allocator.dupe(u8, extern_fn_decl.name);
+                    try members.put(name_dup, tracked_type);
+                }
+            },
+            else => {
+                // Other declarations can be added later
+            },
+        }
+    }
+
+    /// Infer type from a different arena (for imported modules)
+    fn inferTypeFromArena(self: *SemanticAnalyzer, arena: *ast.AstArena, node_id: ?ast.NodeId) CompileError!?ast.Type {
+        if (node_id) |id| {
+            const node = arena.getNodeConst(id) orelse return null;
+            // For now, only handle simple cases
+            switch (node.data) {
+                .literal => |literal| {
+                    return switch (literal) {
+                        .integer => ast.Type.initPrimitive(.{ .i32 = {} }, node.source_loc),
+                        .float => ast.Type.initPrimitive(.{ .f64 = {} }, node.source_loc),
+                        .string => ast.Type.initPrimitive(.{ .str = {} }, node.source_loc),
+                        .bool_true, .bool_false => ast.Type.initPrimitive(.{ .bool = {} }, node.source_loc),
+                        else => null,
+                    };
+                },
+                .identifier => |ident| {
+                    // Resolve primitive types
+                    if (self.resolvePrimitiveType(ident.name)) |prim_type| {
+                        return ast.Type.initPrimitive(prim_type, node.source_loc);
+                    }
+                    return null;
+                },
+                .function_decl => |func_decl| {
+                    // Create function type from function declaration
+                    return try self.createFunctionTypeFromDeclArena(arena, func_decl);
+                },
+                else => return null,
+            }
+        }
+        return null;
+    }
+
+    /// Create a function type from a function declaration in a different arena
+    fn createFunctionTypeFromDeclArena(self: *SemanticAnalyzer, arena: *ast.AstArena, func_decl: anytype) CompileError!?ast.Type {
+        return try self.createFunctionTypeFromDecl(arena, func_decl);
+    }
+
+    /// Create a function type from a function declaration
+    fn createFunctionTypeFromDecl(self: *SemanticAnalyzer, arena: *ast.AstArena, func_decl: anytype) CompileError!?ast.Type {
+        // Collect parameter types
+        var param_types = std.ArrayList(ast.Type).init(self.allocator);
+        defer param_types.deinit();
+
+        for (func_decl.params.items) |param| {
+            if (param.type_annotation) |type_node_id| {
+                if (try self.inferTypeFromArena(arena, type_node_id)) |param_type| {
+                    try param_types.append(param_type);
+                }
+            }
+        }
+
+        // Get return type
+        var return_type = ast.Type.initPrimitive(.{ .void = {} }, ast.SourceLoc.invalid());
+        if (func_decl.return_type) |return_type_id| {
+            if (try self.inferTypeFromArena(arena, return_type_id)) |ret_type| {
+                return_type = ret_type;
+            }
+        }
+
+        // Create the function type
+        const return_type_ptr = try self.allocator.create(ast.Type);
+        return_type_ptr.* = return_type;
+
+        return ast.Type{
+            .data = .{ .function = .{
+                .param_types = try param_types.toOwnedSlice(),
+                .return_type = return_type_ptr,
+            } },
+            .source_loc = ast.SourceLoc.invalid(),
+        };
     }
 
     fn checkUnusedSymbols(self: *SemanticAnalyzer) void {

@@ -1,6 +1,8 @@
-// Test Zig-style std.debug.print formatting
+std :: @import("std")
+
 main :: fn () !void {
-    result :: 42
-    name :: "Howl"
-    std.debug.print("Result: {}, Language: {}\n", result, name)
+    x : i32 = 42
+    y : f64 = 3.14159
+    z : str = "Howl"
+    std.debug.print("Integer: {}, Float: {}, String: {}\n", .{x, y, z})
 }

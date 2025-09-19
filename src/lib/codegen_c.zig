@@ -129,6 +129,11 @@ pub const CCodegen = struct {
             try functions.generateErrorUnionImplementation(writer, error_union_type);
         }
 
+        // Generate optional types
+        for (self.type_collection.optional_types.items) |optional_type| {
+            try functions.generateOptionalImplementation(writer, optional_type);
+        }
+
         // Generate List implementations for used types
         for (self.type_collection.list_types.items) |list_type| {
             try functions.generateListImplementation(writer, list_type);
@@ -314,8 +319,27 @@ pub const CCodegen = struct {
                         const payload_type_info = self.getNodeType(error_union.payload_type);
                         const payload_type_str = types.generateCType(self, payload_type_info);
 
+                        // Handle optional types specially for error union names
+                        var sanitized_payload: []const u8 = undefined;
+                        if (std.mem.startsWith(u8, payload_type_str, "Optional_") and std.mem.endsWith(u8, payload_type_str, "_t")) {
+                            // Convert Optional_MyStruct_t to OptMyStruct
+                            const inner_part = payload_type_str[9 .. payload_type_str.len - 2]; // Remove "Optional_" and "_t"
+                            sanitized_payload = try std.fmt.allocPrint(self.allocator, "Opt{s}", .{inner_part});
+
+                            // Also collect the optional type
+                            const optional_struct_name = try self.allocator.dupe(u8, payload_type_str);
+                            const inner_type = try self.allocator.dupe(u8, inner_part);
+                            const collected_optional = types.CollectedOptional{
+                                .inner_type = inner_type,
+                                .struct_name = optional_struct_name,
+                            };
+                            try self.type_collection.optional_types.append(collected_optional);
+                        } else {
+                            sanitized_payload = try self.allocator.dupe(u8, self.sanitizeTypeForName(payload_type_str));
+                        }
+
                         // Generate struct name
-                        const struct_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_ErrorUnion", .{ error_set_name, self.sanitizeTypeForName(payload_type_str) });
+                        const struct_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_Union", .{ error_set_name, sanitized_payload });
 
                         // Check if we already have this combination
                         for (self.type_collection.error_union_types.items) |existing| {
@@ -361,6 +385,13 @@ pub const CCodegen = struct {
         if (std.mem.eql(u8, type_str, "ptrdiff_t")) return "isize";
         if (std.mem.eql(u8, type_str, "void")) return "void";
 
+        // Handle optional types - convert Optional_MyStruct_t to OptMyStruct
+        if (std.mem.startsWith(u8, type_str, "Optional_") and std.mem.endsWith(u8, type_str, "_t")) {
+            // For now, return the original type_str since we can't allocate here
+            // This will be handled in the calling function
+            return type_str;
+        }
+
         // For custom types, just use the type string directly
         return type_str;
     }
@@ -375,6 +406,8 @@ pub const CCodegen = struct {
             if (return_type_node) |node| {
                 // Check for various error union patterns
                 if (node.data == .error_union_type) {
+                    try self.collectErrorUnionFromNode(return_type_node_id);
+                } else if (node.data == .error_union_type_expr) {
                     try self.collectErrorUnionFromNode(return_type_node_id);
                 } else if (node.data == .identifier) {
                     // This might be a !Type syntax - check the function's semantic info
@@ -530,7 +563,7 @@ pub const CCodegen = struct {
             },
             .struct_decl => |struct_decl| {
                 // Handle direct struct declarations like MyStruct :: struct { ... }
-                std.debug.print("DEBUG: collectFromNode struct_decl name={s} fields={d}\n", .{ struct_decl.name, struct_decl.fields.items.len });
+                // std.debug.print("DEBUG: collectFromNode struct_decl name={s} fields={d}\n", .{ struct_decl.name, struct_decl.fields.items.len });
                 const collected_struct = CollectedStruct{
                     .name = try self.allocator.dupe(u8, struct_decl.name),
                     .fields = struct_decl.fields.items,
@@ -538,7 +571,7 @@ pub const CCodegen = struct {
                     .is_comptime = struct_decl.is_comptime,
                 };
                 try self.type_collection.struct_types.append(collected_struct);
-                std.debug.print("DEBUG: appended struct {s}, total now {d}\n", .{ struct_decl.name, self.type_collection.struct_types.items.len });
+                // std.debug.print("DEBUG: appended struct {s}, total now {d}\n", .{ struct_decl.name, self.type_collection.struct_types.items.len });
             },
             .error_set_decl => |error_set_decl| {
                 // Handle error set declarations like MyError :: error { ... }
@@ -562,17 +595,17 @@ pub const CCodegen = struct {
                 try self.type_collection.enum_types.append(collected_enum);
             },
             .var_decl => |var_decl| {
-                std.debug.print("DEBUG: Found var_decl: {s}\n", .{var_decl.name});
+                // std.debug.print("DEBUG: Found var_decl: {s}\n", .{var_decl.name});
                 // Check if this is a struct declaration like MyStruct :: struct { ... }
                 if (var_decl.initializer) |init_id| {
-                    std.debug.print("DEBUG: var_decl has initializer\n", .{});
+                    // std.debug.print("DEBUG: var_decl has initializer\n", .{});
                     const init_node = self.arena.getNodeConst(init_id);
                     if (init_node) |init_data| {
-                        std.debug.print("DEBUG: init_node type: {}\n", .{init_data.data});
+                        // std.debug.print("DEBUG: init_node type: {}\n", .{init_data.data});
                         if (init_data.data == .struct_decl) {
                             const struct_decl = init_data.data.struct_decl;
                             // Collect this struct
-                            std.debug.print("DEBUG: Collecting struct: {s}\n", .{var_decl.name});
+                            // std.debug.print("DEBUG: Collecting struct: {s}\n", .{var_decl.name});
                             const collected_struct = CollectedStruct{
                                 .name = try self.allocator.dupe(u8, var_decl.name),
                                 .fields = struct_decl.fields.items,
@@ -600,9 +633,9 @@ pub const CCodegen = struct {
     pub fn inferReturnTypeFromBody(self: *CCodegen, body_node_id: ast.NodeId) ?[]const u8 {
         // Look for return statements that call struct constructors
         const result = self.findReturnTypeInNode(body_node_id);
-        if (result) |found_type| {
-            std.debug.print("DEBUG: Inferred return type: {s}\n", .{found_type});
-        }
+        // if (result) |found_type| {
+        //     // std.debug.print("DEBUG: Inferred return type: {s}\n", .{found_type});
+        // }
         return result;
     }
 

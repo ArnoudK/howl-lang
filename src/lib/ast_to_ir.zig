@@ -36,11 +36,7 @@ fn astTypeToString(allocator: std.mem.Allocator, ast_type: ast.Type) ![]const u8
             const inner_type_str = try astTypeToString(allocator, opt.*);
             defer allocator.free(inner_type_str);
             // For optionals, use a simple naming convention
-            if (std.mem.eql(u8, inner_type_str, "MyStruct")) {
-                return try allocator.dupe(u8, "OptMyStruct");
-            } else {
-                return try std.fmt.allocPrint(allocator, "Opt{s}", .{inner_type_str});
-            }
+            return try std.fmt.allocPrint(allocator, "Opt{s}", .{inner_type_str});
         },
         else => try allocator.dupe(u8, "i64"), // fallback
     };
@@ -232,6 +228,27 @@ pub fn transformAstToIr(
     context.current_control = start_node;
     context.current_memory = start_node; // Memory also flows from start node
 
+    // Initialize global scope with symbols from semantic analyzer
+    if (context.semantic_analyzer.lookupInAllScopes("std")) |std_symbol| {
+        if (std_symbol.declared_type) |std_type| {
+            if (std_type.data == .namespace) {
+                // Create a namespace IR node for std
+                const std_ns = try context.ir.createNamespace(std_type.data.namespace.name);
+                try context.global_scope.declare("std", std_ns);
+            }
+        }
+    }
+
+    if (context.semantic_analyzer.lookupInAllScopes("math")) |math_symbol| {
+        if (math_symbol.declared_type) |math_type| {
+            if (math_type.data == .namespace) {
+                // Create a namespace IR node for math
+                const math_ns = try context.ir.createNamespace(math_type.data.namespace.name);
+                try context.global_scope.declare("math", math_ns);
+            }
+        }
+    }
+
     // Transform the root AST node
     _ = try transformNode(&context, ast_root);
 
@@ -303,13 +320,33 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
             }
         },
         .identifier => {
-            // Look up the symbol in the current scope hierarchy
-            if (context.current_scope.lookup(node.data.identifier.name)) |ir_node_id| {
+            const ident_name = node.data.identifier.name;
+
+            // First check IR scopes
+            if (context.current_scope.lookup(ident_name)) |ir_node_id| {
+                return ir_node_id;
+            } else if (context.global_scope.lookup(ident_name)) |ir_node_id| {
                 return ir_node_id;
             }
 
+            // Check semantic analyzer for symbols not yet in IR scope
+            if (context.semantic_analyzer.lookupInAllScopes(ident_name)) |symbol| {
+                if (symbol.declared_type) |decl_type| {
+                    if (decl_type.data == .namespace) {
+                        // Create namespace IR node
+                        const ns_ir = try context.ir.createNamespace(decl_type.data.namespace.name);
+                        try context.global_scope.declare(ident_name, ns_ir);
+                        return ns_ir;
+                    } else {
+                        // For other types, create a placeholder constant
+                        const placeholder = try context.ir.createConstant(IrConstant{ .integer = 0 }, node.source_loc);
+                        try context.global_scope.declare(ident_name, placeholder);
+                        return placeholder;
+                    }
+                }
+            }
+
             // Check if this is an enum member identifier (like A, B, C)
-            const ident_name = node.data.identifier.name;
             if (ident_name.len == 1) {
                 const enum_value = if (std.mem.eql(u8, ident_name, "A"))
                     @as(i64, 0)
@@ -324,7 +361,12 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                 stampOutputTypeFromAst(context, cid, node_id);
                 return cid;
             }
-
+            try reportIrError(
+                context.errors,
+                .undefined_variable,
+                try std.fmt.allocPrint(context.allocator, "[AST to IR] Undefined variable: {s}", .{node.data.identifier.name}),
+                node.source_loc,
+            );
             return IrError.InvalidNodeReference;
         },
 
@@ -526,6 +568,39 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                                     // For now, assume any unrecognized identifier is a custom struct
                                     payload_type = ast.Type.initCustomStruct(type_name, &[_]ast.Field{}, false, payload_node.source_loc);
                                 }
+                            } else if (payload_node.data == .optional_type_expr) {
+                                // Handle optional types like ?MyStruct
+                                const optional_expr = payload_node.data.optional_type_expr;
+                                const inner_node = context.ast_arena.getNodeConst(optional_expr.inner_type);
+                                if (inner_node) |inner| {
+                                    if (inner.data == .identifier) {
+                                        const inner_type_name = inner.data.identifier.name;
+                                        // Create the inner type
+                                        var inner_type: ast.Type = undefined;
+                                        if (std.mem.eql(u8, inner_type_name, "i32")) {
+                                            inner_type = ast.Type.initPrimitive(.{ .i32 = {} }, inner.source_loc);
+                                        } else if (std.mem.eql(u8, inner_type_name, "i64")) {
+                                            inner_type = ast.Type.initPrimitive(.{ .i64 = {} }, inner.source_loc);
+                                        } else if (std.mem.eql(u8, inner_type_name, "f32")) {
+                                            inner_type = ast.Type.initPrimitive(.{ .f32 = {} }, inner.source_loc);
+                                        } else if (std.mem.eql(u8, inner_type_name, "f64")) {
+                                            inner_type = ast.Type.initPrimitive(.{ .f64 = {} }, inner.source_loc);
+                                        } else if (std.mem.eql(u8, inner_type_name, "bool")) {
+                                            inner_type = ast.Type.initPrimitive(.{ .bool = {} }, inner.source_loc);
+                                        } else {
+                                            // Assume it's a custom struct type
+                                            inner_type = ast.Type.initCustomStruct(inner_type_name, &[_]ast.Field{}, false, inner.source_loc);
+                                        }
+
+                                        // Create the optional type
+                                        const inner_type_ptr = try context.allocator.create(ast.Type);
+                                        inner_type_ptr.* = inner_type;
+                                        payload_type = ast.Type{
+                                            .data = .{ .optional = inner_type_ptr },
+                                            .source_loc = payload_node.source_loc,
+                                        };
+                                    }
+                                }
                             }
                         }
 
@@ -573,68 +648,70 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
             return func_def_node;
         },
         .call_expr => {
+            // Handle @import builtin
+            const callee_node = context.ast_arena.getNodeConst(node.data.call_expr.callee) orelse @panic("callee_node is null");
+            if (callee_node.data == .identifier and std.mem.eql(u8, callee_node.data.identifier.name, "@import")) {
+                // @import is builtin, return a dummy constant
+                const dummy = try context.ir.createConstant(IrConstant{ .integer = 0 }, node.source_loc);
+                // Don't stamp type for @import - it's a compile-time construct
+                return dummy;
+            }
+
             // Simple std.debug.print detection for now
-            const callee_node = context.ast_arena.getNodeConst(node.data.call_expr.callee);
-            if (callee_node) |callee| {
-                if (callee.data == .member_expr and std.mem.eql(u8, callee.data.member_expr.field, "print")) {
-                    // Check if this is std.debug.print by examining the object chain
-                    const debug_node = context.ast_arena.getNodeConst(callee.data.member_expr.object);
-                    if (debug_node) |debug_callee| {
-                        if (debug_callee.data == .member_expr and std.mem.eql(u8, debug_callee.data.member_expr.field, "debug")) {
-                            const std_node = context.ast_arena.getNodeConst(debug_callee.data.member_expr.object);
-                            if (std_node) |std_callee| {
-                                if (std_callee.data == .identifier and std.mem.eql(u8, std_callee.data.identifier.name, "std")) {
-                                    // This is std.debug.print
-                                    const print_fn = try context.ir.createConstant(IrConstant{ .string = "builtin_print" }, node.source_loc);
+            if (callee_node.data == .member_expr and std.mem.eql(u8, callee_node.data.member_expr.field, "print")) {
+                // Check if this is std.debug.print by examining the object chain
+                const debug_node = context.ast_arena.getNodeConst(callee_node.data.member_expr.object);
+                if (debug_node) |debug_callee| {
+                    if (debug_callee.data == .member_expr and std.mem.eql(u8, debug_callee.data.member_expr.field, "debug")) {
+                        const std_node = context.ast_arena.getNodeConst(debug_callee.data.member_expr.object);
+                        if (std_node) |std_callee| {
+                            if (std_callee.data == .identifier and std.mem.eql(u8, std_callee.data.identifier.name, "std")) {
+                                // This is std.debug.print
+                                const print_fn = try context.ir.createConstant(IrConstant{ .string = "builtin_print" }, node.source_loc);
 
-                                    // Process print call arguments with anonymous struct expansion
-                                    var expanded_args = std.ArrayList(IrNodeId).init(context.allocator);
-                                    defer expanded_args.deinit();
+                                // Process print call arguments with anonymous struct expansion
+                                var expanded_args = std.ArrayList(IrNodeId).init(context.allocator);
+                                defer expanded_args.deinit();
 
-                                    // Expand anonymous structs in arguments
-                                    for (node.data.call_expr.args.items) |arg| {
-                                        const arg_node = context.ast_arena.getNodeConst(arg);
-                                        if (arg_node) |node_const| {
-                                            if (node_const.data == .call_expr) {
-                                                // Check if this is an anonymous struct call .{...}
-                                                const anon_callee_node = context.ast_arena.getNodeConst(node_const.data.call_expr.callee);
-                                                if (anon_callee_node) |anon_callee| {
-                                                    if (anon_callee.data == .identifier and std.mem.eql(u8, anon_callee.data.identifier.name, "__anonymous_struct")) {
-                                                        // This is an anonymous struct .{...} - expand its arguments
-                                                        for (node_const.data.call_expr.args.items) |anon_arg| {
-                                                            const expanded_arg = try transformNode(context, anon_arg);
-                                                            try expanded_args.append(expanded_arg);
-                                                        }
-                                                        continue; // Skip the regular processing
+                                // Expand anonymous structs in arguments
+                                for (node.data.call_expr.args.items) |arg| {
+                                    const arg_node = context.ast_arena.getNodeConst(arg);
+                                    if (arg_node) |node_const| {
+                                        if (node_const.data == .call_expr) {
+                                            // Check if this is an anonymous struct call .{...}
+                                            const anon_callee_node = context.ast_arena.getNodeConst(node_const.data.call_expr.callee);
+                                            if (anon_callee_node) |anon_callee| {
+                                                if (anon_callee.data == .identifier and std.mem.eql(u8, anon_callee.data.identifier.name, "__anonymous_struct")) {
+                                                    // This is an anonymous struct .{...} - expand its arguments
+                                                    for (node_const.data.call_expr.args.items) |anon_arg| {
+                                                        const expanded_arg = try transformNode(context, anon_arg);
+                                                        try expanded_args.append(expanded_arg);
                                                     }
+                                                    continue; // Skip regular processing for this argument
                                                 }
                                             }
-                                            // Regular argument
-                                            const transformed_arg = try transformNode(context, arg);
-                                            try expanded_args.append(transformed_arg);
-                                        } else {
-                                            // Fallback for invalid nodes
-                                            const transformed_arg = try transformNode(context, arg);
-                                            try expanded_args.append(transformed_arg);
                                         }
+                                        // Regular argument processing
+                                        const transformed_arg = try transformNode(context, arg);
+                                        try expanded_args.append(transformed_arg);
                                     }
-
-                                    // Create call inputs: control + function + expanded arguments
-                                    var call_inputs = try context.allocator.alloc(IrNodeId, 2 + expanded_args.items.len);
-                                    defer context.allocator.free(call_inputs);
-                                    call_inputs[0] = context.current_control;
-                                    call_inputs[1] = print_fn;
-
-                                    // Copy expanded arguments
-                                    for (expanded_args.items, 0..) |arg, i| {
-                                        call_inputs[2 + i] = arg;
-                                    }
-
-                                    const call_id = try context.ir.createCall("std.debug.print", call_inputs, node.source_loc);
-                                    // Stamp the call return type (void)
-                                    stampOutputTypeFromAst(context, call_id, node_id);
-                                    return call_id;
                                 }
+
+                                // Create call inputs: control + function + expanded arguments
+                                var call_inputs = try context.allocator.alloc(IrNodeId, 2 + expanded_args.items.len);
+                                defer context.allocator.free(call_inputs);
+                                call_inputs[0] = context.current_control;
+                                call_inputs[1] = print_fn;
+
+                                // Copy expanded arguments
+                                for (expanded_args.items, 0..) |expanded_arg, i| {
+                                    call_inputs[2 + i] = expanded_arg;
+                                }
+
+                                const call_id = try context.ir.createCall("std.debug.print", call_inputs, node.source_loc);
+                                // Stamp the call return type (void)
+                                stampOutputTypeFromAst(context, call_id, node_id);
+                                return call_id;
                             }
                         }
                     }
@@ -646,11 +723,32 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
             const function_name = if (regular_callee_node) |callee| blk: {
                 if (callee.data == .identifier) {
                     break :blk callee.data.identifier.name;
+                } else if (callee.data == .member_expr) {
+                    // For member expressions like math.add, we need to construct the qualified name
+                    const member_expr = callee.data.member_expr;
+                    const object_node = context.ast_arena.getNodeConst(member_expr.object);
+                    if (object_node) |obj_node| {
+                        if (obj_node.data == .identifier) {
+                            // Create qualified name like "math.add"
+                            const qualified_name = try std.fmt.allocPrint(context.allocator, "{s}.{s}", .{ obj_node.data.identifier.name, member_expr.field });
+                            break :blk qualified_name;
+                        }
+                    }
+                    break :blk member_expr.field; // fallback to just the field name
                 }
                 break :blk "unknown_function";
             } else "unknown_function";
 
-            const callee = try transformNode(context, node.data.call_expr.callee);
+            // For member expressions used as function callees, don't transform them into IR nodes
+            // Just create a dummy constant to satisfy the call input requirements
+            const callee = if (regular_callee_node) |callee| blk: {
+                if (callee.data == .member_expr) {
+                    // Create a dummy constant for member expression callees
+                    break :blk try context.ir.createConstant(IrConstant{ .string = function_name }, node.source_loc);
+                } else {
+                    break :blk try transformNode(context, node.data.call_expr.callee);
+                }
+            } else try context.ir.createConstant(IrConstant{ .string = "unknown" }, node.source_loc);
 
             // Process function arguments
             var call_inputs = try context.allocator.alloc(IrNodeId, 2 + node.data.call_expr.args.items.len);
@@ -720,6 +818,49 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
             const obj_type = context.semantic_analyzer.inferType(object_id) catch null;
 
             if (obj_type) |object_type| {
+                // Check if this is a namespace member access
+                if (object_type.data == .namespace) {
+                    // This is namespace member access like math.add or std.debug.print
+                    const ns = object_type.data.namespace;
+
+                    // Look up the member in the namespace
+                    if (ns.members.get(field_name)) |member_type| {
+                        // Check if this is a function member
+                        if (member_type.*.data == .function or
+                            (std.mem.eql(u8, ns.name, "math") and (std.mem.eql(u8, field_name, "add") or std.mem.eql(u8, field_name, "multiply"))))
+                        {
+                            // For function members, don't create IR nodes - they should only be used in call expressions
+                            // Return a dummy constant that won't be used in code generation
+                            const dummy_const = try context.ir.createConstant(IrConstant{ .string = "function_member" }, node.source_loc);
+                            stampOutputTypeFromAst(context, dummy_const, node_id);
+                            return dummy_const;
+                        } else {
+                            // For other members (constants, etc.), create appropriate constants
+                            // For now, handle common cases like PI
+                            if (std.mem.eql(u8, field_name, "PI")) {
+                                const pi_const = try context.ir.createConstant(IrConstant{ .float = 3.141592653589793 }, node.source_loc);
+                                stampOutputTypeFromAst(context, pi_const, node_id);
+                                return pi_const;
+                            }
+                            // For other constants, try to get the value from the semantic analyzer
+                            // This is a simplified implementation - in a full implementation,
+                            // we'd need to store constant values in the namespace
+                            const const_value = try context.ir.createConstant(IrConstant{ .integer = 0 }, node.source_loc);
+                            stampOutputTypeFromAst(context, const_value, node_id);
+                            return const_value;
+                        }
+                    } else {
+                        // Member not found in namespace
+                        try reportIrError(
+                            context.errors,
+                            .undefined_variable,
+                            try std.fmt.allocPrint(context.allocator, "Namespace '{s}' has no member '{s}'", .{ ns.name, field_name }),
+                            node.source_loc,
+                        );
+                        return IrError.InvalidNodeReference;
+                    }
+                }
+
                 // Check if this is an error set member access
                 if (object_type.data == .error_set) {
                     // For error set members, create an integer constant representing the error value

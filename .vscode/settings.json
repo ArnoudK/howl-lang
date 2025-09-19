@@ -14,5 +14,6 @@
         "optional": "c",
         "format": "c",
         "ranges": "c"
-    }
+    },
+    "C_Cpp.default.compilerPath": "/usr/bin/clang"
 }

@@ -17,6 +17,10 @@ const IrOptimizer = @import("ir_optimizer.zig");
 const JsIrCodegen = @import("codegen_js_ir.zig");
 const CIrCodegen = @import("codegen_c_ir.zig");
 
+// Module system imports
+const ModuleRegistry = @import("module_registry.zig");
+const ModuleLoader = @import("module_loader.zig");
+
 // ============================================================================
 // Compilation Process Manager
 // ============================================================================
@@ -82,10 +86,28 @@ pub const Compiler = struct {
     source_map: ErrorSystem.SourceMap,
     source_maps: std.StringHashMap(ErrorSystem.SourceMap),
 
+    // Module system
+    module_registry: ModuleRegistry.ModuleRegistry,
+    module_loader: ModuleLoader.ModuleLoader,
+
     pub fn init(allocator: std.mem.Allocator, options: CompileOptions) CompileError!Compiler {
         var source_maps = std.StringHashMap(ErrorSystem.SourceMap).init(allocator);
         const source_map = try ErrorSystem.SourceMap.init(allocator, options.source_content);
         try source_maps.put(options.file_path, source_map);
+
+        // Initialize module system
+        var module_registry = ModuleRegistry.ModuleRegistry.init(allocator);
+        var module_loader = ModuleLoader.ModuleLoader.init(allocator, &module_registry);
+
+        // Add default search paths
+        try module_loader.addSearchPath("src");
+        try module_loader.addSearchPath(".");
+
+        // Add the directory of the current file to search paths
+        const file_dir = std.fs.path.dirname(options.file_path) orelse ".";
+        if (!std.mem.eql(u8, file_dir, ".")) {
+            try module_loader.addSearchPath(file_dir);
+        }
 
         return Compiler{
             .allocator = allocator,
@@ -93,6 +115,8 @@ pub const Compiler = struct {
             .arena = ast.AstArena.init(allocator),
             .source_map = source_map,
             .source_maps = source_maps,
+            .module_registry = module_registry,
+            .module_loader = module_loader,
         };
     }
 
@@ -168,7 +192,7 @@ pub const Compiler = struct {
             return result;
         }
 
-        std.debug.print("Parsing completed: {d} AST nodes\n", .{ast_root.?});
+        std.debug.print("Parsing completed: {d} AST nodes, root node: {d}\n", .{ self.arena.nodes.items.len, ast_root.? });
 
         // Phase 3: Semantic Analysis
         result.phase_completed = .semantic_analysis;
@@ -288,11 +312,13 @@ pub const Compiler = struct {
     }
 
     fn performSemanticAnalysis(self: *Compiler, root_node: ast.NodeId, errors: *ErrorSystem.ErrorCollector) CompileError!SemanticAnalyzer {
-        var analyzer = try SemanticAnalyzer.init(
+        var analyzer = try SemanticAnalyzer.initWithModules(
             self.allocator,
             &self.arena,
             errors,
             self.options.file_path,
+            &self.module_registry,
+            &self.module_loader,
         );
 
         analyzer.analyzeProgram(root_node) catch |err| {
@@ -324,8 +350,63 @@ pub const Compiler = struct {
         return js_code;
     }
 
+    fn buildIrForModule(self: *Compiler, module: *ModuleRegistry.Module, errors: *ErrorSystem.ErrorCollector) CompileError!*SeaOfNodes {
+        // Perform semantic analysis on the module
+        var module_analyzer = self.performSemanticAnalysis(module.ast_root, errors) catch |err| {
+            std.debug.print("Semantic analysis failed for module '{s}': {}\n", .{ module.name, err });
+            return err;
+        };
+        defer module_analyzer.deinit();
+
+        // Build IR for the module
+        var module_ir = AstToIr.transformAstToIr(
+            self.allocator,
+            module.ast_root,
+            &module_analyzer,
+            &module.arena,
+            errors,
+        ) catch |err| {
+            std.debug.print("IR construction failed for module '{s}': {}\n", .{ module.name, err });
+            return err;
+        };
+        errdefer module_ir.deinit();
+
+        // Allocate on heap so we can return a pointer
+        const module_ir_ptr = try self.allocator.create(SeaOfNodes);
+        module_ir_ptr.* = module_ir;
+
+        return module_ir_ptr;
+    }
+
     fn generateCExecutableFromIr(self: *Compiler, ir: *SeaOfNodes, analyzer: *SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) CompileError![]const u8 {
         std.debug.print("Generating C code from Sea-of-Nodes IR...\n", .{});
+
+        // Generate C code for imported modules first
+        std.debug.print("Found {d} imported modules\n", .{analyzer.imported_modules.items.len});
+        for (analyzer.imported_modules.items) |module| {
+            std.debug.print("Processing imported module: {s}\n", .{module.name});
+            const module_ir = try self.buildIrForModule(module, errors);
+            defer module_ir.deinit();
+
+            // Generate C code for the module
+            const module_c_code = try CIrCodegen.generateCFromIr(self.allocator, module_ir, analyzer);
+            defer self.allocator.free(module_c_code);
+
+            // Write module C code to file
+            const module_c_filename = try std.fmt.allocPrint(self.allocator, "howl-out/{s}.c", .{module.name});
+            defer self.allocator.free(module_c_filename);
+
+            try std.fs.cwd().writeFile(.{ .sub_path = module_c_filename, .data = module_c_code });
+
+            // Generate header file for the module
+            const module_h_filename = try std.fmt.allocPrint(self.allocator, "howl-out/{s}.h", .{module.name});
+            defer self.allocator.free(module_h_filename);
+
+            const header_content = try std.fmt.allocPrint(self.allocator, "#ifndef {s}_H\n#define {s}_H\n\n// Header for module {s}\n\n#endif\n", .{ module.name, module.name, module.name });
+            defer self.allocator.free(header_content);
+
+            try std.fs.cwd().writeFile(.{ .sub_path = module_h_filename, .data = header_content });
+        }
 
         // Use the new IR-based C code generator with compilation
         const c_code = CIrCodegen.generateAndCompileCFromIr(

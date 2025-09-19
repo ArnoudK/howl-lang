@@ -1,4 +1,19 @@
-@import("std")
+std :: @import("std")
+math :: @import("example/math.howl")
 
-main := 42
-result := main + 10
+
+main :: fn () !void {
+    // Test math functions
+    sum : i32 = math.add(5, 7)
+    product : i32 = math.multiply(4, 6)
+
+    // Test math constants
+    pi_value : f64 = math.PI
+
+    // Test std.debug.print
+    std.debug.print("Sum: {}, Product: {}, PI: {}\n", .{sum, product, pi_value})
+
+    // Test that we can use the same functions multiple times
+    another_sum : i32 = math.add(10, 20)
+    std.debug.print("Another sum: {}\n", .{another_sum})
+}
