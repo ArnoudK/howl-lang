@@ -84,7 +84,7 @@ pub const AstArena = struct {
         }
         self.nodes.deinit();
     }
-    
+
     fn deinitNode(self: *AstArena, node: *AstNode) void {
         _ = self; // suppress unused parameter warning
         switch (node.data) {
@@ -92,7 +92,7 @@ pub const AstArena = struct {
             .function_decl => |*func| func.params.deinit(),
             .extern_fn_decl => |*extern_fn| extern_fn.params.deinit(),
             .struct_decl => |*struct_decl| struct_decl.fields.deinit(),
-            .enum_decl => |*enum_decl| enum_decl.members.deinit(),  // Fix memory leak!
+            .enum_decl => |*enum_decl| enum_decl.members.deinit(), // Fix memory leak!
             .union_decl => |*union_decl| union_decl.variants.deinit(),
             .block => |*block| block.statements.deinit(),
             .match_expr => |*match| match.arms.deinit(),
@@ -132,11 +132,11 @@ pub const AstArena = struct {
 pub const BinaryOp = enum {
     // Assignment (lowest precedence)
     assign,
-    
+
     // Logical
     logical_or,
     logical_and,
-    
+
     // Equality and comparison
     eq,
     ne,
@@ -144,7 +144,7 @@ pub const BinaryOp = enum {
     le,
     gt,
     ge,
-    
+
     // Arithmetic
     add,
     sub,
@@ -153,14 +153,14 @@ pub const BinaryOp = enum {
     mod,
     power,
     concat, // String concatenation (++)
-    
+
     // Bitwise
     bit_and,
     bit_or,
     bit_xor,
     shl,
     shr,
-    
+
     // Special
     range,
     pipe,
@@ -251,18 +251,18 @@ pub const PrimitiveType = union(enum) {
     u16: void,
     u32: void,
     u64: void,
-    usize: void,   // Platform-dependent unsigned integer
-    isize: void,   // Platform-dependent signed integer
+    usize: void, // Platform-dependent unsigned integer
+    isize: void, // Platform-dependent signed integer
     f32: void,
     f64: void,
     char: void,
-    str: void,     // Readonly string (const char*)
-    strb: void,    // StringBuilder (mutable string builder)
-    string: void,  // Legacy string type (kept for compatibility)
+    str: void, // Readonly string (const char*)
+    strb: void, // StringBuilder (mutable string builder)
+    string: void, // Legacy string type (kept for compatibility)
     void: void,
-    type: void,    // The 'type' type for compile-time type manipulation
+    type: void, // The 'type' type for compile-time type manipulation
     noreturn: void, // Type for functions that never return
-    module: void,  // Type for imported modules
+    module: void, // Type for imported modules
 };
 
 pub const Type = struct {
@@ -276,22 +276,22 @@ pub const Type = struct {
             element_type: *Type,
             size: ?usize, // null for slices
         },
-         @"struct": struct {
-             name: []const u8,
-             fields: []Field,
-         },
-         @"enum": struct {
-             name: []const u8,
-             members: []EnumMember,
-         },
-         namespace: struct {
-             name: []const u8,
-             members: std.StringHashMap(*Type), // Named members of the namespace
-         },
-         function: struct {
-             param_types: []Type,
-             return_type: *Type,
-         },
+        @"struct": struct {
+            name: []const u8,
+            fields: []Field,
+        },
+        @"enum": struct {
+            name: []const u8,
+            members: []EnumMember,
+        },
+        namespace: struct {
+            name: []const u8,
+            members: std.StringHashMap(*Type), // Named members of the namespace
+        },
+        function: struct {
+            param_types: []Type,
+            return_type: *Type,
+        },
         optional: *Type,
         union_type: struct {
             name: []const u8,
@@ -446,9 +446,9 @@ pub const Type = struct {
                 defer allocator.free(inner_str);
                 return try std.fmt.allocPrint(allocator, "?{s}", .{inner_str});
             },
-             .@"struct" => |s| try allocator.dupe(u8, s.name),
-             .namespace => |ns| try std.fmt.allocPrint(allocator, "namespace({s})", .{ns.name}),
-             .custom_struct => |s| try allocator.dupe(u8, s.name),
+            .@"struct" => |s| try allocator.dupe(u8, s.name),
+            .namespace => |ns| try std.fmt.allocPrint(allocator, "namespace({s})", .{ns.name}),
+            .custom_struct => |s| try allocator.dupe(u8, s.name),
             .comptime_type => "comptime_type",
             .unknown => "unknown",
             else => "complex_type",
@@ -567,18 +567,18 @@ pub const UnionVariant = struct {
 };
 
 // ============================================================================
-// For Loop Capture Support  
+// For Loop Capture Support
 // ============================================================================
 
 pub const ForCapture = struct {
-    name: []const u8,              // Variable name (could be "_" for ignored)
-    capture_type: CaptureType,     // What kind of capture this is
+    name: []const u8, // Variable name (could be "_" for ignored)
+    capture_type: CaptureType, // What kind of capture this is
     source_loc: SourceLoc,
 };
 
 pub const CaptureType = enum {
-    value,   // |item| - captures the value
-    index,   // |_, index| - captures the index (when second in a pair)
+    value, // |item| - captures the value
+    index, // |_, index| - captures the index (when second in a pair)
     ignored, // |_| - ignored capture
 };
 
@@ -630,13 +630,13 @@ pub const CompileMatchArm = struct {
 pub const CompileTarget = enum {
     c,
     javascript,
-    
+
     pub fn fromString(str: []const u8) ?CompileTarget {
         if (std.mem.eql(u8, str, "c")) return .c;
         if (std.mem.eql(u8, str, "js") or std.mem.eql(u8, str, "javascript")) return .javascript;
         return null;
     }
-    
+
     pub fn toString(self: CompileTarget) []const u8 {
         return switch (self) {
             .c => "c",
@@ -660,7 +660,7 @@ pub const AstNode = struct {
         identifier: struct {
             name: []const u8,
         },
-        
+
         // Expressions
         binary_expr: struct {
             op: BinaryOp,
@@ -683,7 +683,7 @@ pub const AstNode = struct {
             object: NodeId,
             index: NodeId,
         },
-        
+
         // Statements and declarations
         var_decl: struct {
             name: []const u8,
@@ -723,7 +723,7 @@ pub const AstNode = struct {
         import_decl: struct {
             module_path: []const u8, // Path to the module being imported
         },
-        
+
         // Control flow
         if_expr: struct {
             condition: NodeId,
@@ -735,15 +735,15 @@ pub const AstNode = struct {
             body: NodeId,
         },
         for_expr: struct {
-            iterable: NodeId,              // The thing being iterated over
+            iterable: NodeId, // The thing being iterated over
             captures: std.ArrayList(ForCapture), // The capture variables |value| or |value, index|
-            body: NodeId,                  // The loop body
+            body: NodeId, // The loop body
         },
         match_expr: struct {
             expression: NodeId,
             arms: std.ArrayList(MatchArm),
         },
-        
+
         // Compound expressions
         block: struct {
             statements: std.ArrayList(NodeId),
@@ -758,11 +758,11 @@ pub const AstNode = struct {
             use_gc: bool, // true if $ prefix was used for garbage collection
         },
         range_expr: struct {
-            start: ?NodeId,  // null for `..<end` syntax
-            end: ?NodeId,    // null for `start..=` syntax (unbounded)
+            start: ?NodeId, // null for `..<end` syntax
+            end: ?NodeId, // null for `start..=` syntax (unbounded)
             inclusive: bool, // true for ..=, false for ..<
         },
-        
+
         // Type expressions for compile-time type creation
         type_expr: struct {
             base_type: NodeId, // Can be a struct definition, primitive type, etc.
@@ -777,17 +777,17 @@ pub const AstNode = struct {
             inner_type: NodeId, // ^T where this is T
         },
         error_union_type_expr: struct {
-            error_set: NodeId,  // Error!T where this is Error
+            error_set: NodeId, // Error!T where this is Error
             payload_type: NodeId, // Error!T where this is T
         },
         struct_type_expr: struct {
             fields: std.ArrayList(Field),
         },
         generic_type_expr: struct {
-            base_type: NodeId,  // e.g., "List" from "List(T)"
+            base_type: NodeId, // e.g., "List" from "List(T)"
             type_params: std.ArrayList(NodeId), // e.g., [T] from "List(T)"
         },
-        
+
         // Compile-time constructs
         compile_target_expr: struct {
             // Evaluates to current compilation target (.c, .js, .wasm, etc.)
@@ -799,14 +799,14 @@ pub const AstNode = struct {
             target_expr: NodeId, // Usually @compile.target
             arms: std.ArrayList(CompileMatchArm),
         },
-        
+
         // Control statements
         return_stmt: struct {
             value: ?NodeId,
         },
         break_stmt: void,
         continue_stmt: void,
-        
+
         // Error handling
         error_node: struct {
             error_code: ErrorSystem.ErrorCode,
@@ -832,7 +832,7 @@ pub const AstNode = struct {
             name: []const u8, // Error set name (e.g., "FileError")
             errors: std.ArrayList([]const u8), // List of error names
         },
-        
+
         // Compile-time type functions (like std.List(T))
         comptime_type_call: struct {
             function: NodeId, // The function being called (e.g., std.List)
@@ -849,51 +849,14 @@ pub const AstNode = struct {
 
     pub fn isExpression(self: *const AstNode) bool {
         return switch (self.data) {
-            .literal,
-            .identifier,
-            .binary_expr,
-            .unary_expr,
-            .call_expr,
-            .member_expr,
-            .index_expr,
-            .if_expr,
-            .while_expr,
-            .for_expr,
-            .match_expr,
-            .match_compile_expr,
-            .compile_target_expr,
-            .compile_insert_expr,
-            .block,
-            .struct_init,
-            .array_init,
-            .slice_type_expr,
-            .optional_type_expr,
-            .pointer_type_expr,
-            .error_union_type_expr,
-            .generic_type_expr,
-            .try_expr,
-            .catch_expr,
-            .error_union_type,
-            .error_literal,
-            .comptime_type_call => true,
+            .literal, .identifier, .binary_expr, .unary_expr, .call_expr, .member_expr, .index_expr, .if_expr, .while_expr, .for_expr, .match_expr, .match_compile_expr, .compile_target_expr, .compile_insert_expr, .block, .struct_init, .array_init, .slice_type_expr, .optional_type_expr, .pointer_type_expr, .error_union_type_expr, .generic_type_expr, .try_expr, .catch_expr, .error_union_type, .error_literal, .comptime_type_call => true,
             else => false,
         };
     }
 
     pub fn isStatement(self: *const AstNode) bool {
         return switch (self.data) {
-            .var_decl,
-            .function_decl,
-            .extern_fn_decl,
-            .struct_decl,
-            .enum_decl,
-            .union_decl,
-            .type_decl,
-            .import_decl,
-            .return_stmt,
-            .break_stmt,
-            .continue_stmt,
-            .error_set_decl => true,
+            .var_decl, .function_decl, .extern_fn_decl, .struct_decl, .enum_decl, .union_decl, .type_decl, .import_decl, .return_stmt, .break_stmt, .continue_stmt, .error_set_decl => true,
             else => false,
         };
     }
@@ -922,7 +885,8 @@ pub fn createLiteralExpr(arena: *AstArena, source_loc: SourceLoc, literal: Liter
 }
 
 pub fn createIdentifier(arena: *AstArena, source_loc: SourceLoc, name: []const u8) !NodeId {
-    const node = AstNode.init(.{ .identifier = .{ .name = name } }, source_loc);
+    const duped_name = try arena.allocator.dupe(u8, name);
+    const node = AstNode.init(.{ .identifier = .{ .name = duped_name } }, source_loc);
     return arena.createNode(node);
 }
 
@@ -1006,6 +970,11 @@ pub fn createErrorUnionType(arena: *AstArena, source_loc: SourceLoc, error_set: 
     return arena.createNode(node);
 }
 
+// pub fn createErrorUnionTypeExpr(arena: *AstArena, source_loc: SourceLoc, error_set: NodeId, payload_type: NodeId) !NodeId {
+//     const node = AstNode.init(.{ .error_union_type_expr = .{ .error_set = error_set, .payload_type = payload_type } }, source_loc);
+//     return arena.createNode(node);
+// }
+
 pub fn createErrorLiteral(arena: *AstArena, source_loc: SourceLoc, name: []const u8) !NodeId {
     const node = AstNode.init(.{ .error_literal = .{ .name = name } }, source_loc);
     return arena.createNode(node);
@@ -1046,7 +1015,7 @@ pub const AstVisitor = struct {
 
     pub fn visit(self: *AstVisitor, arena: *const AstArena, node_id: NodeId) !void {
         try self.visit_fn(self, arena, node_id);
-        
+
         // Visit children
         const node = arena.getNodeConst(node_id) orelse return;
         switch (node.data) {

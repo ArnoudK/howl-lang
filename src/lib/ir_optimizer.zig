@@ -21,7 +21,7 @@ pub const OptimizationPass = struct {
     name: []const u8,
     description: []const u8,
     run: PassFunction,
-    
+
     pub fn init(name: []const u8, description: []const u8, run_fn: PassFunction) OptimizationPass {
         return OptimizationPass{
             .name = name,
@@ -37,7 +37,7 @@ pub const PassManager = struct {
     passes: std.ArrayList(OptimizationPass),
     debug_output: bool,
     max_iterations: u32,
-    
+
     pub fn init(allocator: std.mem.Allocator) PassManager {
         return PassManager{
             .allocator = allocator,
@@ -46,44 +46,44 @@ pub const PassManager = struct {
             .max_iterations = 10, // Prevent infinite optimization loops
         };
     }
-    
+
     pub fn deinit(self: *PassManager) void {
         self.passes.deinit();
     }
-    
+
     /// Add an optimization pass to the manager
     pub fn addPass(self: *PassManager, pass: OptimizationPass) !void {
         try self.passes.append(pass);
     }
-    
+
     /// Run all registered passes on the IR
     pub fn runAllPasses(self: *PassManager, ir: *SeaOfNodes, errors: *ErrorSystem.ErrorCollector) !void {
         var iteration: u32 = 0;
         var made_changes = true;
-        
+
         while (made_changes and iteration < self.max_iterations) {
             made_changes = false;
             iteration += 1;
-            
+
             if (self.debug_output) {
                 std.debug.print("=== Optimization iteration {d} ===\n", .{iteration});
             }
-            
+
             for (self.passes.items) |*pass| {
                 if (self.debug_output) {
                     std.debug.print("Running pass: {s}\n", .{pass.name});
                 }
-                
+
                 const pass_made_changes = try pass.run(ir, errors);
                 made_changes = made_changes or pass_made_changes;
-                
+
                 // Stop if any errors occurred
                 if (errors.hasErrors()) {
                     return;
                 }
             }
         }
-        
+
         if (iteration >= self.max_iterations and made_changes) {
             try reportIrError(
                 errors,
@@ -93,17 +93,17 @@ pub const PassManager = struct {
             );
         }
     }
-    
+
     /// Create a standard set of optimization passes
     pub fn createStandardPasses(allocator: std.mem.Allocator) !PassManager {
         var manager = PassManager.init(allocator);
-        
+
         // Add passes in order of execution
         try manager.addPass(OptimizationPass.init("constant-folding", "Fold compile-time constants", constantFoldingPass));
         try manager.addPass(OptimizationPass.init("dead-code-elimination", "Remove unreachable code", deadCodeEliminationPass));
         try manager.addPass(OptimizationPass.init("common-subexpr-elimination", "Eliminate common subexpressions", commonSubexpressionEliminationPass));
         try manager.addPass(OptimizationPass.init("copy-propagation", "Propagate simple copies", copyPropagationPass));
-        
+
         return manager;
     }
 };
@@ -116,42 +116,42 @@ pub const PassManager = struct {
 fn constantFoldingPass(ir: *SeaOfNodes, errors: *ErrorSystem.ErrorCollector) !bool {
     _ = errors; // TODO: Use for error reporting
     var made_changes = false;
-    
+
     // We need to create a list of nodes to avoid modifying the list while iterating
     var nodes_to_process = try std.ArrayList(IrNodeId).initCapacity(ir.allocator, ir.nodes.items.len);
     defer nodes_to_process.deinit();
-    
+
     for (ir.nodes.items) |*node| {
         try nodes_to_process.append(node.id);
     }
-    
+
     for (nodes_to_process.items) |node_id| {
         const node = ir.getNode(node_id) orelse continue;
-        
+
         // Try to fold binary operations with constant operands
         if (node.inputs.len == 2) {
             const left = ir.getNode(node.inputs[0]);
             const right = ir.getNode(node.inputs[1]);
-            
-            if (left != null and right != null and 
-                left.?.op == .constant and right.?.op == .constant) {
-                
+
+            if (left != null and right != null and
+                left.?.op == .constant and right.?.op == .constant)
+            {
                 const folded_result = foldBinaryOperation(node.op, left.?.data.constant, right.?.data.constant);
                 if (folded_result) |result| {
                     // Create a new constant node
                     const new_constant = try ir.createConstant(result, node.source_loc);
-                    
+
                     // Replace all uses of the old node with the new constant
                     try ir.replaceNode(node_id, new_constant);
                     made_changes = true;
                 }
             }
         }
-        
+
         // Try to fold unary operations with constant operands
         if (node.inputs.len == 1) {
             const operand = ir.getNode(node.inputs[0]);
-            
+
             if (operand != null and operand.?.op == .constant) {
                 const folded_result = foldUnaryOperation(node.op, operand.?.data.constant);
                 if (folded_result) |result| {
@@ -162,7 +162,7 @@ fn constantFoldingPass(ir: *SeaOfNodes, errors: *ErrorSystem.ErrorCollector) !bo
             }
         }
     }
-    
+
     return made_changes;
 }
 
@@ -170,25 +170,25 @@ fn constantFoldingPass(ir: *SeaOfNodes, errors: *ErrorSystem.ErrorCollector) !bo
 fn deadCodeEliminationPass(ir: *SeaOfNodes, errors: *ErrorSystem.ErrorCollector) !bool {
     _ = errors; // TODO: Use for error reporting
     var made_changes = false;
-    
+
     // Mark all reachable nodes starting from the start node
     var reachable = std.AutoHashMap(IrNodeId, void).init(ir.allocator);
     defer reachable.deinit();
-    
+
     if (ir.start_node != INVALID_IR_NODE_ID) {
         try markReachable(ir, ir.start_node, &reachable);
     }
-    
+
     // Collect unreachable nodes
     var unreachable_nodes = std.ArrayList(IrNodeId).init(ir.allocator);
     defer unreachable_nodes.deinit();
-    
+
     for (ir.nodes.items) |*node| {
         if (!reachable.contains(node.id)) {
             try unreachable_nodes.append(node.id);
         }
     }
-    
+
     // Remove unreachable nodes
     for (unreachable_nodes.items) |node_id| {
         // Only remove if the node has no users (to be safe)
@@ -198,7 +198,7 @@ fn deadCodeEliminationPass(ir: *SeaOfNodes, errors: *ErrorSystem.ErrorCollector)
             made_changes = true;
         }
     }
-    
+
     return made_changes;
 }
 
@@ -206,7 +206,7 @@ fn deadCodeEliminationPass(ir: *SeaOfNodes, errors: *ErrorSystem.ErrorCollector)
 fn commonSubexpressionEliminationPass(ir: *SeaOfNodes, errors: *ErrorSystem.ErrorCollector) !bool {
     _ = errors; // TODO: Use for error reporting
     var made_changes = false;
-    
+
     // Map from (op, inputs) to node_id for finding duplicates
     var expression_map = std.HashMap(ExpressionKey, IrNodeId, ExpressionContext, std.hash_map.default_max_load_percentage).init(ir.allocator);
     defer {
@@ -217,7 +217,7 @@ fn commonSubexpressionEliminationPass(ir: *SeaOfNodes, errors: *ErrorSystem.Erro
         }
         expression_map.deinit();
     }
-    
+
     for (ir.nodes.items) |*node| {
         // Only consider pure data operations
         if (node.op.isData() and node.inputs.len > 0) {
@@ -225,7 +225,7 @@ fn commonSubexpressionEliminationPass(ir: *SeaOfNodes, errors: *ErrorSystem.Erro
                 .op = node.op,
                 .inputs = try ir.allocator.dupe(IrNodeId, node.inputs),
             };
-            
+
             if (expression_map.get(key)) |existing_node_id| {
                 // Found a duplicate expression, replace this node with the existing one
                 try ir.replaceNode(node.id, existing_node_id);
@@ -237,7 +237,7 @@ fn commonSubexpressionEliminationPass(ir: *SeaOfNodes, errors: *ErrorSystem.Erro
             }
         }
     }
-    
+
     return made_changes;
 }
 
@@ -245,11 +245,11 @@ fn commonSubexpressionEliminationPass(ir: *SeaOfNodes, errors: *ErrorSystem.Erro
 fn copyPropagationPass(ir: *SeaOfNodes, errors: *ErrorSystem.ErrorCollector) !bool {
     _ = errors; // TODO: Use for error reporting
     var made_changes = false;
-    
+
     // Track store operations: alloc_node -> stored_value
     var stored_values = std.AutoHashMap(IrNodeId, IrNodeId).init(ir.allocator);
     defer stored_values.deinit();
-    
+
     // First pass: find all store operations
     for (ir.nodes.items) |*node| {
         if (node.op == .store and node.inputs.len >= 2) {
@@ -258,7 +258,7 @@ fn copyPropagationPass(ir: *SeaOfNodes, errors: *ErrorSystem.ErrorCollector) !bo
             try stored_values.put(alloc_node, stored_value);
         }
     }
-    
+
     // Second pass: replace loads with stored values
     for (ir.nodes.items) |*node| {
         if (node.op == .load and node.inputs.len >= 1) {
@@ -273,7 +273,7 @@ fn copyPropagationPass(ir: *SeaOfNodes, errors: *ErrorSystem.ErrorCollector) !bo
             }
         }
     }
-    
+
     return made_changes;
 }
 
@@ -288,16 +288,16 @@ fn markReachable(
     reachable: *std.AutoHashMap(IrNodeId, void),
 ) !void {
     if (reachable.contains(node_id)) return; // Already visited
-    
+
     try reachable.put(node_id, {});
-    
+
     const node = ir.getNode(node_id) orelse return;
-    
+
     // Mark all input nodes as reachable
     for (node.inputs) |input_id| {
         try markReachable(ir, input_id, reachable);
     }
-    
+
     // Mark all users as reachable
     for (node.users.items) |user_id| {
         try markReachable(ir, user_id, reachable);
@@ -516,17 +516,17 @@ fn foldLogicalOr(left: IrConstant, right: IrConstant) ?IrConstant {
 const ExpressionKey = struct {
     op: IrOp,
     inputs: []IrNodeId,
-    
+
     pub fn eql(self: ExpressionKey, other: ExpressionKey) bool {
         if (self.op != other.op) return false;
         if (self.inputs.len != other.inputs.len) return false;
-        
+
         for (self.inputs, other.inputs) |a, b| {
             if (a != b) return false;
         }
         return true;
     }
-    
+
     pub fn hash(self: ExpressionKey) u64 {
         var hasher = std.hash.Wyhash.init(0);
         hasher.update(std.mem.asBytes(&self.op));
@@ -542,7 +542,7 @@ const ExpressionContext = struct {
         _ = self;
         return key.hash();
     }
-    
+
     pub fn eql(self: @This(), a: ExpressionKey, b: ExpressionKey) bool {
         _ = self;
         return a.eql(b);

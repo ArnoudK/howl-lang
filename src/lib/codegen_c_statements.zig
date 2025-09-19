@@ -122,9 +122,22 @@ pub fn generateVarDecl(
                                     .bool_true, .bool_false => break :blk "bool",
                                     else => break :blk "int32_t",
                                 }
+                            } else if (elem.data == .call_expr) {
+                                // Check if this is a struct constructor call like MyStruct{...}
+                                const call_expr = elem.data.call_expr;
+                                const callee_node = arena.getNodeConst(call_expr.callee);
+                                if (callee_node) |callee| {
+                                    if (callee.data == .identifier) {
+                                        const struct_name = callee.data.identifier.name;
+                                        // For now, assume it's a struct type - TODO: verify it's actually a struct
+                                        break :blk struct_name;
+                                    }
+                                }
+                                break :blk "int32_t"; // Fallback
                             } else if (elem.data == .struct_init) {
                                 // Array of structs - determine struct type
-                                break :blk "MyStruct"; // For now, assume MyStruct
+                                // For now, assume MyStruct - TODO: infer actual struct type
+                                break :blk "MyStruct";
                             }
                         }
                     }
@@ -137,11 +150,20 @@ pub fn generateVarDecl(
 
     try writer.print("{s} {s}", .{ var_type, var_decl.name });
 
-    // Check if this is an array declaration and add [] if needed
+    // Check if this is an array declaration and handle GC vs stack arrays
     const init_node = arena.getNodeConst(var_decl.initializer orelse 0);
+    var is_gc_array = false;
     if (init_node) |init_n| {
         if (init_n.data == .array_init) {
-            try writer.writeAll("[]");
+            const array_init = init_n.data.array_init;
+            if (array_init.use_gc) {
+                // GC array: add * to make it a pointer type
+                try writer.writeAll("*");
+                is_gc_array = true;
+            } else {
+                // Stack array: add []
+                try writer.writeAll("[]");
+            }
         }
     }
 
@@ -170,7 +192,7 @@ pub fn generateReturnStmt(
     try writer.writeAll("return");
     if (return_stmt.value) |value_id| {
         try writer.writeAll(" ");
-        
+
         // Handle different return value types and wrap them in error unions if needed
         var handled = false;
         const value_node = arena.getNodeConst(value_id);
@@ -187,7 +209,7 @@ pub fn generateReturnStmt(
                                 // This is an error value, wrap it in error union
                                 if (current_function_return_type) |ret_type| {
                                     if (std.mem.endsWith(u8, ret_type, "_ErrorUnion")) {
-                                        try writer.print("({s}){{.error = {s}_{s}, .payload = {{0}}}}", .{ ret_type, obj_name, member_expr.field });
+                                        try writer.print("({s}){{.error_code = {s}_{s}, .payload = 0}}", .{ ret_type, obj_name, member_expr.field });
                                         handled = true;
                                     }
                                 }
@@ -200,7 +222,7 @@ pub fn generateReturnStmt(
                     if (current_function_return_type) |ret_type| {
                         if (std.mem.endsWith(u8, ret_type, "_ErrorUnion")) {
                             // Wrap function call in success error union
-                            try writer.print("({s}){{.error = MyError_SUCCESS, .payload = ", .{ret_type});
+                            try writer.print("({s}){{.error_code = MyError_SUCCESS, .payload = ", .{ret_type});
                             try codegen.generateCExpressionWithContext(writer, value_id, null);
                             try writer.writeAll("}");
                             handled = true;
@@ -215,12 +237,12 @@ pub fn generateReturnStmt(
                             if (std.mem.indexOf(u8, ret_type, "Optional_") != null) {
                                 // This is an error union containing an optional, wrap the struct in Some()
                                 const optional_name = extractOptionalNameFromErrorUnion(ret_type);
-                                try writer.print("({s}){{.error = MyError_SUCCESS, .payload = {s}_some(", .{ ret_type, optional_name });
+                                try writer.print("({s}){{.error_code = MyError_SUCCESS, .payload = {s}_some(", .{ ret_type, optional_name });
                                 try codegen.generateCExpressionWithContext(writer, value_id, null);
                                 try writer.writeAll(")}");
                             } else {
                                 // Regular error union, wrap struct directly
-                                try writer.print("({s}){{.error = MyError_SUCCESS, .payload = ", .{ret_type});
+                                try writer.print("({s}){{.error_code = MyError_SUCCESS, .payload = ", .{ret_type});
                                 try codegen.generateCExpressionWithContext(writer, value_id, null);
                                 try writer.writeAll("}");
                             }
@@ -235,7 +257,7 @@ pub fn generateReturnStmt(
                             if (std.mem.endsWith(u8, ret_type, "_ErrorUnion") and std.mem.indexOf(u8, ret_type, "Optional_") != null) {
                                 // This is an error union containing an optional, return None wrapped in success
                                 const optional_name = extractOptionalNameFromErrorUnion(ret_type);
-                                try writer.print("({s}){{.error = MyError_SUCCESS, .payload = {s}_none()}}", .{ ret_type, optional_name });
+                                try writer.print("({s}){{.error_code = MyError_SUCCESS, .payload = {s}_none()}}", .{ ret_type, optional_name });
                                 handled = true;
                             }
                         }
@@ -244,7 +266,7 @@ pub fn generateReturnStmt(
                 else => {},
             }
         }
-        
+
         // If we didn't handle it specially, use default generation
         if (!handled) {
             try codegen.generateCExpressionWithContext(writer, value_id, current_function_return_type);
@@ -270,7 +292,7 @@ pub fn generateIfExpr(
 ) CCodegenError!void {
     // Write indentation for if expressions used as statements
     try writeIndentation(writer, indent_level);
-    
+
     try writer.writeAll("if (");
     try codegen.generateCExpressionWithContext(writer, if_expr.condition, null);
     try writer.writeAll(") {\n");
@@ -308,21 +330,21 @@ pub fn generateMatchStmt(
     codegen: anytype,
 ) CCodegenError!void {
     const node = codegen.arena.getNodeConst(node_id) orelse return CCodegenError.InvalidNodeType;
-    
+
     if (node.data != .match_expr) {
         return CCodegenError.InvalidNodeType;
     }
-    
+
     const match_expr = node.data.match_expr;
-    
+
     // Generate if-else chain for match statement
     for (match_expr.arms.items, 0..) |arm, i| {
         try writeIndentation(writer, indent_level);
-        
+
         if (i > 0) {
             try writer.writeAll("else ");
         }
-        
+
         switch (arm.pattern) {
             .comparison => |comp| {
                 try writer.writeAll("if (");
@@ -372,9 +394,9 @@ pub fn generateMatchStmt(
             else => {
                 // For other patterns, just match directly (fallback)
                 try writer.writeAll("if (1) ");
-            }
+            },
         }
-        
+
         try writer.writeAll("{\n");
         // Generate the body - should handle blocks and single statements
         try codegen.generateCFromAST(writer, arm.body, indent_level + 1);

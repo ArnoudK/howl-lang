@@ -7,7 +7,7 @@ pub const SourceSpan = struct {
     end_pos: usize,
     line: usize,
     column: usize,
-    
+
     pub fn single(file_path: []const u8, pos: usize, line: usize, column: usize) SourceSpan {
         return SourceSpan{
             .file_path = file_path,
@@ -17,7 +17,7 @@ pub const SourceSpan = struct {
             .column = column,
         };
     }
-    
+
     pub fn range(file_path: []const u8, start_pos: usize, end_pos: usize, start_line: usize, start_column: usize) SourceSpan {
         return SourceSpan{
             .file_path = file_path,
@@ -35,22 +35,22 @@ pub const ErrorSeverity = enum {
     warning,
     error_,
     fatal,
-    
+
     pub fn toString(self: ErrorSeverity) []const u8 {
         return switch (self) {
             .note => "note",
-            .warning => "warning", 
+            .warning => "warning",
             .error_ => "error",
             .fatal => "fatal",
         };
     }
-    
+
     pub fn color(self: ErrorSeverity) []const u8 {
         return switch (self) {
-            .note => "\x1b[36m",      // cyan
-            .warning => "\x1b[33m",   // yellow
-            .error_ => "\x1b[31m",    // red
-            .fatal => "\x1b[35m",     // magenta
+            .note => "\x1b[36m", // cyan
+            .warning => "\x1b[33m", // yellow
+            .error_ => "\x1b[31m", // red
+            .fatal => "\x1b[35m", // magenta
         };
     }
 };
@@ -63,7 +63,7 @@ pub const ErrorCategory = enum {
     codegen,
     io,
     internal,
-    
+
     pub fn toString(self: ErrorCategory) []const u8 {
         return switch (self) {
             .lexer => "lexer",
@@ -83,7 +83,7 @@ pub const ErrorCode = enum {
     unterminated_string,
     invalid_number_format,
     invalid_escape_sequence,
-    
+
     // Parser errors
     unexpected_token,
     missing_semicolon,
@@ -93,14 +93,14 @@ pub const ErrorCode = enum {
     invalid_statement,
     invalid_declaration,
     expected_identifier,
-    
+
     // Whitespace enforcement errors
     missing_space_around_operator,
     missing_space_before_brace,
     missing_space_after_keyword,
     multiple_statements_per_line,
     missing_newline_after_statement,
-    
+
     // Semantic errors
     undefined_variable,
     type_mismatch,
@@ -111,26 +111,26 @@ pub const ErrorCode = enum {
     return_type_mismatch,
     missing_return_value,
     binary_operation_type_error,
-    invalid_enum_value,  // Enum values must be in ascending order and compile-time constants
-    compile_error,  // Triggered by @compileError builtin
-    
+    invalid_enum_value, // Enum values must be in ascending order and compile-time constants
+    compile_error, // Triggered by @compileError builtin
+
     // Codegen errors
     unsupported_operation,
     target_specific_error,
     optimization_failed,
-    
+
     // IO errors
     file_not_found,
     permission_denied,
-    
+
     // Internal errors
     out_of_memory,
     assertion_failed,
-    
+
     pub fn toString(self: ErrorCode) []const u8 {
         return switch (self) {
             .invalid_character => "E001",
-            .unterminated_string => "E002", 
+            .unterminated_string => "E002",
             .invalid_number_format => "E003",
             .invalid_escape_sequence => "E004",
             .unexpected_token => "E100",
@@ -142,7 +142,7 @@ pub const ErrorCode = enum {
             .invalid_declaration => "E106",
             .expected_identifier => "E107",
             .missing_space_around_operator => "E108",
-            .missing_space_before_brace => "E109", 
+            .missing_space_before_brace => "E109",
             .missing_space_after_keyword => "E110",
             .multiple_statements_per_line => "E111",
             .missing_newline_after_statement => "E112",
@@ -166,7 +166,7 @@ pub const ErrorCode = enum {
             .assertion_failed => "E501",
         };
     }
-    
+
     pub fn defaultMessage(self: ErrorCode) []const u8 {
         return switch (self) {
             .invalid_character => "Invalid character",
@@ -217,7 +217,7 @@ pub const CompilerError = struct {
     span: SourceSpan,
     suggestions: []const []const u8,
     related_errors: []const *CompilerError,
-    
+
     pub fn create(
         allocator: std.mem.Allocator,
         code: ErrorCode,
@@ -238,7 +238,7 @@ pub const CompilerError = struct {
         };
         return error_ptr;
     }
-    
+
     pub fn withSuggestions(self: *CompilerError, allocator: std.mem.Allocator, suggestions: []const []const u8) !void {
         // Free existing suggestions if any
         for (self.suggestions) |suggestion| {
@@ -247,7 +247,7 @@ pub const CompilerError = struct {
         if (self.suggestions.len > 0) {
             allocator.free(self.suggestions);
         }
-        
+
         // Allocate new suggestions
         var new_suggestions = try allocator.alloc([]const u8, suggestions.len);
         for (suggestions, 0..) |suggestion, i| {
@@ -255,7 +255,7 @@ pub const CompilerError = struct {
         }
         self.suggestions = new_suggestions;
     }
-    
+
     pub fn deinit(self: *CompilerError, allocator: std.mem.Allocator) void {
         allocator.free(self.message);
         for (self.suggestions) |suggestion| {
@@ -272,7 +272,7 @@ pub const ErrorCollector = struct {
     errors: std.ArrayList(*CompilerError),
     has_fatal_error: bool,
     max_errors: usize,
-    
+
     pub fn init(allocator: std.mem.Allocator) ErrorCollector {
         return ErrorCollector{
             .allocator = allocator,
@@ -281,26 +281,26 @@ pub const ErrorCollector = struct {
             .max_errors = 100, // Reasonable default
         };
     }
-    
+
     pub fn deinit(self: *ErrorCollector) void {
         for (self.errors.items) |err| {
             err.deinit(self.allocator);
         }
         self.errors.deinit();
     }
-    
+
     pub fn addError(self: *ErrorCollector, err: *CompilerError) !void {
         if (self.errors.items.len >= self.max_errors) {
             return; // Stop collecting errors if we hit the limit
         }
-        
+
         try self.errors.append(err);
-        
+
         if (err.severity == .fatal) {
             self.has_fatal_error = true;
         }
     }
-    
+
     pub fn createAndAddError(
         self: *ErrorCollector,
         code: ErrorCode,
@@ -313,7 +313,7 @@ pub const ErrorCollector = struct {
         try self.addError(err);
         return err;
     }
-    
+
     pub fn hasErrors(self: *const ErrorCollector) bool {
         for (self.errors.items) |err| {
             if (err.severity == .error_ or err.severity == .fatal) {
@@ -322,7 +322,7 @@ pub const ErrorCollector = struct {
         }
         return false;
     }
-    
+
     pub fn hasWarnings(self: *const ErrorCollector) bool {
         for (self.errors.items) |err| {
             if (err.severity == .warning) {
@@ -331,7 +331,7 @@ pub const ErrorCollector = struct {
         }
         return false;
     }
-    
+
     pub fn errorCount(self: *const ErrorCollector) usize {
         var count: usize = 0;
         for (self.errors.items) |err| {
@@ -341,7 +341,7 @@ pub const ErrorCollector = struct {
         }
         return count;
     }
-    
+
     pub fn warningCount(self: *const ErrorCollector) usize {
         var count: usize = 0;
         for (self.errors.items) |err| {
@@ -351,24 +351,24 @@ pub const ErrorCollector = struct {
         }
         return count;
     }
-    
+
     /// Sort errors by file and position for better output
     pub fn sortErrors(self: *ErrorCollector) void {
         std.sort.block(*CompilerError, self.errors.items, {}, compareErrors);
     }
-    
+
     fn compareErrors(_: void, a: *CompilerError, b: *CompilerError) bool {
         // First sort by file path
         const file_cmp = std.mem.order(u8, a.span.file_path, b.span.file_path);
         if (file_cmp != .eq) {
             return file_cmp == .lt;
         }
-        
+
         // Then by position
         if (a.span.start_pos != b.span.start_pos) {
             return a.span.start_pos < b.span.start_pos;
         }
-        
+
         // Finally by severity (errors before warnings)
         const a_priority = switch (a.severity) {
             .fatal => 0,
@@ -382,7 +382,7 @@ pub const ErrorCollector = struct {
             .warning => 2,
             .note => 3,
         };
-        
+
         return a_priority < b_priority;
     }
 };
@@ -391,32 +391,32 @@ pub const ErrorCollector = struct {
 pub const SourceMap = struct {
     file_content: []const u8,
     line_starts: std.ArrayList(usize),
-    
+
     pub fn init(allocator: std.mem.Allocator, file_content: []const u8) !SourceMap {
         var line_starts = std.ArrayList(usize).init(allocator);
         try line_starts.append(0); // First line starts at position 0
-        
+
         for (file_content, 0..) |char, i| {
             if (char == '\n') {
                 try line_starts.append(i + 1);
             }
         }
-        
+
         return SourceMap{
             .file_content = file_content,
             .line_starts = line_starts,
         };
     }
-    
+
     pub fn deinit(self: *SourceMap) void {
         self.line_starts.deinit();
     }
-    
+
     pub fn getLineColumn(self: *const SourceMap, pos: usize) struct { line: usize, column: usize } {
         // Binary search to find the line
         var left: usize = 0;
         var right: usize = self.line_starts.items.len;
-        
+
         while (left < right) {
             const mid = (left + right) / 2;
             if (self.line_starts.items[mid] <= pos) {
@@ -425,25 +425,25 @@ pub const SourceMap = struct {
                 right = mid;
             }
         }
-        
+
         const line = if (left > 0) left - 1 else 0;
         const line_start = self.line_starts.items[line];
         const column = pos - line_start;
-        
+
         return .{ .line = line + 1, .column = column + 1 }; // 1-indexed
     }
-    
+
     pub fn getLineText(self: *const SourceMap, line: usize) []const u8 {
         if (line == 0 or line > self.line_starts.items.len) {
             return "";
         }
-        
+
         const line_start = self.line_starts.items[line - 1];
-        const line_end = if (line < self.line_starts.items.len) 
+        const line_end = if (line < self.line_starts.items.len)
             self.line_starts.items[line] - 1 // Exclude the newline
-        else 
+        else
             self.file_content.len;
-            
+
         return self.file_content[line_start..line_end];
     }
 };
@@ -455,7 +455,7 @@ pub const RecoveryToken = enum {
     closing_paren,
     newline,
     eof,
-    
+
     pub fn fromTokenKind(token_kind: anytype) ?RecoveryToken {
         // This would need to be implemented based on your token types
         // For now, returning null to avoid compilation errors
@@ -468,17 +468,17 @@ pub const RecoveryToken = enum {
 pub const ErrorRecoveryContext = struct {
     expected_tokens: []const RecoveryToken,
     recovery_point: ?usize,
-    
+
     pub fn init(expected_tokens: []const RecoveryToken) ErrorRecoveryContext {
         return ErrorRecoveryContext{
             .expected_tokens = expected_tokens,
             .recovery_point = null,
         };
     }
-    
+
     pub fn canRecover(self: *const ErrorRecoveryContext, token_kind: anytype) bool {
         const recovery_token = RecoveryToken.fromTokenKind(token_kind) orelse return false;
-        
+
         for (self.expected_tokens) |expected| {
             if (expected == recovery_token) {
                 return true;

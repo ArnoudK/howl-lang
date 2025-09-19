@@ -63,10 +63,10 @@ pub const CCodegen = struct {
         // Generate C source code
         var output = std.ArrayList(u8).init(self.allocator);
         const writer = output.writer();
-        
+
         // First pass: collect types and functions from AST
         try self.collectFromNode(root_node_id);
-        
+
         // Generate C header includes
         try writer.writeAll("#include <stdio.h>\n");
         try writer.writeAll("#include <stdint.h>\n");
@@ -75,23 +75,23 @@ pub const CCodegen = struct {
         try writer.writeAll("#include <stddef.h>\n");
         try writer.writeAll("#include <stdlib.h>\n");
         try writer.writeAll("\n");
-        
+
         // Generate builtin type definitions
         try writer.writeAll("typedef float howl_f32_t;\n");
         try writer.writeAll("typedef double howl_f64_t;\n");
         try writer.writeAll("\n");
-        
+
         // Generate collected types (structs, enums, etc.)
         try self.generateCollectedTypes(writer);
-        
+
         // Generate function declarations
         try self.generateCollectedFunctionDeclarations(writer);
-        
+
         // Generate function implementations
         try self.generateCollectedFunctionImplementations(writer, root_node_id);
-        
+
         const c_source = try output.toOwnedSlice();
-        
+
         // Write the generated C source to a file in howl-out directory
         const temp_file_path = "howl-out/howl_program.c";
         try std.fs.cwd().writeFile(.{ .sub_path = temp_file_path, .data = c_source });
@@ -121,26 +121,6 @@ pub const CCodegen = struct {
             try functions.generateStructImplementation(self.arena, writer, struct_type);
         }
 
-        // Generate manual optional types for nullable support
-        try writer.writeAll("// ============================================================================\n");
-        try writer.writeAll("// Optional MyStruct Implementation\n");
-        try writer.writeAll("// ============================================================================\n\n");
-        try writer.writeAll("typedef struct Optional_MyStruct_t {\n");
-        try writer.writeAll("    MyStruct value;\n");
-        try writer.writeAll("    int32_t is_some; // 1 if has value, -1 if none\n");
-        try writer.writeAll("} Optional_MyStruct_t;\n\n");
-        
-        // Add constructor functions
-        try writer.writeAll("Optional_MyStruct_t Optional_MyStruct_t_some(MyStruct value) {\n");
-        try writer.writeAll("    Optional_MyStruct_t result = {.value = value, .is_some = 1};\n");
-        try writer.writeAll("    return result;\n");
-        try writer.writeAll("}\n\n");
-        
-        try writer.writeAll("Optional_MyStruct_t Optional_MyStruct_t_none() {\n");
-        try writer.writeAll("    Optional_MyStruct_t result = {.value = {}, .is_some = -1};\n");
-        try writer.writeAll("    return result;\n");
-        try writer.writeAll("}\n\n");
-
         // Generate standard error union types for all common Howl types
         try functions.generateStandardErrorUnions(writer);
 
@@ -155,13 +135,9 @@ pub const CCodegen = struct {
         }
     }
 
-
-
-
-    
     fn mapHowlTypeToCType(self: *CCodegen, howl_type: []const u8) []const u8 {
         _ = self; // suppress unused warning
-        
+
         // Map Howl types to C types
         if (std.mem.eql(u8, howl_type, "i32")) return "int32_t";
         if (std.mem.eql(u8, howl_type, "i64")) return "int64_t";
@@ -172,7 +148,7 @@ pub const CCodegen = struct {
         if (std.mem.eql(u8, howl_type, "bool")) return "bool";
         if (std.mem.eql(u8, howl_type, "str")) return "char*";
         if (std.mem.eql(u8, howl_type, "void")) return "void";
-        
+
         // For custom types (structs, enums), use the type name as-is
         return howl_type;
     }
@@ -181,11 +157,11 @@ pub const CCodegen = struct {
         // Generate struct constructor declarations
         for (self.type_collection.struct_types.items) |struct_info| {
             try writer.print("{s} {s}_init(", .{ struct_info.name, struct_info.name });
-            
+
             // Generate parameter list for declaration
             for (struct_info.fields, 0..) |field, i| {
                 if (i > 0) try writer.writeAll(", ");
-                
+
                 if (field.type_annotation) |type_node_id| {
                     const type_node = self.arena.getNodeConst(type_node_id);
                     if (type_node) |node| {
@@ -203,7 +179,7 @@ pub const CCodegen = struct {
                     try writer.print("int32_t {s}", .{field.name});
                 }
             }
-            
+
             try writer.writeAll(");\n");
         }
         try writer.writeAll("\n");
@@ -262,31 +238,32 @@ pub const CCodegen = struct {
 
     pub fn inferErrorUnionTypeFromExpression(self: *CCodegen, expr_id: ast.NodeId) []const u8 {
         const node = self.arena.getNodeConst(expr_id) orelse return self.getCurrentErrorUnionStructName();
-        
+
         if (node.data == .call_expr) {
             const call_expr = node.data.call_expr;
             const callee_node = self.arena.getNodeConst(call_expr.callee);
             if (callee_node) |callee| {
                 if (callee.data == .identifier) {
                     const func_name = callee.data.identifier.name;
-                    
+
                     // Look up the function's return type to find the matching error union
                     // For functions that return !i32, generate anyerror_i32_ErrorUnion
-                    if (std.mem.eql(u8, func_name, "divide") or 
+                    if (std.mem.eql(u8, func_name, "divide") or
                         std.mem.eql(u8, func_name, "safeDivide") or
                         std.mem.eql(u8, func_name, "parseNumber") or
-                        std.mem.eql(u8, func_name, "complexOperation")) {
+                        std.mem.eql(u8, func_name, "complexOperation"))
+                    {
                         return "anyerror_i32_ErrorUnion";
                     } else if (std.mem.eql(u8, func_name, "createMyStruct")) {
                         return "anyerror_MyStruct_ErrorUnion";
                     }
-                    
+
                     // Default for any function that might return an error union
                     return "anyerror_i32_ErrorUnion";
                 }
             }
         }
-        
+
         // Fallback to current function context
         return self.getCurrentErrorUnionStructName();
     }
@@ -296,7 +273,7 @@ pub const CCodegen = struct {
         if (self.current_function_error_union_name) |name| {
             return name;
         }
-        
+
         // For functions that use anyerror, default to i32 payload type
         if (self.type_collection.error_union_types.items.len > 0) {
             // Look for anyerror_i32_ErrorUnion first
@@ -312,8 +289,9 @@ pub const CCodegen = struct {
 
     pub fn findErrorUnionStructName(self: *CCodegen, error_set_name: []const u8, payload_type: []const u8) ?[]const u8 {
         for (self.type_collection.error_union_types.items) |error_union| {
-            if (std.mem.eql(u8, error_union.error_set_name, error_set_name) and 
-               std.mem.eql(u8, error_union.payload_type, payload_type)) {
+            if (std.mem.eql(u8, error_union.error_set_name, error_set_name) and
+                std.mem.eql(u8, error_union.payload_type, payload_type))
+            {
                 return error_union.struct_name;
             }
         }
@@ -322,23 +300,23 @@ pub const CCodegen = struct {
 
     fn collectErrorUnionFromNode(self: *CCodegen, node_id: ast.NodeId) !void {
         const node = self.arena.getNodeConst(node_id) orelse return;
-        
-        if (node.data == .error_union_type) {
-            const error_union = node.data.error_union_type;
-            
+
+        if (node.data == .error_union_type_expr) {
+            const error_union = node.data.error_union_type_expr;
+
             if (error_union.error_set) |error_set_id| {
                 const error_set_node = self.arena.getNodeConst(error_set_id);
                 if (error_set_node) |es_node| {
                     if (es_node.data == .identifier) {
                         const error_set_name = es_node.data.identifier.name;
-                        
+
                         // Get payload type
                         const payload_type_info = self.getNodeType(error_union.payload_type);
-                        const payload_type_str = self.generateCType(payload_type_info);
-                        
+                        const payload_type_str = types.generateCType(self, payload_type_info);
+
                         // Generate struct name
-                        const struct_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_ErrorUnion", .{error_set_name, self.sanitizeTypeForName(payload_type_str)});
-                        
+                        const struct_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_ErrorUnion", .{ error_set_name, self.sanitizeTypeForName(payload_type_str) });
+
                         // Check if we already have this combination
                         for (self.type_collection.error_union_types.items) |existing| {
                             if (std.mem.eql(u8, existing.struct_name, struct_name)) {
@@ -346,13 +324,13 @@ pub const CCodegen = struct {
                                 return; // Already collected
                             }
                         }
-                        
+
                         const collected_error_union = CollectedErrorUnion{
                             .error_set_name = try self.allocator.dupe(u8, error_set_name),
                             .payload_type = try self.allocator.dupe(u8, payload_type_str),
                             .struct_name = struct_name,
                         };
-                        
+
                         try self.type_collection.error_union_types.append(collected_error_union);
                     }
                 }
@@ -382,7 +360,7 @@ pub const CCodegen = struct {
         if (std.mem.eql(u8, type_str, "size_t")) return "usize";
         if (std.mem.eql(u8, type_str, "ptrdiff_t")) return "isize";
         if (std.mem.eql(u8, type_str, "void")) return "void";
-        
+
         // For custom types, just use the type string directly
         return type_str;
     }
@@ -401,7 +379,7 @@ pub const CCodegen = struct {
                 } else if (node.data == .identifier) {
                     // This might be a !Type syntax - check the function's semantic info
                     const type_name = node.data.identifier.name;
-                    
+
                     // For functions declared with !Type syntax, generate error union
                     // This is a heuristic - in a full implementation, we'd check the parser's understanding
                     if (self.hasErrorUnionReturnType(func_decl)) {
@@ -428,10 +406,11 @@ pub const CCodegen = struct {
         if (std.mem.eql(u8, func_name, "divide") or
             std.mem.eql(u8, func_name, "safeDivide") or
             std.mem.eql(u8, func_name, "parseNumber") or
-            std.mem.eql(u8, func_name, "complexOperation")) {
+            std.mem.eql(u8, func_name, "complexOperation"))
+        {
             return true;
         }
-        
+
         // Also check if there's a return type with error union syntax
         if (func_decl.return_type) |return_type_id| {
             const return_type_node = self.arena.getNodeConst(return_type_id);
@@ -441,22 +420,22 @@ pub const CCodegen = struct {
                 }
             }
         }
-        
+
         return false;
     }
 
     /// Generate error union struct for a function with !Type return type
     fn generateErrorUnionForFunction(self: *CCodegen, func_name: []const u8, payload_type: []const u8) !void {
         _ = func_name; // May use this for specific error sets later
-        
+
         // For now, all functions use anyerror error set
         const error_set_name = "anyerror";
         const sanitized_payload = self.sanitizeTypeForName(payload_type);
-        const struct_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_ErrorUnion", .{error_set_name, sanitized_payload});
-        
+        const struct_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}_ErrorUnion", .{ error_set_name, sanitized_payload });
+
         // Ensure anyerror error set exists
         try self.ensureAnyErrorSetGenerated();
-        
+
         // Check if this error union struct already exists
         for (self.type_collection.error_union_types.items) |existing| {
             if (std.mem.eql(u8, existing.struct_name, struct_name)) {
@@ -464,7 +443,7 @@ pub const CCodegen = struct {
                 return; // Already exists
             }
         }
-        
+
         // Create the error union struct
         const c_payload_type = self.mapHowlTypeToCType(payload_type);
         const collected_error_union = CollectedErrorUnion{
@@ -472,7 +451,7 @@ pub const CCodegen = struct {
             .payload_type = try self.allocator.dupe(u8, c_payload_type),
             .struct_name = struct_name,
         };
-        
+
         try self.type_collection.error_union_types.append(collected_error_union);
     }
 
@@ -484,19 +463,19 @@ pub const CCodegen = struct {
                 return; // Already exists
             }
         }
-        
+
         // Generate anyerror with common error names
         const error_names = try self.allocator.alloc([]const u8, 4);
         error_names[0] = try self.allocator.dupe(u8, "DivisionByZero");
         error_names[1] = try self.allocator.dupe(u8, "ParseError");
         error_names[2] = try self.allocator.dupe(u8, "CustomError");
         error_names[3] = try self.allocator.dupe(u8, "UnknownError");
-        
+
         const anyerror_set = CollectedErrorSet{
             .name = try self.allocator.dupe(u8, "anyerror"),
             .errors = error_names,
         };
-        
+
         try self.type_collection.error_set_types.append(anyerror_set);
     }
 
@@ -538,7 +517,7 @@ pub const CCodegen = struct {
 
         try self.function_collection.functions.append(collected_func);
     }
-    
+
     // Main collection function to traverse AST and collect types/functions
     fn collectFromNode(self: *CCodegen, node_id: ast.NodeId) !void {
         const node = self.arena.getNodeConst(node_id) orelse return;
@@ -551,6 +530,7 @@ pub const CCodegen = struct {
             },
             .struct_decl => |struct_decl| {
                 // Handle direct struct declarations like MyStruct :: struct { ... }
+                std.debug.print("DEBUG: collectFromNode struct_decl name={s} fields={d}\n", .{ struct_decl.name, struct_decl.fields.items.len });
                 const collected_struct = CollectedStruct{
                     .name = try self.allocator.dupe(u8, struct_decl.name),
                     .fields = struct_decl.fields.items,
@@ -558,6 +538,7 @@ pub const CCodegen = struct {
                     .is_comptime = struct_decl.is_comptime,
                 };
                 try self.type_collection.struct_types.append(collected_struct);
+                std.debug.print("DEBUG: appended struct {s}, total now {d}\n", .{ struct_decl.name, self.type_collection.struct_types.items.len });
             },
             .error_set_decl => |error_set_decl| {
                 // Handle error set declarations like MyError :: error { ... }
@@ -565,7 +546,7 @@ pub const CCodegen = struct {
                 for (error_set_decl.errors.items, 0..) |error_name, i| {
                     error_names[i] = try self.allocator.dupe(u8, error_name);
                 }
-                
+
                 const collected_error_set = CollectedErrorSet{
                     .name = try self.allocator.dupe(u8, error_set_decl.name),
                     .errors = error_names,
@@ -611,10 +592,10 @@ pub const CCodegen = struct {
             },
             else => {
                 // For other node types, don't collect anything for now
-            }
+            },
         }
     }
-    
+
     // Try to infer the return type by examining return statements in function body
     pub fn inferReturnTypeFromBody(self: *CCodegen, body_node_id: ast.NodeId) ?[]const u8 {
         // Look for return statements that call struct constructors
@@ -624,10 +605,10 @@ pub const CCodegen = struct {
         }
         return result;
     }
-    
+
     fn findReturnTypeInNode(self: *CCodegen, node_id: ast.NodeId) ?[]const u8 {
         const node = self.arena.getNodeConst(node_id) orelse return null;
-        
+
         switch (node.data) {
             .block => |block| {
                 for (block.statements.items) |stmt_id| {
@@ -656,7 +637,7 @@ pub const CCodegen = struct {
                                     // Check if this looks like a struct constructor (ends with _init)
                                     if (std.mem.endsWith(u8, func_name, "_init")) {
                                         // Extract struct name by removing "_init" suffix
-                                        const struct_name = func_name[0..func_name.len - 5];
+                                        const struct_name = func_name[0 .. func_name.len - 5];
                                         return struct_name;
                                     }
                                 }
@@ -667,7 +648,7 @@ pub const CCodegen = struct {
             },
             else => {},
         }
-        
+
         return null;
     }
 
@@ -746,7 +727,7 @@ pub const CCodegen = struct {
                 const inner_type = self.getNodeType(optional_type.inner_type);
                 if (inner_type) |inner| {
                     // Create an optional type based on the inner type
-                    const inner_c_type = self.generateCType(inner);
+                    const inner_c_type = types.generateCType(self, inner);
                     // For now, handle known types specifically to avoid allocation issues
                     if (std.mem.eql(u8, inner_c_type, "MyStruct")) {
                         return ast.Type.initCustomStruct("Optional_MyStruct_t", &[_]ast.Field{}, false, node.source_loc);
@@ -774,7 +755,7 @@ pub const CCodegen = struct {
     fn mapLiteralToCType(literal: ast.Literal) []const u8 {
         return switch (literal) {
             .integer => "int32_t",
-            .float => "howl_f32_t", 
+            .float => "howl_f32_t",
             .bool_true, .bool_false => "bool",
             .string => "char*",
             .char => "uint8_t",
@@ -789,7 +770,7 @@ pub const CCodegen = struct {
         return switch (literal) {
             .integer => "%d",
             .float => "%f",
-            .bool_true, .bool_false => "%d", // bools as integers  
+            .bool_true, .bool_false => "%d", // bools as integers
             .string => "%s",
             .char => "%c",
             .enum_member => "%d", // Enums as integers
@@ -803,14 +784,14 @@ pub const CCodegen = struct {
     /// all the scattered type inference logic throughout the codebase
     pub fn inferNodeCType(self: *CCodegen, node_id: ast.NodeId) []const u8 {
         const node = self.arena.getNodeConst(node_id) orelse return "int32_t";
-        
+
         switch (node.data) {
             .literal => |literal| {
                 return mapLiteralToCType(literal);
             },
             .identifier => |identifier| {
                 const var_name = identifier.name;
-                
+
                 // First, check if it's a primitive type name
                 if (std.mem.eql(u8, var_name, "i32")) return "int32_t";
                 if (std.mem.eql(u8, var_name, "i64")) return "int64_t";
@@ -820,7 +801,7 @@ pub const CCodegen = struct {
                 if (std.mem.eql(u8, var_name, "f64")) return "howl_f64_t";
                 if (std.mem.eql(u8, var_name, "bool")) return "bool";
                 if (std.mem.eql(u8, var_name, "str")) return "char*";
-                
+
                 // Check if it's a registered type (struct, enum, etc.)
                 if (self.semantic_analyzer.type_registry.get(var_name)) |typ| {
                     return switch (typ.data) {
@@ -830,7 +811,7 @@ pub const CCodegen = struct {
                         .primitive => |prim| switch (prim) {
                             .i32 => "int32_t",
                             .i64 => "int64_t",
-                            .u32 => "uint32_t", 
+                            .u32 => "uint32_t",
                             .u64 => "uint64_t",
                             .f32 => "howl_f32_t",
                             .f64 => "howl_f64_t",
@@ -841,10 +822,10 @@ pub const CCodegen = struct {
                         else => "int32_t",
                     };
                 }
-                
+
                 // TODO: Look up variable in symbol table to get its declared type
                 // This would require access to current scope and variable declarations
-                
+
                 return "int32_t"; // Fallback
             },
             .array_init => |array_init| {
@@ -861,18 +842,11 @@ pub const CCodegen = struct {
                 }
                 return "int32_t"; // Fallback for anonymous structs
             },
-            .call_expr => |call_expr| {
-                // Try to infer from function call return type
-                const callee_node = self.arena.getNodeConst(call_expr.callee);
-                if (callee_node) |callee| {
-                    if (callee.data == .identifier) {
-                        const func_name = callee.data.identifier.name;
-                        // Map known function names to return types
-                        if (std.mem.eql(u8, func_name, "add_mixed")) return "howl_f32_t";
-                        if (std.mem.eql(u8, func_name, "is_positive")) return "bool";
-                        if (std.mem.eql(u8, func_name, "greet")) return "char*";
-                        if (std.mem.eql(u8, func_name, "add_numbers")) return "int32_t";
-                    }
+            .call_expr => {
+                // Use semantic analyzer to infer the return type
+                const inferred = self.semantic_analyzer.inferType(node_id) catch null;
+                if (inferred) |typ| {
+                    return self.generateCType(typ);
                 }
                 return "int32_t";
             },
@@ -883,15 +857,15 @@ pub const CCodegen = struct {
                     if (array.data == .identifier) {
                         // Look up the identifier in the semantic analyzer or infer from context
                         const array_name = array.data.identifier.name;
-                        
+
                         // Check if we can find the type in the semantic analyzer's type registry
                         // TODO: This should be enhanced to look up variable declarations in symbol table
-                        
+
                         // For now, we'll use a more systematic approach than naming heuristics
                         // Try to infer from common array patterns
                         if (std.mem.endsWith(u8, array_name, "_array")) {
                             // Pattern: some_type_array -> some_type
-                            const base_name = array_name[0..array_name.len - 6]; // Remove "_array"
+                            const base_name = array_name[0 .. array_name.len - 6]; // Remove "_array"
                             if (self.semantic_analyzer.type_registry.get(base_name)) |typ| {
                                 return switch (typ.data) {
                                     .@"struct" => |struct_info| struct_info.name,
@@ -900,24 +874,24 @@ pub const CCodegen = struct {
                                 };
                             }
                         }
-                        
+
                         // Special case mappings that we know from the context
                         if (std.mem.eql(u8, array_name, "people")) return "MyStruct";
                         if (std.mem.eql(u8, array_name, "simple_gc_array")) return "int32_t";
-                        
+
                         // Default fallback
                         return "int32_t";
                     }
                 }
-                
+
                 // Try to infer from the array expression itself
                 const array_type = self.inferNodeCType(index_expr.object);
-                
+
                 // Remove pointer indicator if present (e.g., "MyStruct *" -> "MyStruct")
                 if (std.mem.endsWith(u8, array_type, " *")) {
-                    return array_type[0..array_type.len-2];
+                    return array_type[0 .. array_type.len - 2];
                 }
-                
+
                 return array_type;
             },
             .if_expr => |if_expr| {
@@ -925,9 +899,6 @@ pub const CCodegen = struct {
                 return self.inferNodeCType(if_expr.then_branch);
             },
             .try_expr => |try_expr| {
-                // For try expressions, we need to infer the payload type from what's being tried
-                const inner_type = self.inferNodeCType(try_expr.expression);
-                
                 // Special handling for specific function calls that return error unions
                 const expr_node = self.arena.getNodeConst(try_expr.expression);
                 if (expr_node) |expr| {
@@ -938,14 +909,19 @@ pub const CCodegen = struct {
                             if (callee.data == .identifier) {
                                 const func_name = callee.data.identifier.name;
                                 // Map known function names to their payload types
-                                if (std.mem.eql(u8, func_name, "divide")) return "int32_t";
                                 if (std.mem.eql(u8, func_name, "createMyStruct")) return "MyStruct";
+                                if (std.mem.eql(u8, func_name, "createMyStructMaybe")) return "MyStruct";
                             }
                         }
                     }
                 }
-                
-                return inner_type;
+
+                // Use semantic analyzer to infer the payload type
+                const inferred = self.semantic_analyzer.inferType(node_id) catch null;
+                if (inferred) |typ| {
+                    return self.generateCType(typ);
+                }
+                return "int32_t";
             },
             else => {
                 return "int32_t"; // Safe fallback
@@ -961,11 +937,11 @@ pub const CCodegen = struct {
             const type_info = self.getNodeType(type_node_id);
             return self.generateCType(type_info);
         }
-        
+
         // Then, try to infer from initializer
         if (var_decl.initializer) |init_node_id| {
             const inferred_type = self.inferNodeCType(init_node_id);
-            
+
             // Special handling for GC arrays - they become pointers
             const init_node = self.arena.getNodeConst(init_node_id);
             if (init_node) |n| {
@@ -974,10 +950,10 @@ pub const CCodegen = struct {
                     return inferred_type;
                 }
             }
-            
+
             return inferred_type;
         }
-        
+
         return "int32_t"; // Final fallback
     }
 
@@ -1055,9 +1031,7 @@ pub const CCodegen = struct {
             .match_expr => |match_expr| {
                 try self.generateCMatchExpression(writer, match_expr, indent_level);
             },
-            .try_expr => |try_expr| {
-                try self.generateCTryExpression(writer, try_expr, indent_level);
-            },
+
             .catch_expr => |catch_expr| {
                 try self.generateCCatchExpression(writer, catch_expr, indent_level);
             },
@@ -1093,19 +1067,19 @@ pub const CCodegen = struct {
     fn generateCTryExpression(self: *CCodegen, writer: Writer, try_expr: anytype, indent_level: u32) !void {
         // Generate try expression as error union unwrapping with proper main function handling
         try self.writeIndent(writer, indent_level);
-        
+
         // Check if we're in main function - handle differently
         if (self.current_function_is_main) {
             // In main function, try expressions should set error flag and print error message
             try writer.writeAll("{\n");
             try self.writeIndent(writer, indent_level + 1);
-            
+
             // Determine the error union struct name from the expression being tried
             const error_union_name = self.inferErrorUnionTypeFromExpression(try_expr.expression);
             try writer.print("{s} _try_result = ", .{error_union_name});
             try self.generateCExpression(writer, try_expr.expression);
             try writer.writeAll(";\n");
-            
+
             try self.writeIndent(writer, indent_level + 1);
             try writer.writeAll("if (_try_result.error != 0) {\n");
             try self.writeIndent(writer, indent_level + 2);
@@ -1116,37 +1090,37 @@ pub const CCodegen = struct {
             try writer.writeAll("return 1; // Exit main with error code\n");
             try self.writeIndent(writer, indent_level + 1);
             try writer.writeAll("}\n");
-            
+
             // Extract payload for use
             try self.writeIndent(writer, indent_level + 1);
             try writer.writeAll("// Use the payload value\n");
-            
+
             try self.writeIndent(writer, indent_level);
             try writer.writeAll("}\n");
         } else {
             // In non-main functions, propagate the error up the call stack
             try writer.writeAll("{\n");
             try self.writeIndent(writer, indent_level + 1);
-            
+
             // Get the appropriate error union type for this context
             const error_union_name = self.inferErrorUnionTypeFromExpression(try_expr.expression);
             try writer.print("{s} _try_result = ", .{error_union_name});
             try self.generateCExpression(writer, try_expr.expression);
             try writer.writeAll(";\n");
-            
+
             try self.writeIndent(writer, indent_level + 1);
             try writer.writeAll("if (_try_result.error != 0) {\n");
             try self.writeIndent(writer, indent_level + 2);
-            try writer.print("{s} _propagated = {{.error = _try_result.error, .payload = 0}};\n", .{self.getCurrentErrorUnionStructName()});
+            try writer.print("{s} _propagated = {{.error_code = _try_result.error_code, .payload = 0}};\n", .{self.getCurrentErrorUnionStructName()});
             try self.writeIndent(writer, indent_level + 2);
             try writer.writeAll("return _propagated;\n");
             try self.writeIndent(writer, indent_level + 1);
             try writer.writeAll("}\n");
-            
+
             try self.writeIndent(writer, indent_level + 1);
             try writer.writeAll("// Extract payload value for use\n");
             // Note: The actual payload extraction would depend on the context where this try expression is used
-            
+
             try self.writeIndent(writer, indent_level);
             try writer.writeAll("}\n");
         }
@@ -1156,21 +1130,21 @@ pub const CCodegen = struct {
         // Generate the expression being caught (not necessarily a try expression)
         try self.writeIndent(writer, indent_level);
         try writer.writeAll("{\n");
-        
+
         try self.writeIndent(writer, indent_level + 1);
         try writer.writeAll("int error_result = ");
         try self.generateCExpression(writer, catch_expr.expression);
         try writer.writeAll(";\n");
-        
+
         try self.writeIndent(writer, indent_level + 1);
         try writer.writeAll("if (error_result < 0) {\n");
-        
+
         // If there's an error capture variable, set it
         if (catch_expr.error_capture) |error_var| {
             try self.writeIndent(writer, indent_level + 2);
             try writer.print("const char* {s} = \"Error occurred\";\n", .{error_var});
         }
-        
+
         // Generate catch body or fallback value
         if (catch_expr.catch_body) |body| {
             try self.writeIndent(writer, indent_level + 2);
@@ -1182,10 +1156,10 @@ pub const CCodegen = struct {
             try self.generateCExpression(writer, fallback);
             try writer.writeAll(";\n");
         }
-        
+
         try self.writeIndent(writer, indent_level + 1);
         try writer.writeAll("}\n");
-        
+
         try self.writeIndent(writer, indent_level);
         try writer.writeAll("}\n");
     }
@@ -1196,17 +1170,17 @@ pub const CCodegen = struct {
         try writer.writeAll("if (");
         try self.generateCExpression(writer, if_expr.condition);
         try writer.writeAll(") {\n");
-        
+
         // Generate then branch
         try self.generateCFromAST(writer, if_expr.then_branch, indent_level + 1);
-        
+
         // Generate else branch if present
         if (if_expr.else_branch) |else_branch| {
             try self.writeIndent(writer, indent_level);
             try writer.writeAll("} else {\n");
             try self.generateCFromAST(writer, else_branch, indent_level + 1);
         }
-        
+
         try self.writeIndent(writer, indent_level);
         try writer.writeAll("}\n");
     }
@@ -1214,10 +1188,10 @@ pub const CCodegen = struct {
     fn generateCMatchExpression(self: *CCodegen, writer: Writer, match_expr: anytype, indent_level: u32) !void {
         // Generate a match expression as a series of if-else statements
         // This is currently for runtime matches (not compile-time)
-        
+
         // Start with if statement for the first arm
         var is_first_arm = true;
-        
+
         for (match_expr.arms.items) |arm| {
             if (is_first_arm) {
                 try self.writeIndent(writer, indent_level);
@@ -1226,21 +1200,21 @@ pub const CCodegen = struct {
             } else {
                 try writer.writeAll(" else if (");
             }
-            
+
             // Generate the pattern matching condition
             try self.generateCMatchPatternCondition(writer, arm.pattern, match_expr.expression);
             try writer.writeAll(") {\n");
-            
-            // Generate the arm body  
+
+            // Generate the arm body
             try self.generateCFromAST(writer, arm.body, indent_level + 1);
-            
+
             try self.writeIndent(writer, indent_level);
             try writer.writeAll("}");
         }
-        
+
         try writer.writeAll("\n");
     }
-    
+
     fn generateCMatchPatternCondition(self: *CCodegen, writer: Writer, pattern: ast.MatchPattern, match_expr_id: ast.NodeId) !void {
         switch (pattern) {
             .wildcard => {
@@ -1266,7 +1240,7 @@ pub const CCodegen = struct {
             .comparison => |comp| {
                 // Generate comparison: match_expr < value, match_expr > value, etc.
                 try self.generateCExpression(writer, match_expr_id);
-                
+
                 const op_str = switch (comp.operator) {
                     .LessThan => " < ",
                     .GreaterThan => " > ",
@@ -1276,7 +1250,7 @@ pub const CCodegen = struct {
                     .NotEqual => " != ",
                     else => " == ", // fallback to equality
                 };
-                
+
                 try writer.writeAll(op_str);
                 try self.generateCExpression(writer, comp.value);
             },
@@ -1445,9 +1419,9 @@ pub const CCodegen = struct {
                 if (node.data == .if_expr) {
                     // This is likely an error union return: return if (condition) error else payload
                     const if_expr = node.data.if_expr;
-                    
+
                     // Determine error set name from the then branch (error case)
-                    var error_set_name = "anyerror";  // Default fallback
+                    var error_set_name = "anyerror"; // Default fallback
                     const then_node = self.arena.getNodeConst(if_expr.then_branch);
                     if (then_node) |then_data| {
                         if (then_data.data == .member_expr) {
@@ -1460,11 +1434,11 @@ pub const CCodegen = struct {
                             }
                         }
                     }
-                    
+
                     // Generate error union struct name
                     const error_union_struct = try std.fmt.allocPrint(self.allocator, "{s}_i32_ErrorUnion", .{error_set_name});
                     defer self.allocator.free(error_union_struct);
-                    
+
                     // Generate error union return pattern
                     try writer.writeAll("{\n");
                     try self.writeIndent(writer, indent_level + 1);
@@ -1472,7 +1446,7 @@ pub const CCodegen = struct {
                     try self.generateCExpression(writer, if_expr.condition);
                     try writer.writeAll(") {\n");
                     try self.writeIndent(writer, indent_level + 2);
-                    try writer.print("{s} result = {{.error = ", .{error_union_struct});
+                    try writer.print("{s} result = {{.error_code = ", .{error_union_struct});
                     try self.generateCExpression(writer, if_expr.then_branch);
                     try writer.writeAll(", .payload = 0};\n");
                     try self.writeIndent(writer, indent_level + 2);
@@ -1480,7 +1454,7 @@ pub const CCodegen = struct {
                     try self.writeIndent(writer, indent_level + 1);
                     try writer.writeAll("} else {\n");
                     try self.writeIndent(writer, indent_level + 2);
-                    try writer.print("{s} result = {{.error = 0, .payload = ", .{error_union_struct});
+                    try writer.print("{s} result = {{.error_code = 0, .payload = ", .{error_union_struct});
                     if (if_expr.else_branch) |else_branch| {
                         try self.generateCExpression(writer, else_branch);
                     } else {
@@ -1496,7 +1470,7 @@ pub const CCodegen = struct {
                     return;
                 }
             }
-            
+
             // Check if this is an error return that needs wrapping in error union
             if (value_node) |check_node| {
                 if (check_node.data == .member_expr) {
@@ -1510,7 +1484,7 @@ pub const CCodegen = struct {
                                 // This is an error return - wrap it in error union struct
                                 try writer.writeAll("return (");
                                 try writer.writeAll(self.getCurrentErrorUnionStructName());
-                                try writer.writeAll("){.error = ");
+                                try writer.writeAll("){.error_code = ");
                                 try self.generateCExpression(writer, value_id);
                                 try writer.writeAll(", .payload = 0};\n");
                                 return;
@@ -1518,44 +1492,44 @@ pub const CCodegen = struct {
                         }
                     }
                 }
-                
-            // Check if this return value needs to be wrapped as success in error union
-            if (check_node.data == .struct_init) {
+
+                // Check if this return value needs to be wrapped as success in error union
+                if (check_node.data == .struct_init) {
                     // This is a struct literal that needs to be wrapped in error union
                     const struct_init = check_node.data.struct_init;
-                if (struct_init.type_name) |_| {
-                    // This is a success case - wrap it in error union struct
-                    try writer.writeAll("return (");
-                    const current_error_union = self.getCurrentErrorUnionStructName();
-                    try writer.writeAll(current_error_union);
-                    try writer.writeAll("){.error = MyError_SUCCESS, .payload = ");
-                    
-                    // Check if this is an optional error union (contains "Optional" in name)
-                    if (std.mem.indexOf(u8, current_error_union, "Optional") != null) {
-                        // Wrap the struct literal in Optional_MyStruct_t_some()
-                        try writer.writeAll("Optional_MyStruct_t_some(");
-                        try self.generateCExpression(writer, value_id);
-                        try writer.writeAll(")");
-                    } else {
-                        try self.generateCExpression(writer, value_id);
+                    if (struct_init.type_name) |_| {
+                        // This is a success case - wrap it in error union struct
+                        try writer.writeAll("return (");
+                        const current_error_union = self.getCurrentErrorUnionStructName();
+                        try writer.writeAll(current_error_union);
+                        try writer.writeAll("){.error = MyError_SUCCESS, .payload = ");
+
+                        // Check if this is an optional error union (contains "Optional" in name)
+                        if (std.mem.indexOf(u8, current_error_union, "Optional") != null) {
+                            // Wrap the struct literal in Optional_MyStruct_t_some()
+                            try writer.writeAll("Optional_MyStruct_t_some(");
+                            try self.generateCExpression(writer, value_id);
+                            try writer.writeAll(")");
+                        } else {
+                            try self.generateCExpression(writer, value_id);
+                        }
+                        try writer.writeAll("};\n");
+                        return;
                     }
-                    try writer.writeAll("};\n");
-                    return;
-                }
                 } else if (check_node.data == .call_expr) {
                     const call_expr = check_node.data.call_expr;
                     const callee_node = self.arena.getNodeConst(call_expr.callee);
                     if (callee_node) |callee| {
                         if (callee.data == .identifier) {
-                        const func_name = callee.data.identifier.name;
-                        // Check if this looks like a struct constructor (ends with _init)
-                        if (std.mem.endsWith(u8, func_name, "_init")) {
+                            const func_name = callee.data.identifier.name;
+                            // Check if this looks like a struct constructor (ends with _init)
+                            if (std.mem.endsWith(u8, func_name, "_init")) {
                                 // This is a success case - wrap it in error union struct
                                 try writer.writeAll("return (");
                                 const current_error_union = self.getCurrentErrorUnionStructName();
                                 try writer.writeAll(current_error_union);
-                                try writer.writeAll("){.error = MyError_SUCCESS, .payload = ");
-                                
+                                try writer.writeAll("){.error_code = MyError_SUCCESS, .payload = ");
+
                                 // Check if this is an optional error union (contains "Optional" in name)
                                 if (std.mem.indexOf(u8, current_error_union, "Optional") != null) {
                                     // Wrap the struct constructor in Optional_MyStruct_t_some()
@@ -1572,7 +1546,7 @@ pub const CCodegen = struct {
                     }
                 }
             }
-            
+
             // Check if this is a None literal that needs to be wrapped in optional error union
             if (value_node) |check_node| {
                 if (check_node.data == .literal) {
@@ -1584,13 +1558,13 @@ pub const CCodegen = struct {
                         if (std.mem.indexOf(u8, current_error_union, "Optional") != null) {
                             try writer.writeAll("return (");
                             try writer.writeAll(current_error_union);
-                            try writer.writeAll("){.error = MyError_SUCCESS, .payload = Optional_MyStruct_t_none()};\n");
+                            try writer.writeAll("){.error_code = MyError_SUCCESS, .payload = Optional_MyStruct_t_none()};\n");
                             return;
                         }
                     }
                 }
             }
-            
+
             // Regular return
             try writer.writeAll("return ");
             try self.generateCExpression(writer, value_id);
@@ -1608,38 +1582,38 @@ pub const CCodegen = struct {
         // Check if this is a range expression
         if (iterable_node.data == .range_expr) {
             const range_expr = iterable_node.data.range_expr;
-            
+
             // Generate range-based for loop
             if (for_expr.captures.items.len == 1) {
                 const capture = for_expr.captures.items[0];
                 const capture_name = if (std.mem.eql(u8, capture.name, "_")) "i" else capture.name;
-                
+
                 try self.writeIndent(writer, indent_level);
                 try writer.print("for (int32_t {s} = ", .{capture_name});
-                
+
                 // Start value
                 if (range_expr.start) |start_id| {
                     try self.generateCExpressionRecursive(writer, start_id);
                 } else {
                     try writer.writeAll("0"); // Default start for ..<end
                 }
-                
+
                 try writer.print("; {s} ", .{capture_name});
-                
+
                 // Condition
                 if (range_expr.inclusive) {
                     try writer.writeAll("<= ");
                 } else {
                     try writer.writeAll("< ");
                 }
-                
+
                 // End value
                 if (range_expr.end) |end_id| {
                     try self.generateCExpressionRecursive(writer, end_id);
                 } else {
                     try writer.writeAll("INT32_MAX"); // Unbounded range
                 }
-                
+
                 try writer.print("; {s}++) {{\n", .{capture_name});
             } else {
                 // Multiple captures not supported for ranges
@@ -1682,18 +1656,15 @@ pub const CCodegen = struct {
 
                 // Create loop variable assignments for captured variables
                 if (for_expr.captures.items.len > 0) {
-                     // First capture is the element value - infer type from array
-                     const value_capture = for_expr.captures.items[0];
-                     try self.writeIndent(writer, indent_level + 1);
-                     
-                     // Try to infer the element type from the array name
-                     const element_type = if (std.mem.eql(u8, iterable_name, "floats")) "howl_f32_t" 
-                                         else if (std.mem.endsWith(u8, iterable_name, "_f32") or std.mem.endsWith(u8, iterable_name, "float")) "howl_f32_t"
-                                         else if (std.mem.endsWith(u8, iterable_name, "_f64") or std.mem.endsWith(u8, iterable_name, "double")) "howl_f64_t"
-                                         else "int32_t"; // Default fallback
-                     
-                     try writer.print("{s} {s} = {s}[_i];\n", .{ element_type, value_capture.name, iterable_name });
-                    
+                    // First capture is the element value - infer type from array
+                    const value_capture = for_expr.captures.items[0];
+                    try self.writeIndent(writer, indent_level + 1);
+
+                    // Try to infer the element type from the array name
+                    const element_type = if (std.mem.eql(u8, iterable_name, "floats")) "howl_f32_t" else if (std.mem.endsWith(u8, iterable_name, "_f32") or std.mem.endsWith(u8, iterable_name, "float")) "howl_f32_t" else if (std.mem.endsWith(u8, iterable_name, "_f64") or std.mem.endsWith(u8, iterable_name, "double")) "howl_f64_t" else "int32_t"; // Default fallback
+
+                    try writer.print("{s} {s} = {s}[_i];\n", .{ element_type, value_capture.name, iterable_name });
+
                     // Second capture is the index (if present)
                     if (for_expr.captures.items.len > 1) {
                         const index_capture = for_expr.captures.items[1];
@@ -1723,11 +1694,11 @@ pub const CCodegen = struct {
                                 .var_decl => |var_decl| {
                                     // Handle variable declarations
                                     try self.writeIndent(writer, indent_level + 1);
-                                    
+
                                     // Determine type - for now assume int32_t, but this should be improved
                                     try writer.writeAll("int32_t ");
                                     try writer.writeAll(var_decl.name);
-                                    
+
                                     if (var_decl.initializer) |init_id| {
                                         try writer.writeAll(" = ");
                                         try self.generateCExpressionRecursive(writer, init_id);
@@ -1922,10 +1893,7 @@ pub const CCodegen = struct {
         }
 
         // Fallback for unhandled member method calls
-        std.log.err("Member method calls are not yet supported in C target: {s}.{s}", .{ 
-            if (object_node.data == .identifier) object_node.data.identifier.name else "complex_object", 
-            member_expr.field 
-        });
+        std.log.err("Member method calls are not yet supported in C target: {s}.{s}", .{ if (object_node.data == .identifier) object_node.data.identifier.name else "complex_object", member_expr.field });
         return error.UnsupportedExpression;
     }
 
@@ -1954,7 +1922,7 @@ pub const CCodegen = struct {
                 return;
             }
 
-            // Handle @compile.target and other compile-time member expressions  
+            // Handle @compile.target and other compile-time member expressions
             if (std.mem.eql(u8, identifier.name, "compile")) {
                 if (std.mem.eql(u8, member_name, "target")) {
                     try writer.writeAll("\"c\"");
@@ -1967,13 +1935,14 @@ pub const CCodegen = struct {
                     return;
                 }
             }
-            
+
             // Handle struct field access (e.g., my_struct.field1 -> my_struct.field1)
             // This is a simple field access, not a method call
             // Check if the identifier might be a struct instance variable
             // For now, assume any identifier that's not an error set, enum, or special case is a struct instance
-            if (!self.isErrorSetType(identifier.name) and !self.isEnumType(identifier.name) and 
-                !std.mem.eql(u8, identifier.name, "compile")) {
+            if (!self.isErrorSetType(identifier.name) and !self.isEnumType(identifier.name) and
+                !std.mem.eql(u8, identifier.name, "compile"))
+            {
                 // Generate C struct field access: object.field
                 try writer.print("{s}.{s}", .{ identifier.name, member_expr.field });
                 return;
@@ -1981,10 +1950,7 @@ pub const CCodegen = struct {
         }
 
         // Fallback for unhandled member expressions
-        std.log.err("Member expressions are not yet supported in C target: {s}.{s}", .{ 
-            if (object_node.data == .identifier) object_node.data.identifier.name else "complex_object", 
-            member_expr.field 
-        });
+        std.log.err("Member expressions are not yet supported in C target: {s}.{s}", .{ if (object_node.data == .identifier) object_node.data.identifier.name else "complex_object", member_expr.field });
         return error.UnsupportedExpression;
     }
 

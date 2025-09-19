@@ -47,10 +47,11 @@ pub fn build(b: *std.Build) void {
     // Now, we will create a static library based on the module we created above.
     // This creates a `std.Build.Step.Compile`, which is the build step responsible
     // for actually invoking the compiler.
-    const lib = b.addLibrary(.{
-        .linkage = .static,
+    const lib = b.addStaticLibrary(.{
         .name = "howl_lang",
-        .root_module = lib_mod,
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
     });
 
     // This declares intent for the library to be installed into the standard
@@ -61,11 +62,13 @@ pub fn build(b: *std.Build) void {
     // This creates the main howl executable that includes all subcommands
     const exe = b.addExecutable(.{
         .name = "howl",
-        .root_module = exe_mod,
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
     });
-    
+
     // Link compiler-rt to resolve f128 runtime functions
-    exe.root_module.link_libc = true;
+    exe.linkLibC();
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
@@ -98,20 +101,18 @@ pub fn build(b: *std.Build) void {
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const lib_unit_tests = b.addTest(.{
-        .root_module = lib_mod,
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
     });
-
-    // Add the howl_lang_lib import to the library tests so they can import the lib
-    lib_unit_tests.root_module.addImport("howl_lang_lib", lib_mod);
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
     const exe_unit_tests = b.addTest(.{
-        .root_module = exe_mod,
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
     });
-
-    // Add the howl_lang_lib import to the executable tests so they can import the lib
-    exe_unit_tests.root_module.addImport("howl_lang_lib", lib_mod);
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 

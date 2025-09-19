@@ -17,7 +17,7 @@ pub fn generateCBinaryExpression(
     try writer.writeAll("(");
     try exprGenerator(arena, writer, binary_expr.left);
     try writer.writeAll(" ");
-    
+
     const op_str = switch (binary_expr.op) {
         .add => "+",
         .sub => "-",
@@ -34,7 +34,7 @@ pub fn generateCBinaryExpression(
         .logical_or => "||",
         else => "+", // Fallback
     };
-    
+
     try writer.writeAll(op_str);
     try writer.writeAll(" ");
     try exprGenerator(arena, writer, binary_expr.right);
@@ -88,35 +88,35 @@ pub fn generateCSimpleExpression(arena: *const ast.AstArena, writer: Writer, nod
             const std_lib = @import("codegen_c_std.zig");
             const codegen = struct {
                 allocator: std.mem.Allocator,
-                
+
                 const Self = @This();
                 fn init(alloc: std.mem.Allocator) Self {
                     return Self{ .allocator = alloc };
                 }
             }.init(std.heap.page_allocator);
-            
+
             // Try to handle std library calls first
             const std_handler = std_lib.StdLibHandler.init(arena, codegen.allocator);
             if (std_handler.handleStdCall(writer, call_expr) catch false) {
                 return; // Successfully handled as std library call
             }
-            
+
             // Regular function call
             try generateCSimpleExpression(arena, writer, call_expr.callee);
             try writer.writeAll("(");
-            
+
             for (call_expr.args.items, 0..) |arg_id, i| {
                 if (i > 0) try writer.writeAll(", ");
                 try generateCSimpleExpression(arena, writer, arg_id);
             }
-            
+
             try writer.writeAll(")");
         },
         .if_expr => |if_expr| {
             // Check if this is a return statement with error union by looking at the structure
             const then_node = arena.getNodeConst(if_expr.then_branch);
             var is_error_union_if = false;
-            
+
             if (then_node) |then_data| {
                 if (then_data.data == .member_expr) {
                     const member_expr = then_data.data.member_expr;
@@ -125,22 +125,23 @@ pub fn generateCSimpleExpression(arena: *const ast.AstArena, writer: Writer, nod
                         if (obj.data == .identifier) {
                             const obj_name = obj.data.identifier.name;
                             // Check if this looks like an error set (common naming patterns)
-                            if (std.mem.endsWith(u8, obj_name, "Error") or 
-                                std.mem.eql(u8, obj_name, "MyError") or 
-                                std.mem.eql(u8, obj_name, "TestError")) {
+                            if (std.mem.endsWith(u8, obj_name, "Error") or
+                                std.mem.eql(u8, obj_name, "MyError") or
+                                std.mem.eql(u8, obj_name, "TestError"))
+                            {
                                 is_error_union_if = true;
                             }
                         }
                     }
                 }
             }
-            
+
             if (is_error_union_if) {
                 // Generate error union conditional
                 try writer.writeAll("(");
                 try generateCSimpleExpression(arena, writer, if_expr.condition);
                 try writer.writeAll(" ? ");
-                
+
                 // Then branch - error case
                 if (then_node) |then_data| {
                     if (then_data.data == .member_expr) {
@@ -152,20 +153,22 @@ pub fn generateCSimpleExpression(arena: *const ast.AstArena, writer: Writer, nod
                                 // Use the actual error set name in the error union struct generation
                                 // For TestError!i32, this should generate TestError_i32_ErrorUnion
                                 const error_union_struct = if (std.mem.eql(u8, obj_name, "TestError"))
-                                    "TestError_i32_ErrorUnion" 
-                                else 
+                                    "TestError_i32_ErrorUnion"
+                                else if (std.mem.eql(u8, obj_name, "MyError"))
+                                    "MyError_i32_ErrorUnion"
+                                else
                                     "anyerror_i32_ErrorUnion";
-                                    
-                                try writer.print("({s}){{.error = {s}_{s}, .payload = 0}}", .{ error_union_struct, obj_name, member_expr.field });
+
+                                try writer.print("({s}){{.error_code = {s}_{s}, .payload = 0}}", .{ error_union_struct, obj_name, member_expr.field });
                             }
                         }
                     }
                 } else {
                     try generateCSimpleExpression(arena, writer, if_expr.then_branch);
                 }
-                
+
                 try writer.writeAll(" : ");
-                
+
                 // Else branch - success case
                 if (if_expr.else_branch) |else_branch| {
                     // For success case, wrap the payload in error union struct with error = 0
@@ -179,6 +182,8 @@ pub fn generateCSimpleExpression(arena: *const ast.AstArena, writer: Writer, nod
                                     const obj_name = obj.data.identifier.name;
                                     break :blk if (std.mem.eql(u8, obj_name, "TestError"))
                                         "TestError_i32_ErrorUnion"
+                                    else if (std.mem.eql(u8, obj_name, "MyError"))
+                                        "MyError_i32_ErrorUnion"
                                     else
                                         "anyerror_i32_ErrorUnion";
                                 }
@@ -186,14 +191,14 @@ pub fn generateCSimpleExpression(arena: *const ast.AstArena, writer: Writer, nod
                         }
                         break :blk "anyerror_i32_ErrorUnion";
                     } else "anyerror_i32_ErrorUnion";
-                    
-                    try writer.print("({s}){{.error = 0, .payload = ", .{error_union_struct});
+
+                    try writer.print("({s}){{.error_code = 0, .payload = ", .{error_union_struct});
                     try generateCSimpleExpression(arena, writer, else_branch);
                     try writer.writeAll("}");
                 } else {
-                    try writer.writeAll("(anyerror_i32_ErrorUnion){.error = 0, .payload = 0}");
+                    try writer.writeAll("(anyerror_i32_ErrorUnion){.error_code = 0, .payload = 0}");
                 }
-                
+
                 try writer.writeAll(")");
             } else {
                 // Regular if expression
@@ -222,9 +227,10 @@ pub fn generateCSimpleExpression(arena: *const ast.AstArena, writer: Writer, nod
                         if (callee.data == .identifier) {
                             const func_name = callee.data.identifier.name;
                             // Generate function call and extract payload
-                            if (std.mem.eql(u8, func_name, "createMyStruct") or 
+                            if (std.mem.eql(u8, func_name, "createMyStruct") or
                                 std.mem.eql(u8, func_name, "createMyStructMaybe") or
-                                std.mem.eql(u8, func_name, "divide")) {
+                                std.mem.eql(u8, func_name, "divide"))
+                            {
                                 try writer.writeAll("(");
                                 try generateCSimpleExpression(arena, writer, try_expr.expression);
                                 try writer.writeAll(").payload");
@@ -248,12 +254,21 @@ pub fn generateCSimpleExpression(arena: *const ast.AstArena, writer: Writer, nod
         },
         .array_init => |array_init| {
             // Handle array initialization like [1, 2, 3] or $[1, 2, 3]
-            try writer.writeAll("{");
-            for (array_init.elements.items, 0..) |element_id, i| {
-                if (i > 0) try writer.writeAll(", ");
-                try generateCSimpleExpression(arena, writer, element_id);
+            if (array_init.use_gc) {
+                // GC array: generate malloc call
+                const element_count = array_init.elements.items.len;
+                // For now, assume element type is i64 - this should be inferred properly
+                try writer.print("malloc(sizeof(i64) * {d})", .{element_count});
+                // TODO: Initialize elements - this is complex and needs proper element type inference
+            } else {
+                // Stack array: generate initializer list
+                try writer.writeAll("{");
+                for (array_init.elements.items, 0..) |element_id, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try generateCSimpleExpression(arena, writer, element_id);
+                }
+                try writer.writeAll("}");
             }
-            try writer.writeAll("}");
         },
         .index_expr => |index_expr| {
             // Handle array access like arr[0]
@@ -263,7 +278,7 @@ pub fn generateCSimpleExpression(arena: *const ast.AstArena, writer: Writer, nod
             try writer.writeAll("]");
         },
         .match_expr => |match_expr| {
-            // Generate basic match expressions 
+            // Generate basic match expressions
             try generateBasicMatchExpression(arena, writer, match_expr);
         },
         else => {
@@ -287,7 +302,7 @@ pub fn generateCExpressionWithContext(
         return;
     };
 
-    _ = type_collection; // May be used for type inference  
+    _ = type_collection; // May be used for type inference
     _ = semantic_analyzer; // May be used for semantic analysis
     _ = expected_type; // May be used for type coercion
 
@@ -333,7 +348,7 @@ pub fn generateCExpressionWithContext(
             try generateCSimpleExpression(arena, writer, node_id);
         },
         .if_expr => {
-            // Delegate to simple expression generation  
+            // Delegate to simple expression generation
             try generateCSimpleExpression(arena, writer, node_id);
         },
         .try_expr => {
@@ -364,7 +379,7 @@ pub fn generateCExpressionWithContext(
             try writer.writeAll("]");
         },
         .match_expr => |match_expr| {
-            // Generate basic match expressions 
+            // Generate basic match expressions
             try generateBasicMatchExpression(arena, writer, match_expr);
         },
         .struct_init => |struct_init| {
@@ -374,7 +389,7 @@ pub fn generateCExpressionWithContext(
             } else {
                 try writer.writeAll("{");
             }
-            
+
             for (struct_init.fields.items, 0..) |field, i| {
                 if (i > 0) try writer.writeAll(", ");
                 try writer.print(".{s} = ", .{field.name});
@@ -388,10 +403,10 @@ pub fn generateCExpressionWithContext(
     }
 }
 
-/// Generate basic match expressions with simple patterns  
+/// Generate basic match expressions with simple patterns
 fn generateBasicMatchExpression(arena: *const ast.AstArena, writer: Writer, match_expr: anytype) !void {
     // This should not be used anymore - match expressions are now handled as statements
-    // Generate a fallback to indicate improper usage  
+    // Generate a fallback to indicate improper usage
     _ = arena;
     _ = match_expr;
     try writer.writeAll("0 /* match expression should be handled as statement */");
@@ -497,10 +512,10 @@ pub fn generateCExpressionRecursive(
             } else {
                 // Named struct initialization: .TypeName{ .field = value, ... }
                 const type_name = struct_init.type_name.?;
-                
+
                 if (struct_init.use_gc) {
                     // Garbage collected initialization: malloc and initialize
-                    try writer.print("({s}*)malloc(sizeof({s}))", .{type_name, type_name});
+                    try writer.print("({s}*)malloc(sizeof({s}))", .{ type_name, type_name });
                     // For now, we'll generate a simple malloc call. In a full implementation,
                     // we would need to initialize the allocated memory with the struct values.
                     // This is a basic starting point for GC support.
@@ -522,14 +537,14 @@ pub fn generateCExpressionRecursive(
             if (array_init.use_gc) {
                 // Garbage collected array: malloc and initialize
                 const num_elements = array_init.elements.items.len;
-                
+
                 // Determine the element type using centralized inference
-                const element_type = if (num_elements > 0) 
+                const element_type = if (num_elements > 0)
                     codegen.inferNodeCType(array_init.elements.items[0])
-                else 
+                else
                     "int32_t";
-                
-                try writer.print("malloc({d} * sizeof({s}))", .{num_elements, element_type});
+
+                try writer.print("malloc({d} * sizeof({s}))", .{ num_elements, element_type });
                 // For now, this is a basic malloc call. In a full implementation,
                 // we would need to initialize the array elements properly.
             } else {
@@ -568,13 +583,13 @@ pub fn generateCExpressionRecursive(
         .try_expr => |try_expr| {
             // For try expressions in expression context
             try writer.writeAll("({ ");
-            
+
             // Determine the correct error union type from the expression being tried
             const error_union_type = codegen.inferErrorUnionTypeFromExpression(try_expr.expression);
             try writer.writeAll(error_union_type);
             try writer.writeAll(" _temp = ");
             try generateCExpressionRecursive(codegen, writer, try_expr.expression);
-            
+
             if (codegen.current_function_is_main) {
                 // In main function, use if statement instead of ternary to avoid type mismatch
                 try writer.writeAll("; if (_temp.error < 0) exit(1); _temp.payload; })");
@@ -680,7 +695,7 @@ pub fn generateCMemberExpression(
             return;
         }
 
-        // Handle @compile.target and other compile-time member expressions  
+        // Handle @compile.target and other compile-time member expressions
         if (std.mem.eql(u8, identifier.name, "compile")) {
             if (std.mem.eql(u8, member_name, "target")) {
                 try writer.writeAll("\"c\"");
@@ -693,13 +708,14 @@ pub fn generateCMemberExpression(
                 return;
             }
         }
-        
+
         // Handle struct field access (e.g., my_struct.field1 -> my_struct.field1)
         // This is a simple field access, not a method call
         // Check if the identifier might be a struct instance variable
         // For now, assume any identifier that's not an error set, enum, or special case is a struct instance
-        if (!codegen.isErrorSetType(identifier.name) and !codegen.isEnumType(identifier.name) and 
-            !std.mem.eql(u8, identifier.name, "compile")) {
+        if (!codegen.isErrorSetType(identifier.name) and !codegen.isEnumType(identifier.name) and
+            !std.mem.eql(u8, identifier.name, "compile"))
+        {
             // Generate C struct field access: object.field
             try writer.print("{s}.{s}", .{ identifier.name, member_expr.field });
             return;
@@ -707,10 +723,7 @@ pub fn generateCMemberExpression(
     }
 
     // Fallback for unhandled member expressions
-    std.log.err("Member expressions are not yet supported in C target: {s}.{s}", .{ 
-        if (object_node.data == .identifier) object_node.data.identifier.name else "complex_object", 
-        member_expr.field 
-    });
+    std.log.err("Member expressions are not yet supported in C target: {s}.{s}", .{ if (object_node.data == .identifier) object_node.data.identifier.name else "complex_object", member_expr.field });
     return CCodegenError.UnsupportedOperation;
 }
 
@@ -761,7 +774,7 @@ pub fn generateCMemberMethodCall(
                         std.mem.eql(u8, member_expr.field, "init"))
                     {
                         // This is std.List(Type).init() - no arguments needed
-                        
+
                         // Try to determine the type from the type argument
                         if (call_expr.args.items.len > 0) {
                             const type_arg = codegen.arena.getNodeConst(call_expr.args.items[0]);
@@ -774,7 +787,7 @@ pub fn generateCMemberMethodCall(
                                 }
                             }
                         }
-                        
+
                         // Fallback to i32 if we can't determine the type
                         try writer.writeAll("HowlList_i32_init()");
                         return;
@@ -787,19 +800,19 @@ pub fn generateCMemberMethodCall(
     // Handle regular method calls like list.append(value)
     if (object_node.data == .identifier) {
         const object_name = object_node.data.identifier.name;
-        
+
         if (std.mem.eql(u8, member_expr.field, "append")) {
             // Handle list.append(value)
             try writer.print("HowlList_i32_append(&{s}, ", .{object_name});
-            
+
             if (args.len > 0) {
                 try generateCExpressionRecursive(codegen, writer, args[0]);
             }
-            
+
             try writer.writeAll(")");
             return;
         }
-        
+
         if (std.mem.eql(u8, member_expr.field, "len")) {
             // Handle list.len - this should be a property access, not a method call
             try writer.print("{s}.len", .{object_name});

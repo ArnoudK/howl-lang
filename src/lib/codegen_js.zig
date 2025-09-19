@@ -55,7 +55,7 @@ pub const JSCodegen = struct {
 
     fn generateNode(self: *JSCodegen, node_id: ast.NodeId) anyerror!void {
         const node = self.arena.getNodeConst(node_id) orelse return;
-        
+
         switch (node.data) {
             .literal => |literal| try self.generateLiteral(literal),
             .identifier => |id| try self.write(id.name),
@@ -146,13 +146,13 @@ pub const JSCodegen = struct {
         if (callee_node) |node| {
             if (node.data == .identifier) {
                 const ident = node.data.identifier;
-                
+
                 // Handle builtin functions
                 if (try self.handleBuiltinCall(ident.name, call.args)) {
                     return;
                 }
             }
-            
+
             // Special handling for std.debug.print
             if (node.data == .member_expr) {
                 const member = node.data.member_expr;
@@ -165,9 +165,10 @@ pub const JSCodegen = struct {
                             if (base_obj.data == .identifier) {
                                 const base_ident = base_obj.data.identifier;
                                 // Handle std.debug.print -> console.log
-                                if (std.mem.eql(u8, base_ident.name, "std") and 
-                                    std.mem.eql(u8, nested_member.field, "debug") and 
-                                    std.mem.eql(u8, member.field, "print")) {
+                                if (std.mem.eql(u8, base_ident.name, "std") and
+                                    std.mem.eql(u8, nested_member.field, "debug") and
+                                    std.mem.eql(u8, member.field, "print"))
+                                {
                                     try self.generatePrintCall(call.args);
                                     return;
                                 }
@@ -176,7 +177,7 @@ pub const JSCodegen = struct {
                     }
                 }
             }
-            
+
             // Special handling for method calls on generic types like std.List(T).init()
             if (node.data == .member_expr) {
                 const member = node.data.member_expr;
@@ -230,7 +231,7 @@ pub const JSCodegen = struct {
                     }
                 }
             }
-            
+
             // Special handling for __anonymous_struct calls (from .{} syntax)
             if (node.data == .identifier) {
                 const ident = node.data.identifier;
@@ -245,7 +246,7 @@ pub const JSCodegen = struct {
                 }
             }
         }
-        
+
         // Default function call generation
         try self.generateNode(call.callee);
         try self.write("(");
@@ -270,7 +271,7 @@ pub const JSCodegen = struct {
             try self.generateAlignOfBuiltin(args);
             return true;
         }
-        
+
         // Safe arithmetic builtins
         if (std.mem.eql(u8, function_name, "add_s")) {
             try self.generateSafeArithmeticBuiltin("add", args);
@@ -288,7 +289,7 @@ pub const JSCodegen = struct {
             try self.generateSafeArithmeticBuiltin("div", args);
             return true;
         }
-        
+
         // Type casting builtins
         if (std.mem.eql(u8, function_name, "intCast")) {
             try self.generateIntCastBuiltin(args);
@@ -302,7 +303,7 @@ pub const JSCodegen = struct {
             try self.generateTruncateBuiltin(args);
             return true;
         }
-        
+
         // Memory builtins
         if (std.mem.eql(u8, function_name, "memcpy")) {
             try self.generateMemcpyBuiltin(args);
@@ -312,7 +313,7 @@ pub const JSCodegen = struct {
             try self.generateMemsetBuiltin(args);
             return true;
         }
-        
+
         // ArrayList builtins
         if (std.mem.eql(u8, function_name, "ArrayList")) {
             try self.generateArrayListBuiltin(args);
@@ -338,7 +339,7 @@ pub const JSCodegen = struct {
             try self.generateArrayListClearBuiltin(args);
             return true;
         }
-        
+
         // Compilation builtins
         if (std.mem.eql(u8, function_name, "panic")) {
             try self.generatePanicBuiltin(args);
@@ -348,16 +349,16 @@ pub const JSCodegen = struct {
             try self.generateCompileErrorBuiltin(args);
             return true;
         }
-        
+
         return false; // Not a builtin function
     }
-    
+
     fn generateSizeOfBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         if (args.items.len != 1) {
             try self.write("/* Invalid @sizeOf call - expected 1 argument */");
             return;
         }
-        
+
         // For JavaScript, we'll create a mapping of Howl types to their sizes
         const arg_node = self.arena.getNodeConst(args.items[0]);
         if (arg_node) |node| {
@@ -368,95 +369,91 @@ pub const JSCodegen = struct {
                 return;
             }
         }
-        
+
         // Fallback - generate as a runtime check
         try self.write("(");
         try self.generateNode(args.items[0]);
         try self.write(" ? 8 : 0)"); // Default to 8 bytes for most types
     }
-    
+
     fn generateTypeOfBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         if (args.items.len != 1) {
             try self.write("/* Invalid @TypeOf call - expected 1 argument */");
             return;
         }
-        
+
         try self.write("\"");
         try self.generateNode(args.items[0]);
         try self.write("\"");
     }
-    
+
     fn generateAlignOfBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         if (args.items.len != 1) {
             try self.write("/* Invalid @alignOf call - expected 1 argument */");
             return;
         }
-        
+
         // Most types have pointer alignment in JavaScript
         try self.write("8");
     }
-    
+
     fn generateSafeArithmeticBuiltin(self: *JSCodegen, op: []const u8, args: std.ArrayList(ast.NodeId)) !void {
         if (args.items.len != 2) {
             try self.writeFormatted("/* Invalid @{s}_s call - expected 2 arguments */", .{op});
             return;
         }
-        
+
         // Generate safe arithmetic with overflow checks
-        const js_op = if (std.mem.eql(u8, op, "add")) "+"
-                     else if (std.mem.eql(u8, op, "sub")) "-"
-                     else if (std.mem.eql(u8, op, "mul")) "*"
-                     else if (std.mem.eql(u8, op, "div")) "/"
-                     else "?";
-        
+        const js_op = if (std.mem.eql(u8, op, "add")) "+" else if (std.mem.eql(u8, op, "sub")) "-" else if (std.mem.eql(u8, op, "mul")) "*" else if (std.mem.eql(u8, op, "div")) "/" else "?";
+
         try self.write("(");
         try self.generateNode(args.items[0]);
         try self.writeFormatted(" {s} ", .{js_op});
         try self.generateNode(args.items[1]);
         try self.write(")");
     }
-    
+
     fn generateIntCastBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         if (args.items.len != 2) {
             try self.write("/* Invalid @intCast call - expected 2 arguments */");
             return;
         }
-        
+
         // In JavaScript, just cast to integer
         try self.write("Math.trunc(");
         try self.generateNode(args.items[1]);
         try self.write(")");
     }
-    
+
     fn generateFloatCastBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         if (args.items.len != 2) {
             try self.write("/* Invalid @floatCast call - expected 2 arguments */");
             return;
         }
-        
+
         // In JavaScript, just cast to number
         try self.write("Number(");
         try self.generateNode(args.items[1]);
         try self.write(")");
     }
-    
+
     fn generateTruncateBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         if (args.items.len != 2) {
             try self.write("/* Invalid @truncate call - expected 2 arguments */");
             return;
         }
-        
+
         try self.write("Math.trunc(");
         try self.generateNode(args.items[1]);
         try self.write(")");
     }
-    
+
     fn generateMemcpyBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         if (args.items.len != 3) {
             try self.write("/* Invalid @memcpy call - expected 3 arguments */");
             return;
         }
-        
+
         // For JavaScript, we'll simulate with array copying
         try self.write("(");
         try self.generateNode(args.items[0]);
@@ -464,13 +461,13 @@ pub const JSCodegen = struct {
         try self.generateNode(args.items[1]);
         try self.write("))");
     }
-    
+
     fn generateMemsetBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         if (args.items.len != 3) {
             try self.write("/* Invalid @memset call - expected 3 arguments */");
             return;
         }
-        
+
         // For JavaScript, we'll simulate with array filling
         try self.write("(");
         try self.generateNode(args.items[0]);
@@ -478,7 +475,7 @@ pub const JSCodegen = struct {
         try self.generateNode(args.items[1]);
         try self.write("))");
     }
-    
+
     fn generatePanicBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         try self.write("(function() { throw new Error(");
         if (args.items.len > 0) {
@@ -488,7 +485,7 @@ pub const JSCodegen = struct {
         }
         try self.write("); })()");
     }
-    
+
     fn generateCompileErrorBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         try self.write("/* @compileError: ");
         if (args.items.len > 0) {
@@ -498,7 +495,7 @@ pub const JSCodegen = struct {
         }
         try self.write(" */");
     }
-    
+
     fn getTypeSize(self: *JSCodegen, type_name: []const u8) u32 {
         _ = self;
         // Return sizes in bytes for common types
@@ -510,75 +507,75 @@ pub const JSCodegen = struct {
         if (std.mem.eql(u8, type_name, "bool")) return 1;
         if (std.mem.eql(u8, type_name, "str")) return 8; // Pointer size
         if (std.mem.eql(u8, type_name, "void")) return 0;
-        
+
         // Default for unknown types
         return 8;
     }
-    
+
     // ArrayList builtin functions for JavaScript
     fn generateArrayListBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         if (args.items.len != 1) {
             try self.write("/* Invalid @ArrayList call - expected 1 argument */");
             return;
         }
-        
+
         // @ArrayList(T) returns a constructor function
         try self.write("Array"); // JavaScript arrays are our ArrayList implementation
     }
-    
+
     fn generateArrayListInitBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         if (args.items.len != 2) {
             try self.write("/* Invalid @arrayListInit call - expected 2 arguments */");
             return;
         }
-        
+
         // @arrayListInit(T, allocator) returns new Array()
         try self.write("[]"); // Empty JavaScript array
     }
-    
+
     fn generateArrayListAppendBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         if (args.items.len != 2) {
             try self.write("/* Invalid @arrayListAppend call - expected 2 arguments */");
             return;
         }
-        
+
         // @arrayListAppend(list, item) -> list.push(item)
         try self.generateNode(args.items[0]);
         try self.write(".push(");
         try self.generateNode(args.items[1]);
         try self.write(")");
     }
-    
+
     fn generateArrayListGetBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         if (args.items.len != 2) {
             try self.write("/* Invalid @arrayListGet call - expected 2 arguments */");
             return;
         }
-        
+
         // @arrayListGet(list, index) -> list[index]
         try self.generateNode(args.items[0]);
         try self.write("[");
         try self.generateNode(args.items[1]);
         try self.write("]");
     }
-    
+
     fn generateArrayListLenBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         if (args.items.len != 1) {
             try self.write("/* Invalid @arrayListLen call - expected 1 argument */");
             return;
         }
-        
+
         // @arrayListLen(list) -> list.length
         try self.generateNode(args.items[0]);
         try self.write(".length");
     }
-    
+
     fn generateArrayListClearBuiltin(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         if (args.items.len != 1) {
             try self.write("/* Invalid @arrayListClear call - expected 1 argument */");
             return;
         }
-        
+
         // @arrayListClear(list) -> list.length = 0
         try self.write("(");
         try self.generateNode(args.items[0]);
@@ -587,24 +584,24 @@ pub const JSCodegen = struct {
 
     fn generatePrintCall(self: *JSCodegen, args: std.ArrayList(ast.NodeId)) !void {
         try self.write("console.log(");
-        
+
         if (args.items.len == 0) {
             try self.write(")");
             return;
         }
-        
+
         if (args.items.len == 1) {
             // Single argument - just pass it through
             try self.generateNode(args.items[0]);
             try self.write(")");
             return;
         }
-        
+
         // Two arguments: format string and anonymous struct
         if (args.items.len == 2) {
-            const first_arg = args.items[0];  // Should be string literal
+            const first_arg = args.items[0]; // Should be string literal
             const second_arg = args.items[1]; // Should be .{variable}
-            
+
             // Get the format string content
             const format_node = self.arena.getNodeConst(first_arg);
             var format_string: []const u8 = "";
@@ -616,7 +613,7 @@ pub const JSCodegen = struct {
                     }
                 }
             }
-            
+
             // Check if second argument is an anonymous struct
             const arg_node = self.arena.getNodeConst(second_arg);
             if (arg_node) |arg_n| {
@@ -636,13 +633,13 @@ pub const JSCodegen = struct {
                     }
                 }
             }
-            
+
             // If not anonymous struct, treat as regular argument
             try self.generateNode(first_arg);
             try self.write(", ");
             try self.generateNode(second_arg);
         }
-        
+
         try self.write(")");
     }
 
@@ -656,7 +653,7 @@ pub const JSCodegen = struct {
                 break;
             }
         }
-        
+
         // If no format specifiers, just output the string as-is
         if (!has_format_specs) {
             try self.write("\"");
@@ -678,15 +675,15 @@ pub const JSCodegen = struct {
             try self.write("\"");
             return;
         }
-        
+
         // Process format string with variables
         var arg_index: usize = 0;
         var i: usize = 0;
         var is_first_part = true;
-        
+
         var current_text = std.ArrayList(u8).init(self.allocator);
         defer current_text.deinit();
-        
+
         while (i < format_string.len) {
             if (format_string[i] == '{' and i + 1 < format_string.len) {
                 // Found a format specifier
@@ -694,7 +691,7 @@ pub const JSCodegen = struct {
                 while (end_pos < format_string.len and format_string[end_pos] != '}') {
                     end_pos += 1;
                 }
-                
+
                 if (end_pos < format_string.len and arg_index < args.len) {
                     // Output the current text part if any
                     if (current_text.items.len > 0) {
@@ -719,13 +716,13 @@ pub const JSCodegen = struct {
                         is_first_part = false;
                         current_text.clearRetainingCapacity();
                     }
-                    
+
                     // Output the variable
                     if (!is_first_part) try self.write(" + ");
-                    
-                    const format_spec = format_string[i + 1..end_pos];
+
+                    const format_spec = format_string[i + 1 .. end_pos];
                     try self.generateVariableWithFormat(args[arg_index], format_spec);
-                    
+
                     is_first_part = false;
                     arg_index += 1;
                     i = end_pos + 1; // Skip past '}'
@@ -739,7 +736,7 @@ pub const JSCodegen = struct {
                 i += 1;
             }
         }
-        
+
         // Add any remaining text part
         if (current_text.items.len > 0) {
             if (!is_first_part) try self.write(" + ");
@@ -761,13 +758,13 @@ pub const JSCodegen = struct {
             }
             try self.write("\"");
         }
-        
+
         // If we had no parts at all, output empty string
         if (is_first_part) {
             try self.write("\"\"");
         }
     }
-    
+
     // Generate a variable with optional format specification
     fn generateVariableWithFormat(self: *JSCodegen, var_node_id: ast.NodeId, format_spec: []const u8) !void {
         if (format_spec.len == 0 or std.mem.eql(u8, format_spec, "d") or std.mem.eql(u8, format_spec, "s")) {
@@ -825,10 +822,10 @@ pub const JSCodegen = struct {
                 }
             }
         }
-        
+
         const keyword = if (var_decl.is_mutable) "let" else "const";
         try self.writeFormatted("{s} {s}", .{ keyword, var_decl.name });
-        
+
         if (var_decl.initializer) |initializer| {
             try self.write(" = ");
             try self.generateNode(initializer);
@@ -841,16 +838,16 @@ pub const JSCodegen = struct {
         if (std.mem.eql(u8, func.name, "main")) {
             try self.write("export ");
         }
-        
+
         try self.writeFormatted("function {s}(", .{func.name});
-        
+
         for (func.params.items, 0..) |param, i| {
             if (i > 0) try self.write(", ");
             try self.write(param.name);
         }
-        
+
         try self.write(") ");
-        
+
         // Generate function body - should be a block
         const body_node = self.arena.getNodeConst(func.body);
         if (body_node) |node| {
@@ -876,21 +873,21 @@ pub const JSCodegen = struct {
     fn generateStructDecl(self: *JSCodegen, struct_decl: anytype) !void {
         // Generate a constructor function for the struct
         try self.writeFormatted("function {s}(", .{struct_decl.name});
-        
+
         // Generate constructor parameters
         for (struct_decl.fields.items, 0..) |field, i| {
             if (i > 0) try self.write(", ");
             try self.write(field.name);
         }
-        
+
         try self.writeLine(") {");
         self.indent_level += 1;
-        
+
         // Assign fields
         for (struct_decl.fields.items) |field| {
             try self.writeFormatted("this.{s} = {s};\n", .{ field.name, field.name });
         }
-        
+
         self.indent_level -= 1;
         try self.writeLine("}");
     }
@@ -900,7 +897,7 @@ pub const JSCodegen = struct {
         try self.writeFormatted("const {s} = {{", .{enum_decl.name});
         try self.writeLine("");
         self.indent_level += 1;
-        
+
         for (enum_decl.members.items, 0..) |member, i| {
             try self.writeIndent();
             if (member.value) |value_node| {
@@ -911,22 +908,22 @@ pub const JSCodegen = struct {
                 // No explicit value, use index
                 try self.writeFormatted("{s}: {d}", .{ member.name, i });
             }
-            
+
             if (i < enum_decl.members.items.len - 1) {
                 try self.writeLine(",");
             } else {
                 try self.writeLine("");
             }
         }
-        
+
         self.indent_level -= 1;
         try self.writeLine("};");
-        
+
         // Also generate reverse mapping for debugging
         try self.writeFormatted("{s}._names = {{", .{enum_decl.name});
         try self.writeLine("");
         self.indent_level += 1;
-        
+
         for (enum_decl.members.items, 0..) |member, i| {
             try self.writeIndent();
             if (member.value) |_| {
@@ -936,14 +933,14 @@ pub const JSCodegen = struct {
             } else {
                 try self.writeFormatted("{d}: '{s}'", .{ i, member.name });
             }
-            
+
             if (i < enum_decl.members.items.len - 1) {
                 try self.writeLine(",");
             } else {
                 try self.writeLine("");
             }
         }
-        
+
         self.indent_level -= 1;
         try self.writeLine("};");
     }
@@ -956,13 +953,13 @@ pub const JSCodegen = struct {
         try self.write(" ? ");
         try self.generateNode(if_expr.then_branch);
         try self.write(" : ");
-        
+
         if (if_expr.else_branch) |else_branch| {
             try self.generateNode(else_branch);
         } else {
             try self.write("undefined");
         }
-        
+
         try self.write(")");
     }
 
@@ -970,7 +967,7 @@ pub const JSCodegen = struct {
         try self.write("while (");
         try self.generateNode(while_expr.condition);
         try self.write(") ");
-        
+
         // Handle body
         const body_node = self.arena.getNodeConst(while_expr.body) orelse return;
         if (body_node.data == .block) {
@@ -995,7 +992,7 @@ pub const JSCodegen = struct {
             try self.generateRangeForLoop(for_expr);
             return;
         }
-        
+
         // Handle different types of for loops based on captures
         if (for_expr.captures.items.len == 1) {
             // Single capture: for (array) |value|
@@ -1015,7 +1012,7 @@ pub const JSCodegen = struct {
             // Two captures: for (array, 0..) |value, index|
             const value_capture = for_expr.captures.items[0];
             const index_capture = for_expr.captures.items[1];
-            
+
             // Generate: for (const [index, value] of array.entries())
             try self.write("for (const [");
             if (std.mem.eql(u8, index_capture.name, "_")) {
@@ -1038,7 +1035,7 @@ pub const JSCodegen = struct {
             try self.generateNode(for_expr.iterable);
             try self.write(") ");
         }
-        
+
         // Generate the body with proper block handling
         const body_node = self.arena.getNode(for_expr.body);
         if (body_node != null and body_node.?.data == .block) {
@@ -1053,48 +1050,48 @@ pub const JSCodegen = struct {
             try self.write("}");
         }
     }
-    
+
     /// Generate a range-based for loop
     fn generateRangeForLoop(self: *JSCodegen, for_expr: anytype) !void {
         const iterable_node = self.arena.getNode(for_expr.iterable).?;
         const range_expr = iterable_node.data.range_expr;
-        
+
         if (for_expr.captures.items.len == 1) {
             // for (0..=10) |i| becomes for (let i = 0; i <= 10; i++)
             const capture = for_expr.captures.items[0];
             const capture_name = if (std.mem.eql(u8, capture.name, "_")) "i" else capture.name;
-            
+
             try self.writeFormatted("for (let {s} = ", .{capture_name});
-            
+
             // Start value
             if (range_expr.start) |start_id| {
                 try self.generateNode(start_id);
             } else {
                 try self.write("0"); // Default start for ..<end
             }
-            
+
             try self.writeFormatted("; {s} ", .{capture_name});
-            
+
             // Condition
             if (range_expr.inclusive) {
                 try self.write("<= ");
             } else {
                 try self.write("< ");
             }
-            
+
             // End value
             if (range_expr.end) |end_id| {
                 try self.generateNode(end_id);
             } else {
                 try self.write("Infinity"); // Unbounded range
             }
-            
+
             try self.writeFormatted("; {s}++) ", .{capture_name});
         } else {
             // Multiple captures not supported for ranges, fallback
             try self.write("/* Range for loop with multiple captures not supported */ ");
         }
-        
+
         // Generate the body with proper block handling
         const body_node = self.arena.getNode(for_expr.body);
         if (body_node != null and body_node.?.data == .block) {
@@ -1109,12 +1106,12 @@ pub const JSCodegen = struct {
             try self.write("}");
         }
     }
-    
+
     /// Generate a range expression (when used standalone)
     fn generateRangeExpr(self: *JSCodegen, range_expr: anytype) !void {
         // Generate a JavaScript array for the range
         try self.write("Array.from({length: ");
-        
+
         // Calculate length
         if (range_expr.start != null and range_expr.end != null) {
             try self.write("(");
@@ -1134,9 +1131,9 @@ pub const JSCodegen = struct {
         } else {
             try self.write("0"); // Fallback
         }
-        
+
         try self.write("}, (_, i) => ");
-        
+
         // Calculate actual value
         if (range_expr.start != null) {
             try self.write("(");
@@ -1145,18 +1142,18 @@ pub const JSCodegen = struct {
         } else {
             try self.write("i");
         }
-        
+
         try self.write(")");
     }
 
     fn generateBlock(self: *JSCodegen, block: anytype) !void {
         const is_root_level = (self.indent_level == 0);
-        
+
         if (!is_root_level) {
             try self.write("{\n");
             self.indent_level += 1;
         }
-        
+
         // Check if this block contains a main function (for root-level blocks)
         var has_main_function = false;
         if (is_root_level) { // Only check at root level
@@ -1171,10 +1168,10 @@ pub const JSCodegen = struct {
                 }
             }
         }
-        
+
         for (block.statements.items) |stmt_id| {
             const stmt_node = self.arena.getNodeConst(stmt_id) orelse continue;
-            
+
             // Skip dummy literal expressions at root level (like literal 0)
             if (is_root_level and stmt_node.data == .literal) {
                 const literal = stmt_node.data.literal;
@@ -1182,14 +1179,14 @@ pub const JSCodegen = struct {
                     continue;
                 }
             }
-            
+
             // Check if this is a statement that needs a newline
             const needs_newline = switch (stmt_node.data) {
                 .var_decl, .function_decl, .struct_decl, .enum_decl, .return_stmt => true,
                 .if_expr, .while_expr, .for_expr => true,
                 else => false,
             };
-            
+
             if (needs_newline) {
                 if (!is_root_level) try self.writeIndent();
                 try self.generateNode(stmt_id);
@@ -1201,12 +1198,12 @@ pub const JSCodegen = struct {
                 try self.write(";\n");
             }
         }
-        
+
         if (!is_root_level) {
             self.indent_level -= 1;
             try self.write("}");
         }
-        
+
         // Add main function call after the root block for root level
         if (is_root_level and has_main_function) {
             try self.write("\n\nmain();\n");
@@ -1216,17 +1213,17 @@ pub const JSCodegen = struct {
     fn generateFunctionBodyBlock(self: *JSCodegen, block: anytype) !void {
         try self.write("{\n");
         self.indent_level += 1;
-        
+
         for (block.statements.items) |stmt_id| {
             const stmt_node = self.arena.getNodeConst(stmt_id) orelse continue;
-            
+
             // Check if this is a statement that needs a newline
             const needs_newline = switch (stmt_node.data) {
                 .var_decl, .function_decl, .struct_decl, .enum_decl, .return_stmt => true,
                 .if_expr, .while_expr, .for_expr => true,
                 else => false,
             };
-            
+
             if (needs_newline) {
                 try self.writeIndent();
                 try self.generateNode(stmt_id);
@@ -1238,7 +1235,7 @@ pub const JSCodegen = struct {
                 try self.write(";\n");
             }
         }
-        
+
         self.indent_level -= 1;
         try self.write("}");
     }
@@ -1257,7 +1254,7 @@ pub const JSCodegen = struct {
             try self.write("{ ");
             for (struct_init.fields.items, 0..) |field, i| {
                 if (i > 0) try self.write(", ");
-                
+
                 // Check if field name needs quotes
                 if (isValidJSIdentifier(field.name)) {
                     try self.writeFormatted("{s}: ", .{field.name});
@@ -1302,7 +1299,7 @@ pub const JSCodegen = struct {
                 }
             }
         }
-        
+
         // Default: generate the base type
         try self.generateNode(generic.base_type);
     }
@@ -1367,64 +1364,61 @@ pub const JSCodegen = struct {
     // Helper functions for better code generation
     fn isValidJSIdentifier(name: []const u8) bool {
         if (name.len == 0) return false;
-        
+
         // Check if starts with letter or underscore
         const first_char = name[0];
-        if (!((first_char >= 'a' and first_char <= 'z') or 
-              (first_char >= 'A' and first_char <= 'Z') or 
-              first_char == '_' or first_char == '$')) {
+        if (!((first_char >= 'a' and first_char <= 'z') or
+            (first_char >= 'A' and first_char <= 'Z') or
+            first_char == '_' or first_char == '$'))
+        {
             return false;
         }
-        
+
         // Check remaining characters
         for (name[1..]) |char| {
-            if (!((char >= 'a' and char <= 'z') or 
-                  (char >= 'A' and char <= 'Z') or 
-                  (char >= '0' and char <= '9') or 
-                  char == '_' or char == '$')) {
+            if (!((char >= 'a' and char <= 'z') or
+                (char >= 'A' and char <= 'Z') or
+                (char >= '0' and char <= '9') or
+                char == '_' or char == '$'))
+            {
                 return false;
             }
         }
-        
+
         // Check if it's a reserved keyword
-        const js_keywords = [_][]const u8{
-            "break", "case", "catch", "class", "const", "continue", "debugger", "default", 
-            "delete", "do", "else", "export", "extends", "finally", "for", "function", 
-            "if", "import", "in", "instanceof", "let", "new", "return", "super", "switch", 
-            "this", "throw", "try", "typeof", "var", "void", "while", "with", "yield",
-            "enum", "implements", "interface", "package", "private", "protected", "public", "static"
-        };
-        
+        const js_keywords = [_][]const u8{ "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete", "do", "else", "export", "extends", "finally", "for", "function", "if", "import", "in", "instanceof", "let", "new", "return", "super", "switch", "this", "throw", "try", "typeof", "var", "void", "while", "with", "yield", "enum", "implements", "interface", "package", "private", "protected", "public", "static" };
+
         for (js_keywords) |keyword| {
             if (std.mem.eql(u8, name, keyword)) {
                 return false;
             }
         }
-        
+
         return true;
     }
-    
+
     fn sanitizeIdentifier(self: *JSCodegen, name: []const u8) ![]const u8 {
         if (isValidJSIdentifier(name)) {
             return name;
         }
-        
+
         // If invalid, prefix with underscore and sanitize
         var sanitized = std.ArrayList(u8).init(self.allocator);
         defer sanitized.deinit();
-        
+
         try sanitized.append('_');
         for (name) |char| {
-            if ((char >= 'a' and char <= 'z') or 
-                (char >= 'A' and char <= 'Z') or 
-                (char >= '0' and char <= '9') or 
-                char == '_') {
+            if ((char >= 'a' and char <= 'z') or
+                (char >= 'A' and char <= 'Z') or
+                (char >= '0' and char <= '9') or
+                char == '_')
+            {
                 try sanitized.append(char);
             } else {
                 try sanitized.append('_');
             }
         }
-        
+
         return try sanitized.toOwnedSlice();
     }
     pub fn howlTypeToJS(self: *JSCodegen, howl_type: ast.Type) ![]const u8 {
@@ -1451,40 +1445,40 @@ pub const JSCodegen = struct {
     }
 
     // ========== NEW COMPILE-TIME SYSTEM SUPPORT ==========
-    
+
     fn generateExternFnDecl(self: *JSCodegen, extern_fn: anytype) !void {
         // Generate JavaScript implementation using compile-time evaluation
         const fn_name = extern_fn.name;
-        
+
         // Generate the function signature
         try self.writeFormatted("function {s}(", .{fn_name});
-        
+
         // Generate parameters
         for (extern_fn.params.items, 0..) |param, i| {
             if (i > 0) try self.write(", ");
             try self.write(param.name);
         }
         try self.write(") {\n");
-        
+
         self.indent_level += 1;
-        
+
         // Process the function body using compile-time evaluation
         try self.generateNode(extern_fn.compile_time_body);
-        
+
         self.indent_level -= 1;
         try self.writeLine("}");
     }
-    
+
     fn generateCompileTargetExpr(self: *JSCodegen) !void {
         try self.write("\"javascript\"");
     }
-    
+
     fn generateCompileInsertExpr(self: *JSCodegen, insert: anytype) !void {
         // For JavaScript target, evaluate and insert the code directly
         // Generate raw JavaScript code insertion
         try self.writeFormatted("{s}", .{insert.code});
     }
-    
+
     fn generateMatchCompileExpr(self: *JSCodegen, match_expr: anytype) !void {
         // Find the arm that matches JavaScript target
         for (match_expr.arms.items) |arm| {
@@ -1494,42 +1488,42 @@ pub const JSCodegen = struct {
                 break;
             }
         }
-        
+
         // If no JavaScript case found, generate empty code or comment
         try self.write("/* No JavaScript implementation found */");
     }
-    
+
     fn generateMatchExpr(self: *JSCodegen, match_expr: anytype) !void {
         // Generate match expression as a JavaScript function
         // that returns the appropriate value based on the pattern
-        
+
         try self.write("(() => {\n");
         self.indent_level += 1;
-        
+
         // Generate a temporary variable to hold the matched expression
         try self.writeIndent();
         try self.write("const __match_value = ");
         try self.generateNode(match_expr.expression);
         try self.write(";\n");
-        
+
         // Generate each match arm as an if-else chain
         var first_arm = true;
         for (match_expr.arms.items) |arm| {
             try self.writeIndent();
-            
+
             if (first_arm) {
                 try self.write("if (");
                 first_arm = false;
             } else {
                 try self.write("} else if (");
             }
-            
+
             // Generate the pattern matching condition
             try self.generateMatchPattern(arm.pattern);
             try self.write(") {\n");
-            
+
             self.indent_level += 1;
-            
+
             // Check if the body is a block - if so, handle it differently
             const arm_body_node = self.arena.getNodeConst(arm.body);
             if (arm_body_node) |body_node| {
@@ -1550,24 +1544,24 @@ pub const JSCodegen = struct {
                 try self.generateNode(arm.body);
                 try self.write(";\n");
             }
-            
+
             self.indent_level -= 1;
         }
-        
+
         // Close the if-else chain and the function
         try self.writeIndent();
         try self.write("}\n");
-        
+
         // Add a default case if no wildcard pattern was found
         // (This should be caught by semantic analysis, but just in case)
         try self.writeIndent();
         try self.write("throw new Error('Match expression did not handle all cases');\n");
-        
+
         self.indent_level -= 1;
         try self.writeIndent();
         try self.write("})()");
     }
-    
+
     fn generateMatchPattern(self: *JSCodegen, pattern: ast.MatchPattern) !void {
         switch (pattern) {
             .wildcard => {
@@ -1590,7 +1584,7 @@ pub const JSCodegen = struct {
             .comparison => |comp| {
                 // Generate comparison: __match_value < value, __match_value > value, etc.
                 try self.write("__match_value ");
-                
+
                 const op_str = switch (comp.operator) {
                     .LessThan => "< ",
                     .GreaterThan => "> ",
@@ -1600,7 +1594,7 @@ pub const JSCodegen = struct {
                     .NotEqual => "!== ",
                     else => "=== ", // fallback
                 };
-                
+
                 try self.write(op_str);
                 try self.generateNode(comp.value);
             },
@@ -1609,7 +1603,7 @@ pub const JSCodegen = struct {
                 try self.write("/* Range pattern not implemented yet */");
             },
             .tuple => {
-                // TODO: Implement tuple pattern matching  
+                // TODO: Implement tuple pattern matching
                 try self.write("/* Tuple pattern not implemented yet */");
             },
             .array => {
@@ -1623,7 +1617,7 @@ pub const JSCodegen = struct {
             .some => |some_info| {
                 // Check if the optional value is present (not null/undefined)
                 try self.write("(__match_value !== null && __match_value !== undefined)");
-                
+
                 // TODO: Handle variable binding for some_info.bind_variable
                 _ = some_info.bind_variable;
             },
@@ -1633,16 +1627,16 @@ pub const JSCodegen = struct {
             },
         }
     }
-    
+
     fn generateMatchBlock(self: *JSCodegen, block: anytype) !void {
         // Generate a block for use in match expressions
         // The last statement should be a return statement
-        
+
         for (block.statements.items, 0..) |stmt_id, index| {
             const is_last = (index == block.statements.items.len - 1);
-            
+
             try self.writeIndent();
-            
+
             if (is_last) {
                 // Last statement should be a return
                 try self.write("return ");
@@ -1655,10 +1649,10 @@ pub const JSCodegen = struct {
             }
         }
     }
-    
+
     fn evaluateComptimeExpression(self: *JSCodegen, expr_id: ast.NodeId) anyerror!void {
         const node = self.arena.getNodeConst(expr_id) orelse return;
-        
+
         switch (node.data) {
             .literal => |literal| {
                 switch (literal) {
@@ -1681,33 +1675,33 @@ pub const JSCodegen = struct {
             else => try self.generateNode(expr_id),
         }
     }
-    
+
     // Enhanced format generation function for advanced debug.print support in JavaScript
     fn generateJSFormatCode(self: *JSCodegen, format_string: []const u8, args_node_id: ast.NodeId) ![]const u8 {
         var result = std.ArrayList(u8).init(self.allocator);
         defer result.deinit();
-        
+
         // Parse format string and convert to JavaScript template literals or formatted output
         const args_node = self.arena.getNodeConst(args_node_id);
-        
+
         if (args_node) |node| {
             switch (node.data) {
                 .struct_init => |struct_init| {
                     // Generate JavaScript template literal or formatted console.log
                     try result.appendSlice("console.log(");
-                    
+
                     // Convert format string
                     const converted = try self.convertHowlFormatToJS(format_string, struct_init.fields.items.len);
                     defer self.allocator.free(converted);
-                    
+
                     try result.appendSlice("'");
                     try result.appendSlice(converted);
                     try result.appendSlice("'");
-                    
+
                     // Add arguments
                     for (struct_init.fields.items, 0..) |field_init, index| {
                         try result.appendSlice(", ");
-                        
+
                         const value_node = self.arena.getNodeConst(field_init.value);
                         if (value_node) |val_node| {
                             switch (val_node.data) {
@@ -1738,7 +1732,7 @@ pub const JSCodegen = struct {
                         }
                         _ = index; // suppress unused variable warning
                     }
-                    
+
                     try result.appendSlice(")");
                 },
                 else => {
@@ -1748,18 +1742,18 @@ pub const JSCodegen = struct {
         } else {
             try result.appendSlice("console.log('No arguments')");
         }
-        
+
         return try self.allocator.dupe(u8, result.items);
     }
-    
+
     // Convert Howl format string to JavaScript format
     fn convertHowlFormatToJS(self: *JSCodegen, howl_format: []const u8, arg_count: usize) ![]const u8 {
         var result = std.ArrayList(u8).init(self.allocator);
         defer result.deinit();
-        
+
         var placeholder_index: usize = 0;
         var i: usize = 0;
-        
+
         while (i < howl_format.len) {
             if (howl_format[i] == '{' and i + 1 < howl_format.len) {
                 // Find the end of the format specifier
@@ -1767,14 +1761,14 @@ pub const JSCodegen = struct {
                 while (end_pos < howl_format.len and howl_format[end_pos] != '}') {
                     end_pos += 1;
                 }
-                
+
                 if (end_pos < howl_format.len and placeholder_index < arg_count) {
-                    const format_spec = howl_format[i + 1..end_pos];
-                    
+                    const format_spec = howl_format[i + 1 .. end_pos];
+
                     // Convert format specifier to JavaScript format
                     const js_format = try self.convertJSFormatSpec(format_spec, placeholder_index);
                     try result.appendSlice(js_format);
-                    
+
                     placeholder_index += 1;
                     i = end_pos + 1; // Skip past '}'
                 } else {
@@ -1806,30 +1800,30 @@ pub const JSCodegen = struct {
                 i += 1;
             }
         }
-        
+
         return try self.allocator.dupe(u8, result.items);
     }
-    
+
     // Convert individual format specification for JavaScript
     fn convertJSFormatSpec(self: *JSCodegen, spec: []const u8, arg_index: usize) ![]const u8 {
         var result = std.ArrayList(u8).init(self.allocator);
         defer result.deinit();
-        
+
         if (spec.len == 0) {
             // Default format - just use template literal syntax
             try result.writer().print("${{}}", .{});
             return try self.allocator.dupe(u8, result.items);
         }
-        
+
         // Split on ':' if present
         var type_part = spec;
         var format_part: []const u8 = "";
-        
+
         if (std.mem.indexOf(u8, spec, ":")) |colon_pos| {
             type_part = spec[0..colon_pos];
-            format_part = spec[colon_pos + 1..];
+            format_part = spec[colon_pos + 1 ..];
         }
-        
+
         // Handle type specifiers
         if (std.mem.eql(u8, type_part, "d")) {
             // Integer format
@@ -1870,76 +1864,76 @@ pub const JSCodegen = struct {
             // Default case
             try result.writer().print("${{}}", .{});
         }
-        
+
         return try self.allocator.dupe(u8, result.items);
     }
-    
+
     // ============================================================================
     // Error Handling Generation
     // ============================================================================
-    
+
     fn generateTryExpr(self: *JSCodegen, try_expr: anytype) !void {
         // In JavaScript, try expressions are handled with try-catch blocks
         try self.write("(function() {\n");
         self.indent_level += 1;
-        
+
         try self.writeIndent();
         try self.write("try {\n");
         self.indent_level += 1;
-        
+
         try self.writeIndent();
         try self.write("return ");
         try self.generateNode(try_expr.expression);
         try self.write(";\n");
-        
+
         self.indent_level -= 1;
         try self.writeIndent();
         try self.write("} catch (error) {\n");
         self.indent_level += 1;
-        
+
         try self.writeIndent();
         try self.write("throw error; // Propagate error\n");
-        
+
         self.indent_level -= 1;
         try self.writeIndent();
         try self.write("}\n");
-        
+
         self.indent_level -= 1;
         try self.writeIndent();
         try self.write("})()");
     }
-    
+
     fn generateCatchExpr(self: *JSCodegen, catch_expr: anytype) !void {
         // Generate a try-catch block in JavaScript for the expression being caught
         try self.write("(function() {\n");
         self.indent_level += 1;
-        
+
         try self.writeIndent();
         try self.write("try {\n");
         self.indent_level += 1;
-        
+
         try self.writeIndent();
         try self.write("return ");
         try self.generateNode(catch_expr.expression);
         try self.write(";\n");
-        
+
         self.indent_level -= 1;
         try self.writeIndent();
         try self.write("} catch (");
-        
+
         // Handle error capture variable
         if (catch_expr.error_capture) |error_var| {
             try self.write(error_var);
         } else {
             try self.write("error");
         }
-        
+
         try self.write(") {\n");
         self.indent_level += 1;
-        
+
         try self.writeIndent();
         try self.write("return ");
-        
+
         // Generate catch body or fallback value
         if (catch_expr.catch_body) |body| {
             try self.generateNode(body);
@@ -1948,37 +1942,37 @@ pub const JSCodegen = struct {
         } else {
             try self.write("null");
         }
-        
+
         try self.write(";\n");
-        
+
         self.indent_level -= 1;
         try self.writeIndent();
         try self.write("}\n");
-        
+
         self.indent_level -= 1;
         try self.writeIndent();
         try self.write("})()");
     }
-    
+
     fn generateErrorUnionType(self: *JSCodegen) !void {
         // Error union types don't generate specific code in JavaScript
         try self.write("/* error_union_type */");
     }
-    
+
     fn generateErrorLiteral(self: *JSCodegen, error_literal: anytype) !void {
         // Error literals generate as Error objects in JavaScript
         try self.writeFormatted("new Error(\"{s}\")", .{error_literal.name});
     }
-    
+
     fn generateErrorSetDecl(self: *JSCodegen, error_set_decl: anytype) !void {
         // Generate error set as a JavaScript object with error constants
         try self.writeFormatted("const {s} = {{", .{error_set_decl.name});
-        
+
         for (error_set_decl.errors.items, 0..) |error_name, i| {
             if (i > 0) try self.write(", ");
             try self.writeFormatted("\n    {s}: \"{s}\"", .{ error_name, error_name });
         }
-        
+
         try self.write("\n};");
     }
 };
@@ -1987,10 +1981,10 @@ pub const JSCodegen = struct {
 pub fn generateJS(allocator: std.mem.Allocator, arena: *const ast.AstArena, semantic_analyzer: *const SemanticAnalyzer.SemanticAnalyzer, root_node_id: ast.NodeId) ![]const u8 {
     var codegen = JSCodegen.init(allocator, arena, semantic_analyzer);
     defer codegen.deinit();
-    
+
     return try codegen.generate(root_node_id);
-    }
-    
+}
+
 test "Basic JavaScript generation" {
     const testing = std.testing;
     var arena = ast.AstArena.init(testing.allocator);
@@ -1999,11 +1993,11 @@ test "Basic JavaScript generation" {
     // Create a simple literal expression: 42
     const literal = ast.Literal{ .integer = .{ .value = 42 } };
     const node_id = try ast.createLiteralExpr(&arena, ast.SourceLoc.invalid(), literal);
-    
+
     // Mock semantic analyzer for testing
     var global_scope = SemanticAnalyzer.Scope.init(testing.allocator, null);
     defer global_scope.deinit();
-    
+
     var mock_analyzer = SemanticAnalyzer.SemanticAnalyzer{
         .allocator = testing.allocator,
         .arena = &arena,
@@ -2043,7 +2037,7 @@ test "Binary expression generation" {
     // Mock semantic analyzer for testing
     var global_scope = SemanticAnalyzer.Scope.init(testing.allocator, null);
     defer global_scope.deinit();
-    
+
     var mock_analyzer = SemanticAnalyzer.SemanticAnalyzer{
         .allocator = testing.allocator,
         .arena = &arena,

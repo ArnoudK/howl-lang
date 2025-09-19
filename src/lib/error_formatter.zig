@@ -11,20 +11,20 @@ pub const ErrorFormatter = struct {
     use_colors: bool,
     show_line_numbers: bool,
     max_context_lines: usize,
-    
+
     const RESET = "\x1b[0m";
     const BOLD = "\x1b[1m";
     const DIM = "\x1b[2m";
-    
+
     pub fn init(allocator: std.mem.Allocator) ErrorFormatter {
         return ErrorFormatter{
             .allocator = allocator,
             .use_colors = true,
             .show_line_numbers = true,
-            .max_context_lines = 5,  // Increased from 3 to 5 for more context
+            .max_context_lines = 5, // Increased from 3 to 5 for more context
         };
     }
-    
+
     /// Format all errors in the collector and write to writer
     pub fn formatErrors(
         self: *const ErrorFormatter,
@@ -35,15 +35,15 @@ pub const ErrorFormatter = struct {
         if (collector.errors.items.len == 0) {
             return;
         }
-        
+
         // Print summary
         const error_count = collector.errorCount();
         const warning_count = collector.warningCount();
-        
+
         if (error_count > 0) {
             try self.writeColored(writer, .error_, "error");
             try writer.print(": {d} error{s}", .{ error_count, if (error_count == 1) "" else "s" });
-            
+
             if (warning_count > 0) {
                 try writer.print(", ", .{});
                 try self.writeColored(writer, .warning, "warning");
@@ -54,14 +54,14 @@ pub const ErrorFormatter = struct {
             try self.writeColored(writer, .warning, "warning");
             try writer.print(": {d} warning{s}\n\n", .{ warning_count, if (warning_count == 1) "" else "s" });
         }
-        
+
         // Format each error
         for (collector.errors.items) |err| {
             try self.formatSingleError(err, source_maps, writer);
             try writer.print("\n", .{});
         }
     }
-    
+
     /// Format a single error with full context
     pub fn formatSingleError(
         self: *const ErrorFormatter,
@@ -72,16 +72,16 @@ pub const ErrorFormatter = struct {
         // Error header: severity + code + message
         try self.writeColored(writer, err.severity, err.severity.toString());
         try writer.print("[{s}]: {s}\n", .{ err.code.toString(), err.message });
-        
+
         // File location
         try self.writeColored(writer, .note, "  -->");
         try writer.print(" {s}:{d}:{d}\n", .{ err.span.file_path, err.span.line, err.span.column });
-        
+
         // Source context if available
         if (source_maps.get(err.span.file_path)) |source_map| {
             try self.formatSourceContext(err, &source_map, writer);
         }
-        
+
         // Suggestions
         if (err.suggestions.len > 0) {
             try writer.print("\n", .{});
@@ -90,7 +90,7 @@ pub const ErrorFormatter = struct {
                 try writer.print(": {s}\n", .{suggestion});
             }
         }
-        
+
         // Related errors
         if (err.related_errors.len > 0) {
             try writer.print("\n", .{});
@@ -105,7 +105,7 @@ pub const ErrorFormatter = struct {
             }
         }
     }
-    
+
     /// Format source code context around the error
     fn formatSourceContext(
         self: *const ErrorFormatter,
@@ -116,13 +116,13 @@ pub const ErrorFormatter = struct {
         const line_num = err.span.line;
         const start_line = if (line_num > self.max_context_lines) line_num - self.max_context_lines else 1;
         const end_line = line_num + self.max_context_lines;
-        
+
         // Calculate the width needed for line numbers
         const max_line_width = std.fmt.count("{d}", .{end_line});
-        
+
         // Add a separator line above the context for clarity
         try writer.print("   |\n", .{});
-        
+
         // Show context lines before the error
         var current_line = start_line;
         while (current_line < line_num) : (current_line += 1) {
@@ -131,14 +131,14 @@ pub const ErrorFormatter = struct {
                 try self.formatContextLine(writer, current_line, line_text, max_line_width, false);
             }
         }
-        
+
         // Show the error line with highlighting
         const error_line_text = source_map.getLineText(line_num);
         try self.formatContextLine(writer, line_num, error_line_text, max_line_width, true);
-        
+
         // Show the error pointer
         try self.formatErrorPointer(writer, err, max_line_width);
-        
+
         // Show context lines after the error
         current_line = line_num + 1;
         while (current_line <= end_line) : (current_line += 1) {
@@ -146,11 +146,11 @@ pub const ErrorFormatter = struct {
             if (line_text.len == 0) break; // No more lines
             try self.formatContextLine(writer, current_line, line_text, max_line_width, false);
         }
-        
+
         // Add a separator line below the context for clarity
         try writer.print("   |\n", .{});
     }
-    
+
     fn formatContextLine(
         self: *const ErrorFormatter,
         writer: anytype,
@@ -170,7 +170,7 @@ pub const ErrorFormatter = struct {
         } else {
             try writer.print("   | ", .{});
         }
-        
+
         // Highlight the entire error line
         if (is_error_line and self.use_colors) {
             try writer.print("{s}{s}{s}\n", .{ BOLD, line_text, RESET });
@@ -178,7 +178,7 @@ pub const ErrorFormatter = struct {
             try writer.print("{s}\n", .{line_text});
         }
     }
-    
+
     fn formatErrorPointer(
         self: *const ErrorFormatter,
         writer: anytype,
@@ -186,30 +186,30 @@ pub const ErrorFormatter = struct {
         _: usize,
     ) !void {
         // Create the pointer line
-        const pointer_prefix = if (self.show_line_numbers) 
+        const pointer_prefix = if (self.show_line_numbers)
             try std.fmt.allocPrint(self.allocator, "{s:>8} | ", .{""})
-        else 
+        else
             try self.allocator.dupe(u8, "   | ");
         defer self.allocator.free(pointer_prefix);
-        
+
         // Calculate spaces before the caret
         const spaces_before = if (err.span.column > 0) err.span.column - 1 else 0;
-        const span_length = if (err.span.end_pos > err.span.start_pos) 
-            err.span.end_pos - err.span.start_pos 
-        else 
+        const span_length = if (err.span.end_pos > err.span.start_pos)
+            err.span.end_pos - err.span.start_pos
+        else
             1;
-        
+
         // Cap span length to reasonable size to avoid super long underlines
         const max_span_length = 50;
         const actual_span_length = @min(span_length, max_span_length);
-        
+
         try writer.print("{s}", .{pointer_prefix});
-        
+
         // Write spaces before the pointer
         for (0..spaces_before) |_| {
             try writer.print(" ", .{});
         }
-        
+
         // Write the pointer(s) with color
         try self.writeColored(writer, err.severity, "");
         if (actual_span_length == 1) {
@@ -221,20 +221,20 @@ pub const ErrorFormatter = struct {
             }
         }
         if (self.use_colors) try writer.print(RESET, .{});
-        
+
         // Add the error message on the same line if it's short
         if (err.message.len < 50) {
             try writer.print(" {s}", .{err.message});
         }
-        
+
         // If the error span was truncated, indicate it
         if (span_length > max_span_length) {
             try writer.print(" (span truncated)", .{});
         }
-        
+
         try writer.print("\n", .{});
     }
-    
+
     fn writeColored(
         self: *const ErrorFormatter,
         writer: anytype,
@@ -247,7 +247,7 @@ pub const ErrorFormatter = struct {
             try writer.print("{s}", .{text});
         }
     }
-    
+
     /// Create a quick error summary for IDEs or other tools
     pub fn formatErrorsSummary(
         _: *const ErrorFormatter,
@@ -264,7 +264,7 @@ pub const ErrorFormatter = struct {
             });
         }
     }
-    
+
     /// Format errors in JSON format for tooling integration
     pub fn formatErrorsJson(
         _: *const ErrorFormatter,
@@ -272,10 +272,10 @@ pub const ErrorFormatter = struct {
         writer: anytype,
     ) !void {
         try writer.print("{{\n  \"errors\": [\n", .{});
-        
+
         for (collector.errors.items, 0..) |err, i| {
             if (i > 0) try writer.print(",\n", .{});
-            
+
             try writer.print("    {{\n", .{});
             try writer.print("      \"code\": \"{s}\",\n", .{err.code.toString()});
             try writer.print("      \"severity\": \"{s}\",\n", .{err.severity.toString()});
@@ -286,7 +286,7 @@ pub const ErrorFormatter = struct {
             try writer.print("      \"column\": {d},\n", .{err.span.column});
             try writer.print("      \"start_pos\": {d},\n", .{err.span.start_pos});
             try writer.print("      \"end_pos\": {d}", .{err.span.end_pos});
-            
+
             if (err.suggestions.len > 0) {
                 try writer.print(",\n      \"suggestions\": [", .{});
                 for (err.suggestions, 0..) |suggestion, j| {
@@ -295,10 +295,10 @@ pub const ErrorFormatter = struct {
                 }
                 try writer.print("]", .{});
             }
-            
+
             try writer.print("\n    }}", .{});
         }
-        
+
         try writer.print("\n  ],\n", .{});
         try writer.print("  \"error_count\": {d},\n", .{collector.errorCount()});
         try writer.print("  \"warning_count\": {d}\n", .{collector.warningCount()});

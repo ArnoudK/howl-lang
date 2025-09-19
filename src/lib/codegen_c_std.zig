@@ -21,16 +21,16 @@ pub const StdLibHandler = struct {
     /// Returns true if handled, false if it should be processed as a regular call
     pub fn handleStdCall(self: *const StdLibHandler, writer: Writer, call_expr: anytype) CCodegenError!bool {
         const callee_node = self.arena.getNodeConst(call_expr.callee) orelse return false;
-        
+
         if (callee_node.data != .member_expr) return false;
-        
+
         return try self.handleMemberCall(writer, callee_node.data.member_expr, call_expr.args);
     }
 
     /// Handle member expression calls like std.debug.print
     fn handleMemberCall(self: *const StdLibHandler, writer: Writer, member_expr: anytype, args: anytype) CCodegenError!bool {
         const object_node = self.arena.getNodeConst(member_expr.object) orelse return false;
-        
+
         // Check for std.debug.print pattern
         if (std.mem.eql(u8, member_expr.field, "print")) {
             if (object_node.data == .member_expr) {
@@ -46,13 +46,13 @@ pub const StdLibHandler = struct {
                 }
             }
         }
-        
+
         // TODO: Add other std library functions here
         // - std.mem.*
         // - std.fmt.*
         // - std.io.*
         // etc.
-        
+
         return false;
     }
 
@@ -60,62 +60,62 @@ pub const StdLibHandler = struct {
     fn generateDebugPrint(self: *const StdLibHandler, writer: Writer, args: anytype) CCodegenError!void {
         try writer.writeAll("printf");
         try writer.writeAll("(");
-        
+
         // Handle the format string (first argument) and arguments together
         if (args.items.len > 0) {
             const format_string_id = args.items[0];
-            
+
             // Get format arguments if present
             var format_args: ?ast.NodeId = null;
             if (args.items.len > 1) {
                 format_args = args.items[1];
             }
-            
+
             try self.generateSmartFormatString(writer, format_string_id, format_args);
         } else {
             try writer.writeAll("\"\"");
         }
-        
+
         try writer.writeAll(")");
     }
-    
+
     /// Generate format string and arguments together with smart type inference
     fn generateSmartFormatString(self: *const StdLibHandler, writer: Writer, format_string_id: ast.NodeId, format_args_id: ?ast.NodeId) CCodegenError!void {
         const format_node = self.arena.getNodeConst(format_string_id) orelse {
             try writer.writeAll("\"\"");
             return;
         };
-        
+
         if (format_node.data != .literal or format_node.data.literal != .string) {
             try writer.writeAll("\"\"");
             return;
         }
-        
+
         const format_str = format_node.data.literal.string.value;
-        
+
         // Collect argument types for smart format generation
         var arg_types = std.ArrayList([]const u8).init(self.allocator);
         defer arg_types.deinit();
-        
+
         if (format_args_id) |args_id| {
             try self.collectArgumentTypes(&arg_types, args_id);
         }
-        
+
         // Generate format string with smart type inference
         try writer.writeAll("\"");
         try self.convertSmartFormatString(writer, format_str, arg_types.items);
         try writer.writeAll("\"");
-        
+
         // Generate arguments
         if (format_args_id) |args_id| {
             try self.generateFormatArguments(writer, args_id);
         }
     }
-    
+
     /// Collect argument types for format string generation
     fn collectArgumentTypes(self: *const StdLibHandler, arg_types: *std.ArrayList([]const u8), args_id: ast.NodeId) CCodegenError!void {
         const args_node = self.arena.getNodeConst(args_id) orelse return;
-        
+
         if (args_node.data == .call_expr) {
             const call_expr = args_node.data.call_expr;
             for (call_expr.args.items) |arg_id| {
@@ -130,11 +130,11 @@ pub const StdLibHandler = struct {
             }
         }
     }
-    
+
     /// Infer the C type of an argument for format string generation
     fn inferArgumentType(self: *const StdLibHandler, arg_id: ast.NodeId) CCodegenError![]const u8 {
         const arg_node = self.arena.getNodeConst(arg_id) orelse return "%d";
-        
+
         switch (arg_node.data) {
             .member_expr => |member_expr| {
                 // Check if this is a struct field access
@@ -149,9 +149,9 @@ pub const StdLibHandler = struct {
                 return "%d";
             },
             .identifier => |identifier| {
-                // For simple identifiers, default to %d
+                // For simple identifiers, use %lld for i64 variables
                 _ = identifier;
-                return "%d";
+                return "%lld";
             },
             .literal => |literal| switch (literal) {
                 .integer => return "%d",
@@ -163,14 +163,14 @@ pub const StdLibHandler = struct {
             else => return "%d",
         }
     }
-    
+
     /// Convert Howl format string with {} to C format string using inferred types
     fn convertSmartFormatString(self: *const StdLibHandler, writer: Writer, format_str: []const u8, arg_types: []const []const u8) CCodegenError!void {
         _ = self;
-        
+
         var i: usize = 0;
         var arg_index: usize = 0;
-        
+
         while (i < format_str.len) {
             if (i < format_str.len - 1 and format_str[i] == '{' and format_str[i + 1] == '}') {
                 // Use inferred type or default to %d
@@ -201,7 +201,7 @@ pub const StdLibHandler = struct {
             try writer.writeAll("\"\"");
             return;
         };
-        
+
         if (format_node.data == .literal and format_node.data.literal == .string) {
             const format_str = format_node.data.literal.string.value;
             try writer.writeAll("\"");
@@ -215,7 +215,7 @@ pub const StdLibHandler = struct {
     /// Convert Howl format string with {} to C format string with %d, %s, etc.
     fn convertFormatString(self: *const StdLibHandler, writer: Writer, format_str: []const u8) CCodegenError!void {
         _ = self; // May be used for type inference later
-        
+
         var i: usize = 0;
         while (i < format_str.len) {
             if (i < format_str.len - 1 and format_str[i] == '{' and format_str[i + 1] == '}') {
@@ -241,12 +241,12 @@ pub const StdLibHandler = struct {
     /// Generate format arguments from .{arg1, arg2, ...} tuple
     fn generateFormatArguments(self: *const StdLibHandler, writer: Writer, args_id: ast.NodeId) CCodegenError!void {
         const args_node = self.arena.getNodeConst(args_id) orelse return;
-        
+
         // The second argument appears to be a call_expr, not array_init
         // This is likely the .{} syntax being parsed as a call
         if (args_node.data == .call_expr) {
             const call_expr = args_node.data.call_expr;
-            
+
             for (call_expr.args.items) |arg_id| {
                 try writer.writeAll(", ");
                 try self.generateFormatArgument(writer, arg_id);
@@ -275,7 +275,7 @@ pub const StdLibHandler = struct {
             try writer.writeAll("0");
             return;
         };
-        
+
         switch (arg_node.data) {
             .literal => |literal| {
                 switch (literal) {
@@ -301,7 +301,7 @@ pub const StdLibHandler = struct {
                 if (obj_node) |obj| {
                     if (obj.data == .identifier) {
                         const obj_name = obj.data.identifier.name;
-                        
+
                         // Check if this is an enum access like MyEnum.Value1
                         if (std.mem.eql(u8, obj_name, "MyEnum")) {
                             try writer.print("{s}_{s}", .{ obj_name, member_expr.field });

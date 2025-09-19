@@ -96,8 +96,8 @@ fn printUsage(program_name: []const u8) !void {
     std.debug.print("  lsp                             Start the Language Server Protocol server\n", .{});
     std.debug.print("  help                            Show this help message\n", .{});
     std.debug.print("\nBuild/Run Options:\n", .{});
-    std.debug.print("  -tjs                            Generate JavaScript code (default)\n", .{});
-    std.debug.print("  -tc                             Generate native binary (C)\n", .{});
+    std.debug.print("  -tc                             Generate native binary (C) (default)\n", .{});
+    std.debug.print("  -tjs                            Generate JavaScript code\n", .{});
     std.debug.print("  --format=<format>               Output format: colored, plain, json, summary\n", .{});
     std.debug.print("  --max-errors=<n>                Maximum number of errors to show (default: 10)\n", .{});
     std.debug.print("  --no-warnings                   Disable warnings\n", .{});

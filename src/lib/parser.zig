@@ -2815,7 +2815,7 @@ pub const Parser = struct {
             return ast.createIdentifier(self.arena, source_loc, "bool");
         }
 
-        // Handle identifier types (including ErrorSet!Type)
+        // Handle identifier types (including ErrorSet!Type and ?Type)
         if (self.match(&[_]std.meta.Tag(Token){.Identifier})) {
             const token = self.previous();
             if (token == .Identifier) {
@@ -2830,6 +2830,12 @@ pub const Parser = struct {
 
                 return identifier;
             }
+        }
+
+        // Handle optional types: ?Type
+        if (self.match(&[_]std.meta.Tag(Token){.QuestionMark})) {
+            const inner_type = try self.parseType();
+            return ast.createOptionalTypeExpr(self.arena, source_loc, inner_type);
         }
 
         // TODO: Handle more complex types like pointers, arrays, etc.

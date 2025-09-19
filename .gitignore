@@ -36,3 +36,5 @@ howl-new
 zir_tests/
 lib/clang
 fil-c
+
+howl-out/

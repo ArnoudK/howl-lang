@@ -117,7 +117,7 @@ pub const Token = union(enum) {
     Not: BaseToken, // not
     EqualEqual: BaseToken, // == (to match lexer.zig)
     DoubleEquals: BaseToken, // == (alternative name)
-    NotEqual: BaseToken, // != (to match lexer.zig)  
+    NotEqual: BaseToken, // != (to match lexer.zig)
     ExclamationEquals: BaseToken, // != (alternative name)
     Assignment: BaseToken, // = (to match lexer.zig)
     Equals: BaseToken, // = (alternative name)
@@ -188,7 +188,7 @@ pub const Token = union(enum) {
             inline else => |token_data| token_data.pos,
         };
     }
-    
+
     pub fn getEndPos(self: Token) usize {
         const start_pos = self.getPos();
         return switch (self) {

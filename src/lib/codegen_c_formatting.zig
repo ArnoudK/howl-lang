@@ -19,7 +19,7 @@ pub fn generateCPrintfCall(codegen: anytype, writer: Writer, call_expr: anytype)
     if (first_arg_node) |arg_node| {
         if (arg_node.data == .literal and arg_node.data.literal == .string) {
             const format_string = arg_node.data.literal.string.value;
-            
+
             // If we have more arguments, use them
             if (call_expr.args.items.len > 1) {
                 const args = call_expr.args.items[1..];
@@ -28,12 +28,12 @@ pub fn generateCPrintfCall(codegen: anytype, writer: Writer, call_expr: anytype)
                 // No additional arguments, just print the format string
                 const c_format_result = try convertHowlFormatToCWithCount(codegen, format_string);
                 defer codegen.allocator.free(c_format_result.format);
-                
+
                 if (c_format_result.arg_count > 0) {
                     // Format string has placeholders but no args provided - this might be an error
                     std.log.warn("Format string has {} placeholders but no arguments provided", .{c_format_result.arg_count});
                 }
-                
+
                 try writer.print("printf(\"{s}\")", .{c_format_result.format});
             }
         } else {
@@ -47,7 +47,7 @@ pub fn generateCPrintfCall(codegen: anytype, writer: Writer, call_expr: anytype)
                 },
                 else => {
                     try writer.writeAll("printf(\"complex expression\\n\")");
-                }
+                },
             }
         }
     }
@@ -58,9 +58,9 @@ pub fn generateCFormattedPrintf(codegen: anytype, writer: Writer, format_string:
     // Convert Howl format string to C format string
     const c_format_result = try convertHowlFormatToCWithCount(codegen, format_string);
     defer codegen.allocator.free(c_format_result.format);
-    
+
     try writer.print("printf(\"{s}\"", .{c_format_result.format});
-    
+
     // Add arguments based on field initializers
     for (field_inits) |field_init| {
         try writer.writeAll(", ");
@@ -75,11 +75,11 @@ pub fn generateCFormattedPrintf(codegen: anytype, writer: Writer, format_string:
                 },
                 else => {
                     try writer.writeAll("/* complex field value */");
-                }
+                },
             }
         }
     }
-    
+
     try writer.writeAll(")");
 }
 
@@ -88,9 +88,9 @@ pub fn generateCFormattedPrintfWithArgs(codegen: anytype, writer: Writer, format
     // Convert Howl format string to C format string and get expected argument count
     const c_format_result = try convertHowlFormatToCWithCount(codegen, format_string);
     defer codegen.allocator.free(c_format_result.format);
-    
+
     try writer.print("printf(\"{s}\"", .{c_format_result.format});
-    
+
     // Add arguments
     for (args) |arg_id| {
         try writer.writeAll(", ");
@@ -107,7 +107,7 @@ pub fn generateCFormattedPrintfWithArgs(codegen: anytype, writer: Writer, format
                     const object_node = codegen.arena.getNodeConst(member_expr.object);
                     if (object_node) |obj| {
                         if (obj.data == .identifier) {
-                            try writer.print("{s}.{s}", .{obj.data.identifier.name, member_expr.field});
+                            try writer.print("{s}.{s}", .{ obj.data.identifier.name, member_expr.field });
                         } else {
                             try writer.writeAll("/* complex member access */");
                         }
@@ -124,7 +124,7 @@ pub fn generateCFormattedPrintfWithArgs(codegen: anytype, writer: Writer, format
             }
         }
     }
-    
+
     try writer.writeAll(")");
 }
 
@@ -164,17 +164,17 @@ pub fn inferFormatSpecifier(codegen: anytype, arg_node: *const ast.AstNode) []co
 /// Convert AST type to C format specifier
 pub fn typeToFormatSpecifier(codegen: anytype, type_info: ast.Type) []const u8 {
     _ = codegen; // May be needed for complex type resolution
-    
+
     switch (type_info.data) {
         .primitive => |prim| {
             return switch (prim.kind) {
                 .int8 => "%hhd",
-                .uint8 => "%hhu", 
+                .uint8 => "%hhu",
                 .int16 => "%hd",
                 .uint16 => "%hu",
                 .int32 => "%d",
                 .uint32 => "%u",
-                .int64 => "%lld",
+                .int64 => "%ld",
                 .uint64 => "%llu",
                 .float32 => "%.6f",
                 .float64 => "%.6f",
@@ -196,7 +196,7 @@ pub fn typeToFormatSpecifier(codegen: anytype, type_info: ast.Type) []const u8 {
 /// Get struct field type by name
 pub fn getStructFieldType(codegen: anytype, struct_type: ast.Type, field_name: []const u8) ?ast.Type {
     if (struct_type.data != .custom) return null;
-    
+
     const type_name = struct_type.data.custom.name;
     if (codegen.semantic_analyzer.type_registry.get(type_name)) |registered_type| {
         if (registered_type.data == .@"struct") {
@@ -221,10 +221,10 @@ pub fn getStructFieldType(codegen: anytype, struct_type: ast.Type, field_name: [
 pub fn convertHowlFormatToCWithCount(codegen: anytype, howl_format: []const u8) !struct { format: []const u8, arg_count: usize } {
     var result = std.ArrayList(u8).init(codegen.allocator);
     defer result.deinit();
-    
+
     var i: usize = 0;
     var arg_count: usize = 0;
-    
+
     while (i < howl_format.len) {
         if (howl_format[i] == '{' and i + 1 < howl_format.len and howl_format[i + 1] == '}') {
             // Found {} placeholder - replace with %d (default)
@@ -241,7 +241,7 @@ pub fn convertHowlFormatToCWithCount(codegen: anytype, howl_format: []const u8) 
             i += 1;
         }
     }
-    
+
     return .{
         .format = try codegen.allocator.dupe(u8, result.items),
         .arg_count = arg_count,
@@ -258,10 +258,10 @@ pub fn convertHowlFormatToC(codegen: anytype, howl_format: []const u8) ![]const 
 pub fn generateCFormatCode(codegen: anytype, format_string: []const u8, args_node_id: ast.NodeId) ![]const u8 {
     var result = std.ArrayList(u8).init(codegen.allocator);
     defer result.deinit();
-    
+
     _ = args_node_id; // May be used for more complex formatting
     var arg_index: usize = 0;
-    
+
     var i: usize = 0;
     while (i < format_string.len) {
         if (format_string[i] == '{') {
@@ -270,7 +270,7 @@ pub fn generateCFormatCode(codegen: anytype, format_string: []const u8, args_nod
             while (j < format_string.len and format_string[j] != '}') {
                 j += 1;
             }
-            
+
             if (j < format_string.len) {
                 // Found format specifier
                 const spec = format_string[i + 1 .. j];
@@ -288,7 +288,7 @@ pub fn generateCFormatCode(codegen: anytype, format_string: []const u8, args_nod
             i += 1;
         }
     }
-    
+
     return try codegen.allocator.dupe(u8, result.items);
 }
 
@@ -296,10 +296,10 @@ pub fn generateCFormatCode(codegen: anytype, format_string: []const u8, args_nod
 pub fn convertAdvancedHowlFormatToC(codegen: anytype, howl_format: []const u8) !struct { format: []const u8, arg_count: usize } {
     var result = std.ArrayList(u8).init(codegen.allocator);
     defer result.deinit();
-    
+
     var i: usize = 0;
     var arg_count: usize = 0;
-    
+
     while (i < howl_format.len) {
         if (howl_format[i] == '{') {
             // Look for closing }
@@ -307,7 +307,7 @@ pub fn convertAdvancedHowlFormatToC(codegen: anytype, howl_format: []const u8) !
             while (j < howl_format.len and howl_format[j] != '}') {
                 j += 1;
             }
-            
+
             if (j < howl_format.len) {
                 // Found format specifier
                 const spec = howl_format[i + 1 .. j];
@@ -324,7 +324,7 @@ pub fn convertAdvancedHowlFormatToC(codegen: anytype, howl_format: []const u8) !
             i += 1;
         }
     }
-    
+
     return .{
         .format = try codegen.allocator.dupe(u8, result.items),
         .arg_count = arg_count,
@@ -334,9 +334,9 @@ pub fn convertAdvancedHowlFormatToC(codegen: anytype, howl_format: []const u8) !
 /// Convert format specifier from Howl to C
 pub fn convertFormatSpec(codegen: anytype, spec: []const u8) ![]const u8 {
     _ = codegen;
-    
+
     if (spec.len == 0) return "%d"; // Default
-    
+
     // Handle common Howl format specs
     if (std.mem.eql(u8, spec, "d")) return "%d";
     if (std.mem.eql(u8, spec, "s")) return "%s";
@@ -346,7 +346,7 @@ pub fn convertFormatSpec(codegen: anytype, spec: []const u8) ![]const u8 {
     if (std.mem.eql(u8, spec, "X")) return "%X";
     if (std.mem.eql(u8, spec, "o")) return "%o";
     if (std.mem.eql(u8, spec, "p")) return "%p";
-    
+
     // Default fallback
     return "%d";
 }
@@ -355,7 +355,7 @@ pub fn convertFormatSpec(codegen: anytype, spec: []const u8) ![]const u8 {
 fn mapLiteralToFormatSpec(literal: ast.Literal) []const u8 {
     return switch (literal) {
         .integer => "%d",
-        .float => "%.6f", 
+        .float => "%.6f",
         .string => "%s",
         .char => "%c",
         .bool_true, .bool_false => "%d",
@@ -390,6 +390,6 @@ fn generateCLiteralForPrintf(writer: Writer, literal: ast.Literal) !void {
         },
         else => {
             try writer.writeAll("0");
-        }
+        },
     }
 }

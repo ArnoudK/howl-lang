@@ -203,7 +203,7 @@ pub const Compiler = struct {
                 ) catch |err| switch (err) {
                     error.OutOfMemory => return err,
                     else => {
-                        std.debug.print("IR construction failed with error\n", .{});
+                        std.debug.print("IR construction failed with error: {}\n", .{err});
                         // IR construction errors are already reported
                         analyzer.deinit();
                         return result;
@@ -288,7 +288,7 @@ pub const Compiler = struct {
     }
 
     fn performSemanticAnalysis(self: *Compiler, root_node: ast.NodeId, errors: *ErrorSystem.ErrorCollector) CompileError!SemanticAnalyzer {
-        var analyzer = SemanticAnalyzer.init(
+        var analyzer = try SemanticAnalyzer.init(
             self.allocator,
             &self.arena,
             errors,
