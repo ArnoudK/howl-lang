@@ -148,15 +148,7 @@ const CIrCodegen = struct {
                 }
             }
             // Fallback to IR function definition if semantic analyzer doesn't have it
-            var ty_str = try self.getTypeString(func_data.return_type);
-
-            // Heuristic: If the function returns an error union with i32 payload but creates MyStruct,
-            // it should probably return MyError_MyStruct_ErrorUnion instead
-            if (std.mem.eql(u8, ty_str, "MyError_i32_ErrorUnion") and
-                self.functionCreatesStruct(func_data.name))
-            {
-                ty_str = "MyError_MyStruct_ErrorUnion";
-            }
+            const ty_str = try self.getTypeString(func_data.return_type);
 
             break :blk ty_str;
         };
@@ -904,79 +896,39 @@ const CIrCodegen = struct {
                             try self.writeLineFormatted("/* printf return value unused */", .{});
                             // var_name is not used for printf calls
                         } else {
-                            // Special handling for known module functions
-                            var handled_special = false;
+                            // Regular function call - no special hardcoded handling
+                            // Determine the called function return type
+                            var return_type_str: []const u8 = "i64";
 
-                            // Handle math module functions
-                            if (std.mem.eql(u8, call_data.function_name, "math.add")) {
-                                // Generate inline addition: a + b
-                                if (node.inputs.len >= 4) { // control, callee, arg1, arg2
-                                    const arg1 = self.node_values.get(node.inputs[2]) orelse "0";
-                                    const arg2 = self.node_values.get(node.inputs[3]) orelse "0";
-                                    try self.writeLineFormatted("i64 {s} = {s} + {s};", .{ var_name, arg1, arg2 });
-                                    handled_special = true;
-                                }
-                            } else if (std.mem.eql(u8, call_data.function_name, "math.multiply")) {
-                                // Generate inline multiplication: a * b
-                                if (node.inputs.len >= 4) { // control, callee, arg1, arg2
-                                    const arg1 = self.node_values.get(node.inputs[2]) orelse "0";
-                                    const arg2 = self.node_values.get(node.inputs[3]) orelse "0";
-                                    try self.writeLineFormatted("i64 {s} = {s} * {s};", .{ var_name, arg1, arg2 });
-                                    handled_special = true;
-                                }
-                            } else if (std.mem.eql(u8, call_data.function_name, "unknown_function")) {
-                                // Handle calls where the function name is passed as first argument
-                                if (node.inputs.len >= 2) {
-                                    const func_name = self.node_values.get(node.inputs[1]) orelse "";
-                                    if (std.mem.eql(u8, func_name, "math.add") and node.inputs.len >= 4) {
-                                        const arg1 = self.node_values.get(node.inputs[2]) orelse "0";
-                                        const arg2 = self.node_values.get(node.inputs[3]) orelse "0";
-                                        try self.writeLineFormatted("i64 {s} = {s} + {s};", .{ var_name, arg1, arg2 });
-                                        handled_special = true;
-                                    } else if (std.mem.eql(u8, func_name, "math.multiply") and node.inputs.len >= 4) {
-                                        const arg1 = self.node_values.get(node.inputs[2]) orelse "0";
-                                        const arg2 = self.node_values.get(node.inputs[3]) orelse "0";
-                                        try self.writeLineFormatted("i64 {s} = {s} * {s};", .{ var_name, arg1, arg2 });
-                                        handled_special = true;
-                                    }
-                                }
-                            }
-
-                            if (!handled_special) {
-                                // Regular function call
-                                // Determine the called function return type
-                                var return_type_str: []const u8 = "i64";
-
-                                // Look for the function definition to get its return type
-                                for (ir.nodes.items) |check_node| {
-                                    if (check_node.op == .function_def) {
-                                        const check_func_data = check_node.data.function_def;
-                                        if (std.mem.eql(u8, check_func_data.name, call_data.function_name)) {
-                                            if (check_node.output_type) |output_type| {
-                                                return_type_str = try self.getTypeString(output_type);
-                                            }
-                                            break;
+                            // Look for the function definition to get its return type
+                            for (ir.nodes.items) |check_node| {
+                                if (check_node.op == .function_def) {
+                                    const check_func_data = check_node.data.function_def;
+                                    if (std.mem.eql(u8, check_func_data.name, call_data.function_name)) {
+                                        if (check_node.output_type) |output_type| {
+                                            return_type_str = try self.getTypeString(output_type);
                                         }
+                                        break;
                                     }
                                 }
-
-                                try self.output.writer().print("    {s} {s} = {s}(", .{ return_type_str, var_name, call_data.function_name });
-
-                                // Add arguments (skip control input at index 0, also potentially skip extra inputs)
-                                var arg_count: u32 = 0;
-                                for (node.inputs[1..]) |arg_id| {
-                                    const arg_value = self.node_values.get(arg_id) orelse continue;
-
-                                    // Skip string literals that might be function names
-                                    if (std.mem.startsWith(u8, arg_value, "\"")) continue;
-
-                                    if (arg_count > 0) try self.output.appendSlice(", ");
-                                    try self.output.appendSlice(arg_value);
-                                    arg_count += 1;
-                                }
-
-                                try self.output.appendSlice(");\n");
                             }
+
+                            try self.output.writer().print("    {s} {s} = {s}(", .{ return_type_str, var_name, call_data.function_name });
+
+                            // Add arguments (skip control input at index 0, also potentially skip extra inputs)
+                            var arg_count: u32 = 0;
+                            for (node.inputs[1..]) |arg_id| {
+                                const arg_value = self.node_values.get(arg_id) orelse continue;
+
+                                // Skip string literals that might be function names
+                                if (std.mem.startsWith(u8, arg_value, "\"")) continue;
+
+                                if (arg_count > 0) try self.output.appendSlice(", ");
+                                try self.output.appendSlice(arg_value);
+                                arg_count += 1;
+                            }
+
+                            try self.output.appendSlice(");\n");
                         }
                     },
                     else => {
@@ -2163,10 +2115,15 @@ const CIrCodegen = struct {
     }
 
     /// Check if a function creates MyStruct instances (heuristic for type correction)
-    fn functionCreatesStruct(_: *CIrCodegen, function_name: []const u8) bool {
-        // For now, use a simple heuristic: if the function name contains "Struct" or is "createMyStructMaybe"
-        return std.mem.eql(u8, function_name, "createMyStructMaybe") or
-            std.mem.indexOf(u8, function_name, "Struct") != null;
+    fn functionCreatesStruct(self: *CIrCodegen, function_name: []const u8) bool {
+        // Check the function's return type from the semantic analyzer
+        if (self.semantic_analyzer.type_registry.get(function_name)) |func_type| {
+            if (func_type.data == .function) {
+                const return_type = func_type.data.function.return_type.*;
+                return return_type.data == .@"struct" or return_type.data == .custom_struct;
+            }
+        }
+        return false;
     }
 
     /// Get the current error union type name based on the function context
@@ -2175,28 +2132,21 @@ const CIrCodegen = struct {
         if (self.semantic_analyzer.type_registry.get(self.current_function_name)) |func_type| {
             if (func_type.data == .function) {
                 const result = self.getErrorUnionTypedefNameFromType(func_type.data.function.return_type.*) catch blk: {
-                    break :blk "MyError_i32_ErrorUnion";
+                    break :blk "anyerror_i32_ErrorUnion";
                 };
                 return result;
             }
         }
         // Fallback to current function return type
         if (self.current_function_return_type) |t| {
-            var result = self.getErrorUnionTypedefNameFromType(t) catch blk: {
-                break :blk "MyError_i32_ErrorUnion";
+            const result = self.getErrorUnionTypedefNameFromType(t) catch blk: {
+                break :blk "anyerror_i32_ErrorUnion";
             };
-
-            // Heuristic: If the function returns i32 error union but creates structs, correct it
-            if (std.mem.eql(u8, result, "MyError_i32_ErrorUnion") and
-                self.functionCreatesStruct(self.current_function_name))
-            {
-                result = "MyError_MyStruct_ErrorUnion";
-            }
 
             return result;
         }
         // Default fallback
-        return "MyError_i32_ErrorUnion";
+        return "anyerror_i32_ErrorUnion";
     }
 
     /// Get the current payload type for error unions

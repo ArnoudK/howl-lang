@@ -70,44 +70,14 @@ pub fn generateVarDecl(
             const init_node = arena.getNodeConst(init_id);
             if (init_node) |init_n| {
                 if (init_n.data == .try_expr) {
-                    // Handle try expressions - extract the success type from error union
+                    // Handle try expressions - use semantic analyzer to infer the payload type
                     const inner_expr = init_n.data.try_expr.expression;
-                    const inner_node = arena.getNodeConst(inner_expr);
-                    if (inner_node) |inner| {
-                        if (inner.data == .call_expr) {
-                            const call_expr = inner.data.call_expr;
-                            const callee_node = arena.getNodeConst(call_expr.callee);
-                            if (callee_node) |callee| {
-                                if (callee.data == .identifier) {
-                                    const func_name = callee.data.identifier.name;
-                                    // Extract success type from error union functions
-                                    if (std.mem.eql(u8, func_name, "divide")) {
-                                        break :blk "int32_t"; // MyError!i32 -> i32
-                                    } else if (std.mem.eql(u8, func_name, "createMyStruct")) {
-                                        break :blk "MyStruct"; // MyError!MyStruct -> MyStruct
-                                    } else if (std.mem.eql(u8, func_name, "createMyStructMaybe")) {
-                                        break :blk "Optional_MyStruct_t"; // MyError!?MyStruct -> ?MyStruct
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    const inferred_type = codegen.inferNodeCType(inner_expr);
+                    break :blk inferred_type;
                 } else if (init_n.data == .call_expr) {
-                    const call_expr = init_n.data.call_expr;
-                    const callee_node = arena.getNodeConst(call_expr.callee);
-                    if (callee_node) |callee| {
-                        if (callee.data == .identifier) {
-                            const func_name = callee.data.identifier.name;
-                            // Check known error union returning functions
-                            if (std.mem.eql(u8, func_name, "divide")) {
-                                break :blk "MyError_i32_ErrorUnion";
-                            } else if (std.mem.eql(u8, func_name, "createMyStruct")) {
-                                break :blk "MyError_MyStruct_ErrorUnion";
-                            } else if (std.mem.eql(u8, func_name, "createMyStructMaybe")) {
-                                break :blk "MyError_Optional_MyStruct_t_ErrorUnion";
-                            }
-                        }
-                    }
+                    // Use semantic analyzer to infer the return type of the call expression
+                    const inferred_type = codegen.inferNodeCType(init_id);
+                    break :blk inferred_type;
                 } else if (init_n.data == .array_init) {
                     // Handle array initialization like [1, 2, 3] or $[1, 2, 3]
                     const array_init = init_n.data.array_init;
@@ -135,9 +105,9 @@ pub fn generateVarDecl(
                                 }
                                 break :blk "int32_t"; // Fallback
                             } else if (elem.data == .struct_init) {
-                                // Array of structs - determine struct type
-                                // For now, assume MyStruct - TODO: infer actual struct type
-                                break :blk "MyStruct";
+                                // Array of structs - use generic struct type
+                                // TODO: infer actual struct type from semantic analysis
+                                break :blk "GenericStruct";
                             }
                         }
                     }

@@ -312,7 +312,7 @@ pub fn typeToFormatSpecifier(type_info: ast.Type) []const u8 {
 }
 
 /// Generate C type string from Howl type information
-pub fn generateCType(codegen: anytype, howl_type: ?ast.Type) []const u8 {
+pub fn generateCType(_: anytype, howl_type: ?ast.Type) []const u8 {
     if (howl_type) |type_info| {
         return switch (type_info.data) {
             .primitive => |prim| switch (prim) {
@@ -350,15 +350,10 @@ pub fn generateCType(codegen: anytype, howl_type: ?ast.Type) []const u8 {
                 // Return the enum name directly
                 return enum_info.name;
             },
-            .optional => |opt_info| {
-                // Generate the optional type name
-                const inner_type_str = generateCType(codegen, opt_info.*);
-                const sanitized_inner = utils.sanitizeTypeForName(inner_type_str);
-                // For now, handle known types specifically to avoid allocation issues
-                if (std.mem.eql(u8, sanitized_inner, "MyStruct")) {
-                    return "Optional_MyStruct_t";
-                }
-                return "Optional_Type_t"; // Generic fallback
+            .optional => |_| {
+                // Use a generic pattern for all optional types
+                // No hardcoded type name assumptions - let the type system handle this
+                return "Optional_Generic_t";
             },
             else => "int32_t", // Default fallback
         };

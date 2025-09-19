@@ -242,31 +242,10 @@ pub const CCodegen = struct {
     }
 
     pub fn inferErrorUnionTypeFromExpression(self: *CCodegen, expr_id: ast.NodeId) []const u8 {
-        const node = self.arena.getNodeConst(expr_id) orelse return self.getCurrentErrorUnionStructName();
-
-        if (node.data == .call_expr) {
-            const call_expr = node.data.call_expr;
-            const callee_node = self.arena.getNodeConst(call_expr.callee);
-            if (callee_node) |callee| {
-                if (callee.data == .identifier) {
-                    const func_name = callee.data.identifier.name;
-
-                    // Look up the function's return type to find the matching error union
-                    // For functions that return !i32, generate anyerror_i32_ErrorUnion
-                    if (std.mem.eql(u8, func_name, "divide") or
-                        std.mem.eql(u8, func_name, "safeDivide") or
-                        std.mem.eql(u8, func_name, "parseNumber") or
-                        std.mem.eql(u8, func_name, "complexOperation"))
-                    {
-                        return "anyerror_i32_ErrorUnion";
-                    } else if (std.mem.eql(u8, func_name, "createMyStruct")) {
-                        return "anyerror_MyStruct_ErrorUnion";
-                    }
-
-                    // Default for any function that might return an error union
-                    return "anyerror_i32_ErrorUnion";
-                }
-            }
+        // Use semantic analyzer to infer the error union type from the expression
+        const inferred = self.semantic_analyzer.inferType(expr_id) catch null;
+        if (inferred) |typ| {
+            return self.generateCType(typ);
         }
 
         // Fallback to current function context
@@ -432,19 +411,9 @@ pub const CCodegen = struct {
         try self.function_collection.functions.append(collected_func);
     }
 
-    /// Check if a function has error union return type (heuristic for !Type syntax)
+    /// Check if a function has error union return type
     fn hasErrorUnionReturnType(self: *CCodegen, func_decl: anytype) bool {
-        // Heuristic: Functions that might return errors based on their names
-        const func_name = func_decl.name;
-        if (std.mem.eql(u8, func_name, "divide") or
-            std.mem.eql(u8, func_name, "safeDivide") or
-            std.mem.eql(u8, func_name, "parseNumber") or
-            std.mem.eql(u8, func_name, "complexOperation"))
-        {
-            return true;
-        }
-
-        // Also check if there's a return type with error union syntax
+        // Check if there's a return type with error union syntax
         if (func_decl.return_type) |return_type_id| {
             const return_type_node = self.arena.getNodeConst(return_type_id);
             if (return_type_node) |node| {
@@ -758,15 +727,10 @@ pub const CCodegen = struct {
             .optional_type_expr => |optional_type| {
                 // Get the inner type first
                 const inner_type = self.getNodeType(optional_type.inner_type);
-                if (inner_type) |inner| {
-                    // Create an optional type based on the inner type
-                    const inner_c_type = types.generateCType(self, inner);
-                    // For now, handle known types specifically to avoid allocation issues
-                    if (std.mem.eql(u8, inner_c_type, "MyStruct")) {
-                        return ast.Type.initCustomStruct("Optional_MyStruct_t", &[_]ast.Field{}, false, node.source_loc);
-                    }
-                    // For other types, create a generic name (could be expanded later)
-                    return ast.Type.initCustomStruct("Optional_Type_t", &[_]ast.Field{}, false, node.source_loc);
+                if (inner_type) |_| {
+                    // Create a generic optional type
+                    // No hardcoded type name assumptions
+                    return ast.Type.initCustomStruct("Optional_Generic_t", &[_]ast.Field{}, false, node.source_loc);
                 }
                 return null;
             },
@@ -909,7 +873,6 @@ pub const CCodegen = struct {
                         }
 
                         // Special case mappings that we know from the context
-                        if (std.mem.eql(u8, array_name, "people")) return "MyStruct";
                         if (std.mem.eql(u8, array_name, "simple_gc_array")) return "int32_t";
 
                         // Default fallback
@@ -931,25 +894,8 @@ pub const CCodegen = struct {
                 // Infer from the then branch
                 return self.inferNodeCType(if_expr.then_branch);
             },
-            .try_expr => |try_expr| {
-                // Special handling for specific function calls that return error unions
-                const expr_node = self.arena.getNodeConst(try_expr.expression);
-                if (expr_node) |expr| {
-                    if (expr.data == .call_expr) {
-                        const call_expr = expr.data.call_expr;
-                        const callee_node = self.arena.getNodeConst(call_expr.callee);
-                        if (callee_node) |callee| {
-                            if (callee.data == .identifier) {
-                                const func_name = callee.data.identifier.name;
-                                // Map known function names to their payload types
-                                if (std.mem.eql(u8, func_name, "createMyStruct")) return "MyStruct";
-                                if (std.mem.eql(u8, func_name, "createMyStructMaybe")) return "MyStruct";
-                            }
-                        }
-                    }
-                }
-
-                // Use semantic analyzer to infer the payload type
+            .try_expr => {
+                // Use semantic analyzer to infer the payload type from try expression
                 const inferred = self.semantic_analyzer.inferType(node_id) catch null;
                 if (inferred) |typ| {
                     return self.generateCType(typ);
@@ -1539,8 +1485,8 @@ pub const CCodegen = struct {
 
                         // Check if this is an optional error union (contains "Optional" in name)
                         if (std.mem.indexOf(u8, current_error_union, "Optional") != null) {
-                            // Wrap the struct literal in Optional_MyStruct_t_some()
-                            try writer.writeAll("Optional_MyStruct_t_some(");
+                            // Use generic optional function call
+                            try writer.writeAll("Optional_Generic_t_some(");
                             try self.generateCExpression(writer, value_id);
                             try writer.writeAll(")");
                         } else {
@@ -1565,8 +1511,8 @@ pub const CCodegen = struct {
 
                                 // Check if this is an optional error union (contains "Optional" in name)
                                 if (std.mem.indexOf(u8, current_error_union, "Optional") != null) {
-                                    // Wrap the struct constructor in Optional_MyStruct_t_some()
-                                    try writer.writeAll("Optional_MyStruct_t_some(");
+                                    // Use generic optional function call
+                                    try writer.writeAll("Optional_Generic_t_some(");
                                     try self.generateCExpression(writer, value_id);
                                     try writer.writeAll(")");
                                 } else {
@@ -1591,7 +1537,10 @@ pub const CCodegen = struct {
                         if (std.mem.indexOf(u8, current_error_union, "Optional") != null) {
                             try writer.writeAll("return (");
                             try writer.writeAll(current_error_union);
-                            try writer.writeAll("){.error_code = MyError_SUCCESS, .payload = Optional_MyStruct_t_none()};\n");
+                            try writer.writeAll("){.error_code = MyError_SUCCESS, .payload = ");
+                            // Use generic optional function call
+                            try writer.writeAll("Optional_Generic_t_none()");
+                            try writer.writeAll("};\n");
                             return;
                         }
                     }
@@ -1877,7 +1826,15 @@ pub const CCodegen = struct {
                 // Check if this is a struct method call
                 // For now, assume any unknown method is a struct method
                 // TODO: Better type checking to determine if this is a struct method
-                try writer.print("{s}_{s}(&{s}", .{ "MyStruct", method_name, object_name }); // TODO: Get actual struct type
+
+                // Try to infer the actual struct type from the semantic analyzer
+                const object_type = self.semantic_analyzer.inferType(member_expr.object) catch null;
+                const struct_name = if (object_type) |typ| switch (typ.data) {
+                    .@"struct" => |struct_info| struct_info.name,
+                    else => "MyStruct", // Fallback to hardcoded name if inference fails
+                } else "MyStruct"; // Fallback to hardcoded name if inference fails
+
+                try writer.print("{s}_{s}(&{s}", .{ struct_name, method_name, object_name }); // TODO: Get actual struct type
 
                 // Add the arguments
                 for (args) |arg_id| {

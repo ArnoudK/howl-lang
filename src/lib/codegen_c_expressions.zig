@@ -113,133 +113,23 @@ pub fn generateCSimpleExpression(arena: *const ast.AstArena, writer: Writer, nod
             try writer.writeAll(")");
         },
         .if_expr => |if_expr| {
-            // Check if this is a return statement with error union by looking at the structure
-            const then_node = arena.getNodeConst(if_expr.then_branch);
-            var is_error_union_if = false;
-
-            if (then_node) |then_data| {
-                if (then_data.data == .member_expr) {
-                    const member_expr = then_data.data.member_expr;
-                    const obj_node = arena.getNodeConst(member_expr.object);
-                    if (obj_node) |obj| {
-                        if (obj.data == .identifier) {
-                            const obj_name = obj.data.identifier.name;
-                            // Check if this looks like an error set (common naming patterns)
-                            if (std.mem.endsWith(u8, obj_name, "Error") or
-                                std.mem.eql(u8, obj_name, "MyError") or
-                                std.mem.eql(u8, obj_name, "TestError"))
-                            {
-                                is_error_union_if = true;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (is_error_union_if) {
-                // Generate error union conditional
-                try writer.writeAll("(");
-                try generateCSimpleExpression(arena, writer, if_expr.condition);
-                try writer.writeAll(" ? ");
-
-                // Then branch - error case
-                if (then_node) |then_data| {
-                    if (then_data.data == .member_expr) {
-                        const member_expr = then_data.data.member_expr;
-                        const obj_node = arena.getNodeConst(member_expr.object);
-                        if (obj_node) |obj| {
-                            if (obj.data == .identifier) {
-                                const obj_name = obj.data.identifier.name;
-                                // Use the actual error set name in the error union struct generation
-                                // For TestError!i32, this should generate TestError_i32_ErrorUnion
-                                const error_union_struct = if (std.mem.eql(u8, obj_name, "TestError"))
-                                    "TestError_i32_ErrorUnion"
-                                else if (std.mem.eql(u8, obj_name, "MyError"))
-                                    "MyError_i32_ErrorUnion"
-                                else
-                                    "anyerror_i32_ErrorUnion";
-
-                                try writer.print("({s}){{.error_code = {s}_{s}, .payload = 0}}", .{ error_union_struct, obj_name, member_expr.field });
-                            }
-                        }
-                    }
-                } else {
-                    try generateCSimpleExpression(arena, writer, if_expr.then_branch);
-                }
-
+            // Regular if expression - no special hardcoded error union detection
+            try writer.writeAll("(");
+            try generateCSimpleExpression(arena, writer, if_expr.condition);
+            try writer.writeAll(" ? ");
+            try generateCSimpleExpression(arena, writer, if_expr.then_branch);
+            if (if_expr.else_branch) |else_branch| {
                 try writer.writeAll(" : ");
-
-                // Else branch - success case
-                if (if_expr.else_branch) |else_branch| {
-                    // For success case, wrap the payload in error union struct with error = 0
-                    // Use the same error union struct name as the error case
-                    const error_union_struct = if (then_node) |then_data| blk: {
-                        if (then_data.data == .member_expr) {
-                            const member_expr = then_data.data.member_expr;
-                            const obj_node = arena.getNodeConst(member_expr.object);
-                            if (obj_node) |obj| {
-                                if (obj.data == .identifier) {
-                                    const obj_name = obj.data.identifier.name;
-                                    break :blk if (std.mem.eql(u8, obj_name, "TestError"))
-                                        "TestError_i32_ErrorUnion"
-                                    else if (std.mem.eql(u8, obj_name, "MyError"))
-                                        "MyError_i32_ErrorUnion"
-                                    else
-                                        "anyerror_i32_ErrorUnion";
-                                }
-                            }
-                        }
-                        break :blk "anyerror_i32_ErrorUnion";
-                    } else "anyerror_i32_ErrorUnion";
-
-                    try writer.print("({s}){{.error_code = 0, .payload = ", .{error_union_struct});
-                    try generateCSimpleExpression(arena, writer, else_branch);
-                    try writer.writeAll("}");
-                } else {
-                    try writer.writeAll("(anyerror_i32_ErrorUnion){.error_code = 0, .payload = 0}");
-                }
-
-                try writer.writeAll(")");
+                try generateCSimpleExpression(arena, writer, else_branch);
             } else {
-                // Regular if expression
-                try writer.writeAll("(");
-                try generateCSimpleExpression(arena, writer, if_expr.condition);
-                try writer.writeAll(" ? ");
-                try generateCSimpleExpression(arena, writer, if_expr.then_branch);
-                if (if_expr.else_branch) |else_branch| {
-                    try writer.writeAll(" : ");
-                    try generateCSimpleExpression(arena, writer, else_branch);
-                } else {
-                    try writer.writeAll(" : 0");
-                }
-                try writer.writeAll(")");
+                try writer.writeAll(" : 0");
             }
+            try writer.writeAll(")");
         },
         .try_expr => |try_expr| {
             // Try expression should extract payload from error union
             // For now, generate a simple call that extracts .payload
-            const inner_node = arena.getNodeConst(try_expr.expression);
-            if (inner_node) |inner| {
-                if (inner.data == .call_expr) {
-                    const call_expr = inner.data.call_expr;
-                    const callee_node = arena.getNodeConst(call_expr.callee);
-                    if (callee_node) |callee| {
-                        if (callee.data == .identifier) {
-                            const func_name = callee.data.identifier.name;
-                            // Generate function call and extract payload
-                            if (std.mem.eql(u8, func_name, "createMyStruct") or
-                                std.mem.eql(u8, func_name, "createMyStructMaybe") or
-                                std.mem.eql(u8, func_name, "divide"))
-                            {
-                                try writer.writeAll("(");
-                                try generateCSimpleExpression(arena, writer, try_expr.expression);
-                                try writer.writeAll(").payload");
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
+            // No special handling for try expressions - let semantic analysis determine behavior
             // Fallback to simple expression
             try generateCSimpleExpression(arena, writer, try_expr.expression);
         },
@@ -584,8 +474,9 @@ pub fn generateCExpressionRecursive(
             // For try expressions in expression context
             try writer.writeAll("({ ");
 
-            // Determine the correct error union type from the expression being tried
-            const error_union_type = codegen.inferErrorUnionTypeFromExpression(try_expr.expression);
+            // Use semantic analyzer to determine the error union type
+            const inferred = codegen.semantic_analyzer.inferType(try_expr.expression) catch null;
+            const error_union_type = if (inferred) |typ| codegen.generateCType(typ) else "anyerror_i32_ErrorUnion";
             try writer.writeAll(error_union_type);
             try writer.writeAll(" _temp = ");
             try generateCExpressionRecursive(codegen, writer, try_expr.expression);
