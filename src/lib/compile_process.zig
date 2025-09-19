@@ -324,7 +324,7 @@ pub const Compiler = struct {
         return js_code;
     }
 
-    fn generateCExecutableFromIr(self: *Compiler, ir: *SeaOfNodes, analyzer: *const SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) CompileError![]const u8 {
+    fn generateCExecutableFromIr(self: *Compiler, ir: *SeaOfNodes, analyzer: *SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) CompileError![]const u8 {
         _ = errors; // TODO: Use this for codegen error reporting
 
         std.debug.print("Generating C code from Sea-of-Nodes IR...\n", .{});
