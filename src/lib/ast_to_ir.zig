@@ -167,6 +167,14 @@ fn stampOutputTypeFromAst(context: *AstToIrContext, ir_id: IrNodeId, ast_id: ast
         return;
     };
 
+    // First, check if the AST node already has cached type information from semantic analysis
+    if (ast_node.type_info) |cached_type| {
+        if (context.ir.getNodeMut(ir_id)) |node| {
+            node.output_type = cached_type;
+        }
+        return;
+    }
+
     // For if expressions, use a more conservative approach during IR construction
     // to avoid losing function context that was available during semantic analysis
     if (ast_node.data == .if_expr) {
@@ -229,22 +237,22 @@ pub fn transformAstToIr(
     context.current_memory = start_node; // Memory also flows from start node
 
     // Initialize global scope with symbols from semantic analyzer
-    if (context.semantic_analyzer.lookupInAllScopes("std")) |std_symbol| {
-        if (std_symbol.declared_type) |std_type| {
-            if (std_type.data == .namespace) {
-                // Create a namespace IR node for std
-                const std_ns = try context.ir.createNamespace(std_type.data.namespace.name);
-                try context.global_scope.declare("std", std_ns);
-            }
-        }
-    }
+    // Look for all imported modules and create namespace IR nodes for them
+    var scope_it = context.semantic_analyzer.global_scope.symbols.iterator();
+    while (scope_it.next()) |entry| {
+        const symbol_name = entry.key_ptr.*;
+        const symbol = entry.value_ptr.*;
 
-    if (context.semantic_analyzer.lookupInAllScopes("math")) |math_symbol| {
-        if (math_symbol.declared_type) |math_type| {
-            if (math_type.data == .namespace) {
-                // Create a namespace IR node for math
-                const math_ns = try context.ir.createNamespace(math_type.data.namespace.name);
-                try context.global_scope.declare("math", math_ns);
+        if (symbol.symbol_type == .@"const" or symbol.symbol_type == .type_def) {
+            if (symbol.declared_type) |decl_type| {
+                if (decl_type.data == .namespace) {
+                    // Create a namespace IR node for this module
+                    const ns_ir = try context.ir.createNamespace(decl_type.data.namespace.name);
+                    try context.global_scope.declare(symbol_name, ns_ir);
+
+                    // Note: Namespace members will be populated lazily during member access
+                    // This avoids issues with node data corruption during IR construction
+                }
             }
         }
     }
@@ -739,12 +747,11 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                 break :blk "unknown_function";
             } else "unknown_function";
 
-            // For member expressions used as function callees, don't transform them into IR nodes
-            // Just create a dummy constant to satisfy the call input requirements
+            // For member expressions used as function callees, transform them properly
             const callee = if (regular_callee_node) |callee| blk: {
                 if (callee.data == .member_expr) {
-                    // Create a dummy constant for member expression callees
-                    break :blk try context.ir.createConstant(IrConstant{ .string = function_name }, node.source_loc);
+                    // Transform the member expression to get the namespace member node
+                    break :blk try transformNode(context, node.data.call_expr.callee);
                 } else {
                     break :blk try transformNode(context, node.data.call_expr.callee);
                 }
@@ -783,10 +790,48 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
             return rid;
         },
         .type_decl => {
-            // Handle std :: @import("std")
+            const type_decl = node.data.type_decl;
+
+            // Check if this is an import type declaration (name :: @import("path"))
+            const type_node = context.ast_arena.getNodeConst(type_decl.type_expr);
+            if (type_node) |tn| {
+                if (tn.data == .call_expr) {
+                    const call_expr = tn.data.call_expr;
+                    const callee_node = context.ast_arena.getNodeConst(call_expr.callee);
+                    if (callee_node) |callee| {
+                        if (callee.data == .identifier and std.mem.eql(u8, callee.data.identifier.name, "@import")) {
+                            // This is an import type declaration like: std :: @import("std")
+                            // The semantic analyzer should have already processed this and created a symbol
+                            if (context.semantic_analyzer.lookupInAllScopes(type_decl.name)) |symbol| {
+                                if (symbol.declared_type) |decl_type| {
+                                    if (decl_type.data == .namespace) {
+                                        // Create namespace IR node
+                                        const ns_ir = try context.ir.createNamespace(decl_type.data.namespace.name);
+                                        try context.global_scope.declare(type_decl.name, ns_ir);
+                                        return ns_ir;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Handle std :: @import("std") - special case for backward compatibility
             if (std.mem.eql(u8, node.data.type_decl.name, "std")) {
+                // Check if the semantic analyzer has already created a symbol for std
+                if (context.semantic_analyzer.lookupInAllScopes("std")) |symbol| {
+                    if (symbol.declared_type) |decl_type| {
+                        if (decl_type.data == .namespace) {
+                            // Create namespace IR node
+                            const ns_ir = try context.ir.createNamespace(decl_type.data.namespace.name);
+                            try context.global_scope.declare("std", ns_ir);
+                            return ns_ir;
+                        }
+                    }
+                }
+                // Fallback
                 const std_const = try context.ir.createConstant(IrConstant{ .string = "std_builtin" }, node.source_loc);
-                // type decls are compile-time only; no output type
                 try context.global_scope.declare("std", std_const);
                 return std_const;
             }
@@ -803,6 +848,16 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                 if (obj_node.data == .identifier) {
                     const var_name = obj_node.data.identifier.name;
                     if (context.current_scope.lookup(var_name)) |var_ir_node| {
+                        // Check if this is a namespace node
+                        if (context.ir.getNode(var_ir_node)) |ir_node| {
+                            if (ir_node.op == .namespace) {
+                                // This is namespace member access like std.debug or math.add
+                                const namespace_member_node = try context.ir.createNamespaceMember(var_ir_node, field_name, node.source_loc);
+                                stampOutputTypeFromAst(context, namespace_member_node, node_id);
+                                return namespace_member_node;
+                            }
+                        }
+
                         // This is a variable member access like my_struct.field1
                         // Create a member access operation
                         const field_name_const = try context.ir.createConstant(IrConstant{ .string = field_name }, node.source_loc);
@@ -824,31 +879,12 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                     const ns = object_type.data.namespace;
 
                     // Look up the member in the namespace
-                    if (ns.members.get(field_name)) |member_type| {
-                        // Check if this is a function member
-                        if (member_type.*.data == .function or
-                            (std.mem.eql(u8, ns.name, "math") and (std.mem.eql(u8, field_name, "add") or std.mem.eql(u8, field_name, "multiply"))))
-                        {
-                            // For function members, don't create IR nodes - they should only be used in call expressions
-                            // Return a dummy constant that won't be used in code generation
-                            const dummy_const = try context.ir.createConstant(IrConstant{ .string = "function_member" }, node.source_loc);
-                            stampOutputTypeFromAst(context, dummy_const, node_id);
-                            return dummy_const;
-                        } else {
-                            // For other members (constants, etc.), create appropriate constants
-                            // For now, handle common cases like PI
-                            if (std.mem.eql(u8, field_name, "PI")) {
-                                const pi_const = try context.ir.createConstant(IrConstant{ .float = 3.141592653589793 }, node.source_loc);
-                                stampOutputTypeFromAst(context, pi_const, node_id);
-                                return pi_const;
-                            }
-                            // For other constants, try to get the value from the semantic analyzer
-                            // This is a simplified implementation - in a full implementation,
-                            // we'd need to store constant values in the namespace
-                            const const_value = try context.ir.createConstant(IrConstant{ .integer = 0 }, node.source_loc);
-                            stampOutputTypeFromAst(context, const_value, node_id);
-                            return const_value;
-                        }
+                    if (ns.members.get(field_name)) |_| {
+                        // For all namespace members, create a namespace member access node
+                        const object_ir = try transformNode(context, object_id);
+                        const namespace_member_node = try context.ir.createNamespaceMember(object_ir, field_name, node.source_loc);
+                        stampOutputTypeFromAst(context, namespace_member_node, node_id);
+                        return namespace_member_node;
                     } else {
                         // Member not found in namespace
                         try reportIrError(
@@ -1162,7 +1198,31 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
             stampOutputTypeFromAst(context, nid, node_id);
             return nid;
         },
-        .import_decl, .struct_decl, .enum_decl => context.current_control,
+        .import_decl => {
+            // Import declarations should create namespace IR nodes
+            // The semantic analyzer has already processed the import and created symbols
+            // We need to ensure the IR scope has the corresponding namespace nodes
+            const import_decl = node.data.import_decl;
+
+            // Extract module name from the import path
+            const module_name = std.fs.path.stem(import_decl.module_path);
+
+            // Check if the semantic analyzer has already created a symbol for this import
+            if (context.semantic_analyzer.lookupInAllScopes(module_name)) |symbol| {
+                if (symbol.declared_type) |decl_type| {
+                    if (decl_type.data == .namespace) {
+                        // Create namespace IR node
+                        const ns_ir = try context.ir.createNamespace(decl_type.data.namespace.name);
+                        try context.global_scope.declare(module_name, ns_ir);
+                        return ns_ir;
+                    }
+                }
+            }
+
+            // If we can't find the symbol, return current control (fallback)
+            return context.current_control;
+        },
+        .struct_decl, .enum_decl => context.current_control,
         else => {
             try reportIrError(context.errors, .unsupported_operation, "Unsupported AST node type", node.source_loc);
             return IrError.UnsupportedAstNode;

@@ -532,7 +532,6 @@ pub const CCodegen = struct {
             },
             .struct_decl => |struct_decl| {
                 // Handle direct struct declarations like MyStruct :: struct { ... }
-                // std.debug.print("DEBUG: collectFromNode struct_decl name={s} fields={d}\n", .{ struct_decl.name, struct_decl.fields.items.len });
                 const collected_struct = CollectedStruct{
                     .name = try self.allocator.dupe(u8, struct_decl.name),
                     .fields = struct_decl.fields.items,
@@ -540,7 +539,6 @@ pub const CCodegen = struct {
                     .is_comptime = struct_decl.is_comptime,
                 };
                 try self.type_collection.struct_types.append(collected_struct);
-                // std.debug.print("DEBUG: appended struct {s}, total now {d}\n", .{ struct_decl.name, self.type_collection.struct_types.items.len });
             },
             .error_set_decl => |error_set_decl| {
                 // Handle error set declarations like MyError :: error { ... }

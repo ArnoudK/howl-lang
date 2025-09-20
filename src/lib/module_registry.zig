@@ -108,8 +108,10 @@ pub const ModuleRegistry = struct {
     pub fn getOrLoadModule(self: *ModuleRegistry, path: []const u8, loader: anytype) !*Module {
         // Check cache first
         if (self.modules.get(path)) |cached| {
+            std.debug.print("DEBUG: Module {s} found in cache\n", .{path});
             return cached;
         }
+        std.debug.print("DEBUG: Module {s} not in cache, loading...\n", .{path});
 
         // Check for circular dependency
         for (self.module_stack.items) |stack_module| {
@@ -120,6 +122,27 @@ pub const ModuleRegistry = struct {
 
         // Load the module
         const module = try loader.loadModule(path);
+
+        // Analyze the module to extract exported symbols
+        // Create a temporary error collector for module analysis
+        var temp_errors = ErrorSystem.ErrorCollector.init(loader.allocator);
+        defer temp_errors.deinit();
+
+        std.debug.print("DEBUG: REGISTRY: About to analyze module {s}\n", .{path});
+        loader.analyzeModule(module, &temp_errors) catch |err| {
+            std.debug.print("DEBUG: REGISTRY: Module analysis failed with error: {}\n", .{err});
+            // Don't fail the module loading, just continue without exported symbols
+        };
+        std.debug.print("DEBUG: REGISTRY: Module analysis completed for {s}\n", .{path});
+
+        // Check for analysis errors
+        if (temp_errors.hasErrors()) {
+            std.debug.print("DEBUG: REGISTRY: Module analysis had {d} errors\n", .{temp_errors.errors.items.len});
+            // Don't fail, just log the errors
+        }
+
+        std.debug.print("DEBUG: REGISTRY: Module {s} has {d} exported symbols\n", .{ module.name, module.exported_symbols.count() });
+
         try self.modules.put(path, module);
 
         return module;

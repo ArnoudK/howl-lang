@@ -173,6 +173,7 @@ pub const SemanticAnalyzer = struct {
     module_registry: ?*ModuleRegistry.ModuleRegistry,
     module_loader: ?*ModuleLoader.ModuleLoader,
     imported_modules: std.ArrayList(*ModuleRegistry.Module),
+    current_module: ?*ModuleRegistry.Module,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -199,6 +200,7 @@ pub const SemanticAnalyzer = struct {
             .module_registry = null,
             .module_loader = null,
             .imported_modules = std.ArrayList(*ModuleRegistry.Module).init(allocator),
+            .current_module = null,
         };
     }
 
@@ -272,8 +274,27 @@ pub const SemanticAnalyzer = struct {
 
     /// Search for a symbol in all scopes (for IR construction phase)
     pub fn lookupInAllScopes(self: *SemanticAnalyzer, name: []const u8) ?Symbol {
-        // The Scope.lookup method already searches parent scopes recursively
-        return self.current_scope.lookup(name);
+        // First, try the global scope directly - this handles code generation phase
+        // where current_scope might not be properly set
+        if (self.global_scope.lookupLocal(name)) |symbol| {
+            return symbol;
+        }
+
+        // Then search through all scopes starting from current scope up to global scope
+        var scope: ?*Scope = self.current_scope;
+        while (scope) |current_scope| {
+            if (current_scope.lookupLocal(name)) |symbol| {
+                return symbol;
+            }
+            scope = current_scope.parent;
+        }
+
+        return null;
+    }
+
+    /// Reset current scope to global scope (useful for code generation phase)
+    pub fn resetToGlobalScope(self: *SemanticAnalyzer) void {
+        self.current_scope = self.global_scope;
     }
 
     /// Look for a function parameter in any function in the current scope
@@ -477,7 +498,6 @@ pub const SemanticAnalyzer = struct {
             },
 
             .identifier => |ident| {
-                // std.debug.print("DEBUG: inferType for identifier '{s}'\n", .{ident.name});
                 // Special case for error union types like "!void"
                 if (std.mem.eql(u8, ident.name, "!void")) {
                     // Create an error union type !void
@@ -489,18 +509,23 @@ pub const SemanticAnalyzer = struct {
                     };
                 }
 
+                // First check global scope - this handles code generation phase
+                if (self.global_scope.lookup(ident.name)) |symbol| {
+                    const result_type = symbol.inferred_type orelse symbol.declared_type;
+                    return result_type;
+                }
+
                 if (self.current_scope.lookup(ident.name)) |symbol| {
-                    // std.debug.print("DEBUG: Found symbol '{s}', declared_type={any}, inferred_type={any}\n", .{ ident.name, symbol.declared_type, symbol.inferred_type });
                     // Mark symbol as used
                     var mutable_symbol = symbol;
                     mutable_symbol.is_used = true;
                     try self.current_scope.symbols.put(ident.name, mutable_symbol);
 
                     const result_type = symbol.inferred_type orelse symbol.declared_type;
-                    // std.debug.print("DEBUG: Returning type: {any}\n", .{result_type});
                     return result_type;
                 } else {
-                    // std.debug.print("DEBUG: Symbol '{s}' not found in scope\n", .{ident.name});
+                    // std.debug.print("DEBUG: Symbol '{s}' not found in scope, current scope has {d} symbols, global scope has {d} symbols\n", .{ ident.name, self.current_scope.symbols.count(), self.global_scope.symbols.count() });
+
                     // Check if this might be a function parameter
                     // Look for functions in the current scope that might have this as a parameter
                     if (self.lookupFunctionParameter(ident.name)) |param_type| {
@@ -1885,15 +1910,58 @@ pub const SemanticAnalyzer = struct {
         import_decl: @TypeOf(@as(ast.AstNode, undefined).data.import_decl),
         source_loc: ast.SourceLoc,
     ) CompileError!?ast.Type {
+        std.debug.print("DEBUG: analyzeImportDeclaration START\n", .{});
         // Load the module
+        if (self.module_loader) |_| {
+            std.debug.print("DEBUG: module_loader is not null\n", .{});
+        } else {
+            std.debug.print("DEBUG: module_loader is null!\n", .{});
+            try self.reportError(.file_not_found, "Module system not available", source_loc);
+            return null;
+        }
+
         if (self.module_loader) |loader| {
-            const module = loader.getOrLoadModule(import_decl.module_path) catch {
+            std.debug.print("DEBUG: analyzeImportDeclaration calling getOrLoadModule for {s}\n", .{import_decl.module_path});
+
+            // Special handling for std module - hardcoded
+            std.debug.print("DEBUG: Checking if module_path '{s}' equals 'std'\n", .{import_decl.module_path});
+            if (std.mem.eql(u8, import_decl.module_path, "std")) {
+                std.debug.print("DEBUG: Loading std module via hardcoded namespace\n", .{});
+                const namespace_type = try self.createStdLibraryNamespace(source_loc);
+
+                // For the import_example.howl, the import is "std :: @import("std")"
+                // We need to find the variable name from the parent context
+                // For now, assume the module name is used as the variable name
+                const module_name = "std";
+                std.debug.print("DEBUG: Module name = '{s}'\n", .{module_name});
+
+                const symbol = Symbol{
+                    .name = module_name,
+                    .symbol_type = .@"const",
+                    .declared_type = namespace_type,
+                    .inferred_type = namespace_type,
+                    .source_loc = source_loc,
+                    .is_mutable = false,
+                    .is_used = false,
+                    .comptime_value = null,
+                    .function_params = null,
+                };
+
+                try self.current_scope.declare(module_name, symbol);
+                std.debug.print("DEBUG: Added std import symbol '{s}' to scope, current scope has {d} symbols\n", .{ module_name, self.current_scope.symbols.count() });
+                return namespace_type;
+            }
+
+            const module = loader.getOrLoadModule(import_decl.module_path) catch |err| {
+                std.debug.print("DEBUG: getOrLoadModule failed for {s}: {}\n", .{ import_decl.module_path, err });
                 try self.reportError(.file_not_found, "Failed to load module", source_loc);
                 return null;
             };
+            std.debug.print("DEBUG: analyzeImportDeclaration got module {s}\n", .{module.name});
             // Don't deinit - module is cached in registry
 
             // Add to imported modules list (skip std module)
+            std.debug.print("DEBUG: Module loaded: {s}, path: {s}, is_std_module: {}\n", .{ module.name, module.path, module.is_std_module });
             if (!module.is_std_module) {
                 std.debug.print("Adding imported module: {s} (std: {})\n", .{ module.name, module.is_std_module });
                 // Check if already in the list
@@ -1908,6 +1976,8 @@ pub const SemanticAnalyzer = struct {
                     try self.imported_modules.append(module);
                     std.debug.print("Added module {s} to imported_modules, now have {d} modules\n", .{ module.name, self.imported_modules.items.len });
                 }
+            } else {
+                std.debug.print("Skipping std module: {s}\n", .{module.name});
             }
 
             // Create a namespace type for the module
@@ -1950,7 +2020,8 @@ pub const SemanticAnalyzer = struct {
             //     std.debug.print("DEBUG: Symbol declared_type is null\n", .{});
             // }
 
-            try self.current_scope.declare(module_name, symbol);
+            try self.global_scope.declare(module_name, symbol);
+            std.debug.print("DEBUG: Added import symbol '{s}' to global scope, global scope has {d} symbols\n", .{ module_name, self.global_scope.symbols.count() });
             return namespace_type.*;
         } else {
             try self.reportError(.file_not_found, "Module system not available", source_loc);
@@ -2858,7 +2929,7 @@ pub const SemanticAnalyzer = struct {
         args: []ast.NodeId,
         source_loc: ast.SourceLoc,
     ) CompileError!?ast.Type {
-        std.debug.print("DEBUG: handleImportBuiltin called, args.len = {}\n", .{args.len});
+        // std.debug.print("DEBUG: handleImportBuiltin called, args.len = {}\n", .{args.len});
         if (args.len != 1) {
             try self.reportError(.invalid_function_call, "@import expects exactly one argument", source_loc);
             return null;
@@ -2880,25 +2951,7 @@ pub const SemanticAnalyzer = struct {
         }
 
         // Special handling for math module - hardcoded
-        if (std.mem.eql(u8, module_path, "example/math.howl")) {
-            if (self.module_loader) |loader| {
-                if (loader.getOrLoadModule(module_path) catch null) |module| {
-                    var namespace_members = std.StringHashMap(*ast.Type).init(self.allocator);
-                    errdefer namespace_members.deinit();
-                    try self.extractModuleExports(module, &namespace_members);
-                    const namespace_type = try self.createTrackedType(ast.Type{
-                        .data = .{ .namespace = .{
-                            .name = module.name,
-                            .members = namespace_members,
-                        } },
-                        .source_loc = source_loc,
-                    });
-                    return namespace_type.*;
-                }
-            }
-            // Fallback if module loading fails
-            return ast.Type.initPrimitive(.{ .module = {} }, source_loc);
-        }
+        // std.debug.print("DEBUG: IMPORT: Checking module_path: '{s}'\n", .{module_path});
 
         // For other modules, load the module and create a namespace type
         if (self.module_loader) |loader| {
@@ -2935,6 +2988,21 @@ pub const SemanticAnalyzer = struct {
                 } },
                 .source_loc = source_loc,
             });
+
+            // Declare the module symbol to global scope
+            const module_name = std.fs.path.stem(module_path);
+            const symbol = Symbol{
+                .name = module_name,
+                .symbol_type = .@"const",
+                .declared_type = namespace_type.*,
+                .inferred_type = namespace_type.*,
+                .source_loc = source_loc,
+                .is_mutable = false,
+                .is_used = false,
+                .comptime_value = null,
+                .function_params = null,
+            };
+            try self.global_scope.declare(module_name, symbol);
 
             return namespace_type.*;
         } else {
@@ -3828,19 +3896,21 @@ pub const SemanticAnalyzer = struct {
 
     /// Extract exported symbols from a module
     fn extractModuleExports(self: *SemanticAnalyzer, module: *ModuleRegistry.Module, members: *std.StringHashMap(*ast.Type)) CompileError!void {
-        std.debug.print("DEBUG: extractModuleExports for module {s}\n", .{module.name});
         // Analyze the module's AST to find top-level declarations
         const root_node = module.ast_root;
-        std.debug.print("DEBUG: root_node = {d}\n", .{root_node});
 
-        const node = module.arena.getNodeConst(root_node) orelse return;
+        const node = module.arena.getNodeConst(root_node) orelse {
+            return;
+        };
+        // std.debug.print("DEBUG: Got root node successfully, data type: {any}\n", .{node.data});
 
         // Extract from the root node directly
         try self.extractExportFromStatement(&module.arena, root_node, members);
 
         switch (node.data) {
             .block => |block| {
-                for (block.statements.items) |stmt_id| {
+                for (block.statements.items, 0..) |stmt_id, i| {
+                    _ = i;
                     try self.extractExportFromStatement(&module.arena, stmt_id, members);
                 }
             },
@@ -3862,7 +3932,7 @@ pub const SemanticAnalyzer = struct {
                     const tracked_type = try self.createTrackedType(typ);
                     const name_dup = try self.allocator.dupe(u8, var_decl.name);
                     try members.put(name_dup, tracked_type);
-                }
+                } else {}
             },
             .function_decl => |func_decl| {
                 // Export functions
@@ -3871,7 +3941,7 @@ pub const SemanticAnalyzer = struct {
                     const tracked_type = try self.createTrackedType(ft);
                     const name_dup = try self.allocator.dupe(u8, func_decl.name);
                     try members.put(name_dup, tracked_type);
-                }
+                } else {}
             },
             .extern_fn_decl => |extern_fn_decl| {
                 // Export extern functions

@@ -248,6 +248,9 @@ pub const Compiler = struct {
             return result;
         }
         std.debug.print("IR construction completed successfully\n", .{});
+        if (semantic_analyzer) |*analyzer| {
+            std.debug.print("DEBUG: After IR construction, analyzer has {d} imported modules\n", .{analyzer.imported_modules.items.len});
+        }
 
         // Phase 3.6: IR Optimization (temporarily disabled for debugging)
         result.phase_completed = .ir_optimization;
@@ -257,16 +260,18 @@ pub const Compiler = struct {
 
         // Phase 4: Code Generation from IR
         result.phase_completed = .codegen;
+        std.debug.print("DEBUG: Starting code generation phase, semantic_analyzer is null: {}\n", .{semantic_analyzer == null});
         if (sea_of_nodes_ir) |*ir| {
+            std.debug.print("DEBUG: sea_of_nodes_ir is not null\n", .{});
             if (semantic_analyzer) |*analyzer| {
-                defer analyzer.deinit();
-
+                std.debug.print("DEBUG: semantic_analyzer is not null, has {d} imported modules\n", .{analyzer.imported_modules.items.len});
                 // Store IR for debugging/introspection
                 result.ir = ir.*;
 
                 switch (self.options.target) {
                     .c => {
                         // Use the C backend with IR
+                        std.debug.print("DEBUG: About to call generateCExecutableFromIr, analyzer has {d} imported modules\n", .{analyzer.imported_modules.items.len});
                         const executable_result = try self.generateCExecutableFromIr(ir, analyzer, &result.errors);
                         result.generated_code = executable_result;
                     },
@@ -277,6 +282,12 @@ pub const Compiler = struct {
                     },
                 }
             }
+        }
+
+        // Deinit analyzer after all code generation is complete
+        if (semantic_analyzer) |*analyzer| {
+            std.debug.print("DEBUG: Deinitializing analyzer with {d} imported modules\n", .{analyzer.imported_modules.items.len});
+            analyzer.deinit();
         }
 
         // Set final result
@@ -350,13 +361,65 @@ pub const Compiler = struct {
         return js_code;
     }
 
+    /// Get the constant value from the AST for a given symbol name
+    fn getConstantValueFromAst(self: *Compiler, module: *ModuleRegistry.Module, symbol_name: []const u8) ?[]const u8 {
+        // Walk through the module's AST to find the var_decl with the given name
+        const root_node = module.arena.getNodeConst(module.ast_root) orelse return null;
+
+        if (root_node.data == .block) {
+            for (root_node.data.block.statements.items) |stmt_id| {
+                const stmt_node = module.arena.getNodeConst(stmt_id) orelse continue;
+                if (stmt_node.data == .var_decl) {
+                    const var_decl = stmt_node.data.var_decl;
+                    if (std.mem.eql(u8, var_decl.name, symbol_name)) {
+                        // Found the variable declaration, get its initializer
+                        if (var_decl.initializer) |init_id| {
+                            const init_node = module.arena.getNodeConst(init_id) orelse return null;
+                            if (init_node.data == .literal) {
+                                const literal = init_node.data.literal;
+                                if (literal == .float) {
+                                    // Format the float value
+                                    var buf: [64]u8 = undefined;
+                                    const formatted = std.fmt.bufPrint(&buf, "{d}", .{literal.float.value}) catch return null;
+                                    return self.allocator.dupe(u8, formatted) catch null;
+                                } else if (literal == .integer) {
+                                    // Format the integer value
+                                    var buf: [64]u8 = undefined;
+                                    const formatted = std.fmt.bufPrint(&buf, "{d}", .{literal.integer.value}) catch return null;
+                                    return self.allocator.dupe(u8, formatted) catch null;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
     fn buildIrForModule(self: *Compiler, module: *ModuleRegistry.Module, errors: *ErrorSystem.ErrorCollector) CompileError!*SeaOfNodes {
-        // Perform semantic analysis on the module
-        var module_analyzer = self.performSemanticAnalysis(module.ast_root, errors) catch |err| {
-            std.debug.print("Semantic analysis failed for module '{s}': {}\n", .{ module.name, err });
-            return err;
-        };
+        // Create semantic analyzer for the module
+        var module_analyzer = try SemanticAnalyzer.initWithModules(
+            self.allocator,
+            &module.arena,
+            errors,
+            module.path,
+            &self.module_registry,
+            &self.module_loader,
+        );
         defer module_analyzer.deinit();
+
+        // Analyze the module
+        module_analyzer.analyzeProgram(module.ast_root) catch |err| {
+            switch (err) {
+                error.OutOfMemory => return err,
+                else => {
+                    std.debug.print("Semantic analysis failed for module '{s}': {}\n", .{ module.name, err });
+                    // Continue anyway - errors are already reported
+                },
+            }
+        };
 
         // Build IR for the module
         var module_ir = AstToIr.transformAstToIr(
@@ -379,33 +442,154 @@ pub const Compiler = struct {
     }
 
     fn generateCExecutableFromIr(self: *Compiler, ir: *SeaOfNodes, analyzer: *SemanticAnalyzer, errors: *ErrorSystem.ErrorCollector) CompileError![]const u8 {
+        std.debug.print("DEBUG: generateCExecutableFromIr called\n", .{});
         std.debug.print("Generating C code from Sea-of-Nodes IR...\n", .{});
 
+        // Ensure the howl-out directory exists
+        std.fs.cwd().makeDir("howl-out") catch |err| switch (err) {
+            error.PathAlreadyExists => {}, // Directory exists, that's fine
+            else => return err,
+        };
+
+        // Reset analyzer to global scope for code generation
+        analyzer.resetToGlobalScope();
+
         // Generate C code for imported modules first
+        std.debug.print("DEBUG: Analyzer pointer: {*}\n", .{analyzer});
         std.debug.print("Found {d} imported modules\n", .{analyzer.imported_modules.items.len});
+        for (analyzer.imported_modules.items, 0..) |module, i| {
+            std.debug.print("  Module {d}: {s} at {*}\n", .{ i, module.name, module });
+        }
         for (analyzer.imported_modules.items) |module| {
             std.debug.print("Processing imported module: {s}\n", .{module.name});
             const module_ir = try self.buildIrForModule(module, errors);
             defer module_ir.deinit();
 
+            std.debug.print("Generated IR for module {s} with {d} nodes\n", .{ module.name, module_ir.nodes.items.len });
+
             // Generate C code for the module
-            const module_c_code = try CIrCodegen.generateCFromIr(self.allocator, module_ir, analyzer);
-            defer self.allocator.free(module_c_code);
+            var module_c_builder = std.ArrayList(u8).init(self.allocator);
+            defer module_c_builder.deinit();
+
+            const base_c_code = try CIrCodegen.generateCFromIr(self.allocator, module_ir, analyzer);
+            defer self.allocator.free(base_c_code);
+
+            try module_c_builder.appendSlice(base_c_code);
+
+            // Add constant definitions
+            var const_symbol_iter = module.exported_symbols.iterator();
+            while (const_symbol_iter.next()) |entry| {
+                const symbol_name = entry.key_ptr.*;
+                const symbol_info = entry.value_ptr.*;
+
+                if (symbol_info.type_info.data == .primitive) {
+                    // Get the constant value from AST
+                    const constant_value = self.getConstantValueFromAst(module, symbol_name);
+                    if (constant_value) |value| {
+                        const const_type_str = switch (symbol_info.type_info.data.primitive) {
+                            .f64 => "const double",
+                            .f32 => "const float",
+                            .i64 => "const int64_t",
+                            .i32 => "const int32_t",
+                            .bool => "const bool",
+                            else => "const int32_t",
+                        };
+                        try module_c_builder.writer().print("\n{s} {s} = {s};\n", .{ const_type_str, symbol_name, value });
+                    }
+                }
+            }
+
+            std.debug.print("Generated C code for module {s}, length: {d}\n", .{ module.name, module_c_builder.items.len });
 
             // Write module C code to file
             const module_c_filename = try std.fmt.allocPrint(self.allocator, "howl-out/{s}.c", .{module.name});
             defer self.allocator.free(module_c_filename);
 
-            try std.fs.cwd().writeFile(.{ .sub_path = module_c_filename, .data = module_c_code });
+            try std.fs.cwd().writeFile(.{ .sub_path = module_c_filename, .data = module_c_builder.items });
+            std.debug.print("Wrote module C file: {s}\n", .{module_c_filename});
 
             // Generate header file for the module
             const module_h_filename = try std.fmt.allocPrint(self.allocator, "howl-out/{s}.h", .{module.name});
             defer self.allocator.free(module_h_filename);
 
-            const header_content = try std.fmt.allocPrint(self.allocator, "#ifndef {s}_H\n#define {s}_H\n\n// Header for module {s}\n\n#endif\n", .{ module.name, module.name, module.name });
-            defer self.allocator.free(header_content);
+            std.debug.print("Generating header for module {s} with {d} exported symbols\n", .{ module.name, module.exported_symbols.count() });
 
-            try std.fs.cwd().writeFile(.{ .sub_path = module_h_filename, .data = header_content });
+            // Generate header content with function declarations
+            var header_builder = std.ArrayList(u8).init(self.allocator);
+            defer header_builder.deinit();
+
+            try header_builder.writer().print("#ifndef {s}_H\n#define {s}_H\n\n", .{ module.name, module.name });
+
+            // Add standard includes
+            try header_builder.writer().writeAll("#include <stdint.h>\n#include <stdbool.h>\n\n");
+
+            // Generate function declarations for exported symbols
+            var symbol_iter = module.exported_symbols.iterator();
+            while (symbol_iter.next()) |entry| {
+                const symbol_name = entry.key_ptr.*;
+                const symbol_info = entry.value_ptr.*;
+
+                // std.debug.print("Processing exported symbol: {s}, type: {any}\n", .{ symbol_name, symbol_info.type_info.data });
+
+                if (symbol_info.type_info.data == .function) {
+                    const func_type = symbol_info.type_info.data.function;
+
+                    // Generate return type
+                    const return_type_str = switch (func_type.return_type.*.data) {
+                        .primitive => |prim| switch (prim) {
+                            .i32 => "int32_t",
+                            .i64 => "int64_t",
+                            .f32 => "float",
+                            .f64 => "double",
+                            .bool => "bool",
+                            .void => "void",
+                            else => "int32_t", // default
+                        },
+                        else => "int32_t", // default for complex types
+                    };
+
+                    // Generate function declaration
+                    try header_builder.writer().print("{s} {s}(", .{ return_type_str, symbol_name });
+
+                    // Generate parameters
+                    for (func_type.param_types, 0..) |param_type, i| {
+                        if (i > 0) try header_builder.writer().writeAll(", ");
+                        const param_type_str = switch (param_type.data) {
+                            .primitive => |prim| switch (prim) {
+                                .i32 => "int32_t",
+                                .i64 => "int64_t",
+                                .f32 => "float",
+                                .f64 => "double",
+                                .bool => "bool",
+                                else => "int32_t",
+                            },
+                            else => "int32_t",
+                        };
+                        try header_builder.writer().print("{s} arg{d}", .{ param_type_str, i });
+                    }
+
+                    try header_builder.writer().writeAll(");\n");
+                } else if (symbol_info.type_info.data == .primitive) {
+                    // Handle constants like PI - define them directly instead of extern
+                    const const_type_str = switch (symbol_info.type_info.data.primitive) {
+                        .f64 => "const double",
+                        .i32 => "const int32_t",
+                        .i64 => "const int64_t",
+                        else => "const int32_t",
+                    };
+
+                    // Debug: print the symbol name
+                    std.debug.print("DEBUG: Processing primitive symbol: '{s}'\n", .{symbol_name});
+
+                    // For header files, declare constants as extern to avoid multiple definitions
+                    try header_builder.writer().print("extern {s} {s};\n", .{ const_type_str, symbol_name });
+                }
+            }
+
+            try header_builder.writer().print("\n#endif // {s}_H\n", .{module.name});
+
+            try std.fs.cwd().writeFile(.{ .sub_path = module_h_filename, .data = header_builder.items });
+            std.debug.print("Wrote module header file: {s}\n", .{module_h_filename});
         }
 
         // Use the new IR-based C code generator with compilation

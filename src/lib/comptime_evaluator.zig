@@ -210,7 +210,7 @@ pub const ComptimeEvaluator = struct {
                 return last_value orelse ComptimeValue{ .type = ast.Type.initPrimitive(.{ .void = {} }, node.source_loc) };
             },
             else => {
-                std.debug.print("Unsupported compile-time expression: {}\n", .{node.data});
+                std.debug.print("Unsupported compile-time expression: {any}\n", .{node.data});
                 return error.UnsupportedComptimeExpression;
             },
         };

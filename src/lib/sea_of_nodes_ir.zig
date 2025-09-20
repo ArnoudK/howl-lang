@@ -23,6 +23,7 @@ pub const IrOp = enum {
     // Data nodes
     constant, // Compile-time constant
     parameter, // Function parameter
+    identifier, // Variable or module identifier reference
     phi, // SSA phi node for merging values
 
     // Arithmetic operations
@@ -76,6 +77,10 @@ pub const IrOp = enum {
     struct_init, // Initialize struct with fields (heap/pointer chaining)
     struct_literal, // Stack struct literal value
 
+    // Module/namespace operations
+    namespace, // Module/namespace reference
+    namespace_member, // Access member of a namespace
+
     // Projection nodes (extract values from multi-output nodes)
     proj_control, // Extract control flow from multi-output node
     proj_data, // Extract data value from multi-output node
@@ -91,6 +96,7 @@ pub const IrOp = enum {
             .unreachable_ => "Unreachable",
             .constant => "Constant",
             .parameter => "Parameter",
+            .identifier => "Identifier",
             .phi => "Phi",
             .add => "Add",
             .sub => "Sub",
@@ -125,6 +131,8 @@ pub const IrOp = enum {
             .member_access => "MemberAccess",
             .struct_init => "StructInit",
             .struct_literal => "StructLiteral",
+            .namespace => "Namespace",
+            .namespace_member => "NamespaceMember",
             .proj_control => "ProjControl",
             .proj_data => "ProjData",
             .proj_memory => "ProjMemory",
@@ -140,7 +148,7 @@ pub const IrOp = enum {
 
     pub fn isData(self: IrOp) bool {
         return switch (self) {
-            .constant, .parameter, .phi, .add, .sub, .mul, .div, .mod, .eq, .ne, .lt, .le, .gt, .ge, .logical_and, .logical_or, .logical_not, .select, .load, .cast, .type_check, .try_, .error_union_ok, .error_union_err, .error_union_unwrap, .member_access, .struct_init, .struct_literal, .heap_alloc, .match_start, .match_branch, .match_end => true,
+            .constant, .parameter, .phi, .add, .sub, .mul, .div, .mod, .eq, .ne, .lt, .le, .gt, .ge, .logical_and, .logical_or, .logical_not, .select, .load, .cast, .type_check, .try_, .error_union_ok, .error_union_err, .error_union_unwrap, .member_access, .struct_init, .struct_literal, .heap_alloc, .match_start, .match_branch, .match_end, .namespace, .namespace_member => true,
             else => false,
         };
     }
@@ -259,6 +267,9 @@ pub const IrNodeData = union(enum) {
         index: u32,
         name: []const u8,
     },
+    identifier: struct {
+        name: []const u8,
+    },
     phi: struct {
         region_inputs: []IrNodeId, // Control inputs for phi merge
     },
@@ -293,6 +304,14 @@ pub const IrNodeData = union(enum) {
     struct_literal: struct {
         field_names: [][]const u8, // Names of fields in declaration order
     },
+    namespace: struct {
+        name: []const u8, // Name of the namespace/module
+        members: std.StringHashMap(IrNodeId), // Member name -> IR node mapping
+    },
+    namespace_member: struct {
+        namespace: IrNodeId, // Reference to the namespace
+        member_name: []const u8, // Name of the member being accessed
+    },
 
     pub fn deinit(self: *IrNodeData, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -303,6 +322,12 @@ pub const IrNodeData = union(enum) {
                 allocator.free(func.param_nodes);
             },
             .struct_literal => |*sl| allocator.free(sl.field_names),
+            .namespace => |*ns| {
+                ns.members.deinit();
+            },
+            .namespace_member => |*nm| {
+                allocator.free(nm.member_name);
+            },
             else => {},
         }
     }
@@ -434,10 +459,24 @@ pub const SeaOfNodes = struct {
 
     /// Create a namespace node
     pub fn createNamespace(self: *SeaOfNodes, name: []const u8) !IrNodeId {
-        const node_id = try self.createNode(.constant, &.{}, ast.SourceLoc.invalid());
+        const node_id = try self.createNode(.namespace, &.{}, ast.SourceLoc.invalid());
         if (self.getNodeMut(node_id)) |node| {
-            // Use a string constant to represent the namespace
-            node.data = IrNodeData{ .constant = IrConstant{ .string = try self.allocator.dupe(u8, name) } };
+            node.data = IrNodeData{ .namespace = .{
+                .name = try self.allocator.dupe(u8, name),
+                .members = std.StringHashMap(IrNodeId).init(self.allocator),
+            } };
+        }
+        return node_id;
+    }
+
+    /// Create a namespace member access node
+    pub fn createNamespaceMember(self: *SeaOfNodes, namespace: IrNodeId, member_name: []const u8, source_loc: ast.SourceLoc) !IrNodeId {
+        const node_id = try self.createNode(.namespace_member, &.{namespace}, source_loc);
+        if (self.getNodeMut(node_id)) |node| {
+            node.data = IrNodeData{ .namespace_member = .{
+                .namespace = namespace,
+                .member_name = try self.allocator.dupe(u8, member_name),
+            } };
         }
         return node_id;
     }
@@ -448,6 +487,15 @@ pub const SeaOfNodes = struct {
         if (self.getNodeMut(node_id)) |node| {
             node.data = IrNodeData{ .parameter = .{ .index = index, .name = name } };
             node.output_type = param_type;
+        }
+        return node_id;
+    }
+
+    /// Create an identifier node
+    pub fn createIdentifier(self: *SeaOfNodes, name: []const u8, source_loc: ast.SourceLoc) !IrNodeId {
+        const node_id = try self.createNode(.identifier, &.{}, source_loc);
+        if (self.getNodeMut(node_id)) |node| {
+            node.data = IrNodeData{ .identifier = .{ .name = name } };
         }
         return node_id;
     }

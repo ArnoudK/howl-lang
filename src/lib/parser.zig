@@ -1216,7 +1216,8 @@ pub const Parser = struct {
         try self.enterRecursion();
         defer self.exitRecursion();
 
-        self.debugPrint("parseStatement: current={d}, token={}", .{ self.current, self.peek() });
+        // self.debugPrint("parseStatement: current={d}, token={}", .{ self.current, self.peek() });
+        // std.debug.print("DEBUG PARSER: parseStatement called, current token: {}\n", .{self.peek()});
 
         // Safety check: store current position to detect if we're making progress
         const start_position = self.current;
@@ -1460,18 +1461,32 @@ pub const Parser = struct {
                         // Tagged union declaration: [pub] name :: tag { ... }
                         return try self.parseTaggedUnionDeclaration(name, source_loc);
                     } else {
-                        // Constant definition: name :: expression
-                        const value = try self.parseExpression();
+                        // Check if this is an @import call
+                        const expr = try self.parseExpression();
 
-                        // Ensure newline after constant declaration
-                        try self.requireNewlineAfterStatement();
+                        // Check if the expression is @import("path")
+                        if (self.isImportCall(expr)) {
+                            // This is an import declaration: name :: @import("path")
+                            const module_path = try self.extractImportPath(expr);
 
-                        return self.arena.createNode(ast.AstNode.init(.{ .var_decl = .{
-                            .name = name,
-                            .type_annotation = null,
-                            .initializer = value,
-                            .is_mutable = false,
-                        } }, source_loc));
+                            // Ensure newline after import declaration
+                            try self.requireNewlineAfterStatement();
+
+                            return self.arena.createNode(ast.AstNode.init(.{ .import_decl = .{
+                                .module_path = module_path,
+                            } }, source_loc));
+                        } else {
+                            // Regular constant definition: name :: expression
+                            // Ensure newline after constant declaration
+                            try self.requireNewlineAfterStatement();
+
+                            return self.arena.createNode(ast.AstNode.init(.{ .var_decl = .{
+                                .name = name,
+                                .type_annotation = null,
+                                .initializer = expr,
+                                .is_mutable = false,
+                            } }, source_loc));
+                        }
                     }
                 } else {
                     // Not a recognized declaration pattern, reset position and parse as expression
@@ -2856,5 +2871,45 @@ pub const Parser = struct {
 
         try self.reportError(.unexpected_token, "Expected type", source_loc);
         return ast.createIdentifier(self.arena, source_loc, "error"); // Return error type instead of throwing
+    }
+
+    /// Check if a node is an @import call
+    fn isImportCall(self: *Parser, node_id: ast.NodeId) bool {
+        const node = self.arena.getNode(node_id) orelse return false;
+
+        // Check if it's a call expression
+        if (node.data != .call_expr) return false;
+
+        const call_expr = node.data.call_expr;
+
+        // Check if the callee is an identifier named "@import"
+        const callee_node = self.arena.getNode(call_expr.callee) orelse return false;
+        if (callee_node.data != .identifier) return false;
+
+        const ident = callee_node.data.identifier;
+        return std.mem.eql(u8, ident.name, "@import");
+    }
+
+    /// Extract the module path from an @import call
+    fn extractImportPath(self: *Parser, node_id: ast.NodeId) ![]const u8 {
+        const node = self.arena.getNode(node_id) orelse return error.InvalidNode;
+
+        // Should be a call expression
+        if (node.data != .call_expr) return error.InvalidNode;
+
+        const call_expr = node.data.call_expr;
+
+        // Should have exactly one argument
+        if (call_expr.args.items.len != 1) return error.InvalidArguments;
+
+        // The argument should be a string literal
+        const arg_node = self.arena.getNode(call_expr.args.items[0]) orelse return error.InvalidNode;
+        if (arg_node.data != .literal) return error.InvalidNode;
+
+        const literal = arg_node.data.literal;
+        if (literal != .string) return error.InvalidNode;
+
+        // Return the string value
+        return literal.string.value;
     }
 };

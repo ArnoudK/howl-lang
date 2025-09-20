@@ -33,11 +33,9 @@ pub const ModuleLoader = struct {
 
     /// Load a module from a file path (without caching)
     pub fn loadModule(self: *ModuleLoader, module_path: []const u8) !*ModuleRegistry.Module {
-        // std.debug.print("DEBUG: loadModule called with path '{s}'\n", .{module_path});
         // Resolve the full path
         const resolved_path = try self.resolveModulePath(module_path);
         defer self.allocator.free(resolved_path);
-        // std.debug.print("DEBUG: resolved path '{s}'\n", .{resolved_path});
 
         // Read the file content
         const source_content = try std.fs.cwd().readFileAlloc(self.allocator, resolved_path, std.math.maxInt(usize));
@@ -67,7 +65,6 @@ pub const ModuleLoader = struct {
 
     /// Resolve a module path to an absolute file path
     fn resolveModulePath(self: *ModuleLoader, module_path: []const u8) ![]const u8 {
-        // std.debug.print("DEBUG: resolveModulePath called with '{s}'\n", .{module_path});
         // Handle special std module
         if (std.mem.eql(u8, module_path, "std")) {
             return try self.allocator.dupe(u8, "src/std.howl");
@@ -197,12 +194,17 @@ pub const ModuleLoader = struct {
     /// Extract exported symbols from a module
     fn extractExportedSymbols(self: *ModuleLoader, module: *ModuleRegistry.Module, analyzer: *SemanticAnalyzer) !void {
         // Walk the AST and find all top-level declarations
-        const root_node = module.arena.getNode(module.ast_root) orelse return;
+        const root_node = module.arena.getNode(module.ast_root) orelse {
+            return;
+        };
 
         switch (root_node.data) {
             .block => |block| {
-                for (block.statements.items) |stmt_id| {
-                    const stmt_node = module.arena.getNode(stmt_id) orelse continue;
+                for (block.statements.items, 0..) |stmt_id, i| {
+                    _ = i;
+                    const stmt_node = module.arena.getNode(stmt_id) orelse {
+                        continue;
+                    };
 
                     switch (stmt_node.data) {
                         .var_decl => |var_decl| {
@@ -211,7 +213,9 @@ pub const ModuleLoader = struct {
                             if (is_public) {
                                 // Get the variable type from the analyzer
                                 if (analyzer.current_scope.lookup(var_decl.name)) |symbol| {
-                                    const var_type = symbol.declared_type orelse symbol.inferred_type orelse continue;
+                                    const var_type = symbol.declared_type orelse symbol.inferred_type orelse {
+                                        continue;
+                                    };
                                     try module.addExportedSymbol(var_decl.name, var_type, true);
                                 }
                             }
@@ -225,9 +229,7 @@ pub const ModuleLoader = struct {
                                 try module.addExportedSymbol(func_decl.name, func_type, true);
                             }
                         },
-                        else => {
-                            // Skip other declarations for now
-                        },
+                        else => {},
                     }
                 }
             },
@@ -241,25 +243,10 @@ pub const ModuleLoader = struct {
 
     /// Check if a declaration is public by looking for 'pub' keyword
     fn isPublicDeclaration(_: *ModuleLoader, decl: anytype, _: *ast.AstArena) bool {
-        // Try to find the AST node that contains this declaration
-        // For now, we'll use a simple heuristic: check if the name starts with a capital letter
-        // This is a temporary solution until the parser properly handles 'pub' keywords
-
-        if (@hasField(@TypeOf(decl), "name")) {
-            const name = decl.name;
-            if (name.len > 0 and std.ascii.isUpper(name[0])) {
-                return true;
-            }
-        }
-
-        // For a more robust implementation, we would need to:
-        // 1. Find the source location of the declaration
-        // 2. Look backwards in the source code for a 'pub' keyword
-        // 3. Check if it's properly positioned before the declaration
-
-        // For now, since the parser doesn't store pub information,
-        // we'll assume all declarations in imported modules are public
+        // For now, since Howl doesn't have explicit pub keywords implemented yet,
+        // we'll treat all top-level declarations in modules as public
         // unless they start with an underscore (private convention)
+
         if (@hasField(@TypeOf(decl), "name")) {
             const name = decl.name;
             if (name.len > 0 and name[0] == '_') {
@@ -267,7 +254,7 @@ pub const ModuleLoader = struct {
             }
         }
 
-        return true; // Default to public
+        return true; // All other declarations are public
     }
 
     /// Create a function type from a function declaration

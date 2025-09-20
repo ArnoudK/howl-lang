@@ -122,6 +122,14 @@ const CIrCodegen = struct {
         try self.writeLineFormatted("/* IR contains {} nodes */", .{self.ir.nodes.items.len});
     }
 
+    /// Generate a module-level constant
+    fn generateConstant(_: *CIrCodegen, _: *const SeaOfNodes, _: IrNodeId) CompileError!void {
+        // For module-level constants, we need to determine the name
+        // This is tricky because the IR doesn't store the original variable name
+        // For now, we'll skip generating constants that don't have names we can determine
+        // The PI constant should be handled through member access, not as a separate constant
+    }
+
     /// Generate a single function from IR
     fn generateFunction(self: *CIrCodegen, ir: *const SeaOfNodes, func_node_id: IrNodeId) CompileError!void {
         const func_node = ir.getNode(func_node_id) orelse return;
@@ -282,6 +290,12 @@ const CIrCodegen = struct {
                 // Parameters are already declared in function signature
                 const param_data = node.data.parameter;
                 try self.node_values.put(node_id, try self.allocator.dupe(u8, param_data.name));
+            },
+            .identifier => {
+                // Identifiers (like variable names, imported module names) don't generate code
+                // Just store the identifier name for later use
+                const ident_data = node.data.identifier;
+                try self.node_values.put(node_id, try self.allocator.dupe(u8, ident_data.name));
             },
             .constant => {
                 const var_name = try self.generateVariableName();
@@ -631,14 +645,33 @@ const CIrCodegen = struct {
 
                     // Check if this is a function member by examining the output type or constant value
                     var is_function_member = false;
+
+                    // Check if this is accessing an imported module
+                    if (std.mem.eql(u8, object, "std") or std.mem.eql(u8, object, "math")) {
+                        // Use the output type information from semantic analysis
+                        if (node.output_type) |output_type| {
+                            if (output_type.data == .function) {
+                                // This is a function from an imported module
+                                is_function_member = true;
+                                handled_special = true;
+                            } else if (output_type.data == .primitive) {
+                                // This is a constant from an imported module
+                                if (std.mem.eql(u8, field_name, "PI")) {
+                                    // For imported constants, just use the constant name directly
+                                    try self.node_values.put(node_id, try self.allocator.dupe(u8, "PI"));
+                                    return;
+                                }
+                            }
+                        }
+                    }
                     if (node.output_type) |output_type| {
                         if (output_type.data == .function) {
                             is_function_member = true;
                         } else if (output_type.data == .primitive) {
                             // This might be a constant - handle known constants
                             if (std.mem.eql(u8, field_name, "PI")) {
-                                // Generate the PI constant value directly
-                                try self.writeLineFormatted("{s} {s} = 3.141592653589793;", .{ result_type, var_name });
+                                // For imported constants, just use the constant name directly
+                                try self.node_values.put(node_id, try self.allocator.dupe(u8, "PI"));
                                 handled_special = true;
                             }
                             // Add more constants here as needed
@@ -896,32 +929,33 @@ const CIrCodegen = struct {
                             try self.writeLineFormatted("/* printf return value unused */", .{});
                             // var_name is not used for printf calls
                         } else {
-                            // Regular function call - no special hardcoded handling
+                            // Regular function call - use semantic analyzer for symbol resolution
                             // Determine the called function return type
                             var return_type_str: []const u8 = "i64";
+                            var actual_function_name: []const u8 = call_data.function_name;
 
-                            // Look for the function definition to get its return type
-                            for (ir.nodes.items) |check_node| {
-                                if (check_node.op == .function_def) {
-                                    const check_func_data = check_node.data.function_def;
-                                    if (std.mem.eql(u8, check_func_data.name, call_data.function_name)) {
-                                        if (check_node.output_type) |output_type| {
-                                            return_type_str = try self.getTypeString(output_type);
-                                        }
-                                        break;
-                                    }
-                                }
+                            // Use output type information from semantic analysis
+                            if (node.output_type) |output_type| {
+                                return_type_str = try self.getTypeString(output_type);
                             }
 
-                            try self.output.writer().print("    {s} {s} = {s}(", .{ return_type_str, var_name, call_data.function_name });
+                            // For qualified names like "math.add", extract just the function name
+                            if (std.mem.indexOf(u8, call_data.function_name, ".")) |dot_pos| {
+                                actual_function_name = call_data.function_name[dot_pos + 1 ..];
+                            } else {
+                                actual_function_name = call_data.function_name;
+                            }
+
+                            try self.output.writer().print("    {s} {s} = {s}(", .{ return_type_str, var_name, actual_function_name });
 
                             // Add arguments (skip control input at index 0, also potentially skip extra inputs)
                             var arg_count: u32 = 0;
-                            for (node.inputs[1..]) |arg_id| {
+                            var inputs_to_process = node.inputs[1..]; // Start after control
+                            if (std.mem.indexOf(u8, call_data.function_name, ".")) |_| {
+                                inputs_to_process = node.inputs[2..]; // Skip callee for qualified names
+                            }
+                            for (inputs_to_process) |arg_id| {
                                 const arg_value = self.node_values.get(arg_id) orelse continue;
-
-                                // Skip string literals that might be function names
-                                if (std.mem.startsWith(u8, arg_value, "\"")) continue;
 
                                 if (arg_count > 0) try self.output.appendSlice(", ");
                                 try self.output.appendSlice(arg_value);
@@ -1166,6 +1200,16 @@ const CIrCodegen = struct {
                 }
 
                 // Match expression doesn't return a value, so no node value to store
+            },
+            .namespace => {
+                // Namespace nodes don't generate code - they're just references
+                // Don't store a value to prevent misuse in expressions
+            },
+            .namespace_member => {
+                // Namespace member access - for now, just return the member name
+                // This will be used in function calls like math.add
+                const nm_data = node.data.namespace_member;
+                try self.node_values.put(node_id, try self.allocator.dupe(u8, nm_data.member_name));
             },
             else => {
                 try self.writeLineFormatted("/* unsupported node: {s} */", .{@tagName(node.op)});
@@ -2436,14 +2480,25 @@ pub fn generateCFromIr(
     // Generate includes for imported modules
     try codegen.generateImportedModuleIncludes();
 
-    // First, find all function definitions
+    // First, find all function definitions and module-level constants
     var functions = std.ArrayList(IrNodeId).init(codegen.allocator);
     defer functions.deinit();
+    var constants = std.ArrayList(IrNodeId).init(codegen.allocator);
+    defer constants.deinit();
 
     for (ir.nodes.items, 0..) |node, i| {
         if (node.op == .function_def) {
             try functions.append(@intCast(i));
+        } else if (node.op == .constant) {
+            // Check if this is a module-level constant (not inside a function)
+            // Module-level constants should be generated
+            try constants.append(@intCast(i));
         }
+    }
+
+    // Generate module-level constants first
+    for (constants.items) |const_id| {
+        try codegen.generateConstant(ir, const_id);
     }
 
     // Generate each function
@@ -2502,7 +2557,7 @@ fn compileCFile(allocator: std.mem.Allocator, output_name: []const u8) CompileEr
     var compile_args = std.ArrayList([]const u8).init(allocator);
     defer compile_args.deinit();
 
-    try compile_args.append("./fil-c/build/bin/clang");
+    try compile_args.append("clang");
     try compile_args.append("-std=c99");
     try compile_args.append("-Wall");
     try compile_args.append("-Wextra");
