@@ -1,5 +1,6 @@
+std :: @import("std")
 main :: fn () {
-    for i in 0..5 {
-        print(i);
+    for (0..<5) |i| {
+        std.debug.print("i = {}\n", .{i})
     }
 }

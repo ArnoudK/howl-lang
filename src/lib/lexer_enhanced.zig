@@ -79,6 +79,7 @@ pub const Lexer = struct {
 pub const keywords = std.StaticStringMap(Token).initComptime(.{
     .{ "pub", Token{ .Pub = .{ .pos = 0 } } },
     .{ "for", Token{ .For = .{ .pos = 0 } } },
+    .{ "while", Token{ .While = .{ .pos = 0 } } },
     .{ "if", Token{ .If = .{ .pos = 0 } } },
     .{ "else", Token{ .Else = .{ .pos = 0 } } },
     .{ "match", Token{ .Match = .{ .pos = 0 } } },

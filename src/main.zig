@@ -12,6 +12,7 @@ const CompileOptions = root.CompileOptions;
 const Command = enum {
     build,
     run,
+    ir,
     lsp,
     fmt,
     help,
@@ -54,6 +55,16 @@ pub fn main() !void {
             }
             try runFormatter(allocator, converted_args);
         },
+        .ir => {
+            // Convert [][:0]u8 to [][]const u8
+            var converted_args = try allocator.alloc([]const u8, args[2..].len + 1);
+            defer allocator.free(converted_args);
+            converted_args[0] = "--dump-ir";
+            for (args[2..], 0..) |arg, i| {
+                converted_args[i + 1] = arg;
+            }
+            try runBuild(allocator, converted_args);
+        },
         .build => {
             // Convert [][:0]u8 to [][]const u8
             var converted_args = try allocator.alloc([]const u8, args[2..].len);
@@ -78,6 +89,7 @@ pub fn main() !void {
 fn parseCommand(command_str: []const u8) ?Command {
     if (std.mem.eql(u8, command_str, "build")) return .build;
     if (std.mem.eql(u8, command_str, "run")) return .run;
+    if (std.mem.eql(u8, command_str, "ir")) return .ir;
     if (std.mem.eql(u8, command_str, "lsp")) return .lsp;
     if (std.mem.eql(u8, command_str, "fmt")) return .fmt;
     if (std.mem.eql(u8, command_str, "help")) return .help;
@@ -92,6 +104,7 @@ fn printUsage(program_name: []const u8) !void {
     std.debug.print("Commands:\n", .{});
     std.debug.print("  build <file.howl> [options]    Compile a Howl file\n", .{});
     std.debug.print("  run <file.howl> [options]      Compile and run a Howl file\n", .{});
+    std.debug.print("  ir <file.howl> [options]       Dump the IR for a Howl file\n", .{});
     std.debug.print("  fmt <file.howl> [options]      Format a Howl file\n", .{});
     std.debug.print("  lsp                             Start the Language Server Protocol server\n", .{});
     std.debug.print("  help                            Show this help message\n", .{});

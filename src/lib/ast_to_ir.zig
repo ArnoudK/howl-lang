@@ -406,49 +406,21 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
             return nid;
         },
         .var_decl => {
+            // Create a var_decl IR node
+            const var_name = try context.allocator.dupe(u8, node.data.var_decl.name);
+            var initializer_node: ?IrNodeId = null;
+
             if (node.data.var_decl.initializer) |initializer| {
-                const init_value = try transformNode(context, initializer);
-                // For simple constant initializers, create a constant node directly
-                // This ensures the value is available during C code generation
-                const init_node = context.ast_arena.getNodeConst(initializer);
-                if (init_node) |init_ast_node| {
-                    if (init_ast_node.data == .literal) {
-                        const literal_value = init_ast_node.data.literal;
-                        const const_node = try context.ir.createConstant(IrConstant.fromAstLiteral(literal_value), node.source_loc);
-                        // Stamp with initializer's type
-                        stampOutputTypeFromAst(context, const_node, initializer);
-                        try context.current_scope.declare(node.data.var_decl.name, const_node);
-                        return const_node;
-                    } else if (init_ast_node.data == .unary_expr) {
-                        // Handle unary expressions like -5
-                        const operand_node_id = init_ast_node.data.unary_expr.operand;
-                        const operand_node = context.ast_arena.getNodeConst(operand_node_id);
-
-                        if (operand_node) |op_node| {
-                            if (op_node.data == .literal) {
-                                const operand_value = op_node.data.literal;
-                                if (operand_value == .integer) {
-                                    // Create a constant with the negated value
-                                    const negated_value = -operand_value.integer.value;
-                                    const const_node = try context.ir.createConstant(IrConstant{ .integer = negated_value }, node.source_loc);
-                                    stampOutputTypeFromAst(context, const_node, initializer);
-                                    try context.current_scope.declare(node.data.var_decl.name, const_node);
-                                    return const_node;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // For non-constant initializers, use the transformed node
-                try context.current_scope.declare(node.data.var_decl.name, init_value);
-                return init_value;
-            } else {
-                const alloc_node = try context.ir.createNode(.alloc, &.{}, node.source_loc);
-                // We don't have a direct AST expression to infer type for .alloc here
-                try context.current_scope.declare(node.data.var_decl.name, alloc_node);
-                return alloc_node;
+                initializer_node = try transformNode(context, initializer);
             }
+
+            const var_decl_node = try context.ir.createVarDecl(var_name, initializer_node, node.source_loc);
+            stampOutputTypeFromAst(context, var_decl_node, node_id);
+
+            // Declare the variable in the current scope
+            try context.current_scope.declare(node.data.var_decl.name, var_decl_node);
+
+            return var_decl_node;
         },
 
         .block => {
@@ -459,9 +431,12 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
             var last_result = context.current_control;
             var match_stmts = std.ArrayList(IrNodeId).init(context.allocator);
             defer match_stmts.deinit();
+            var all_stmts = std.ArrayList(IrNodeId).init(context.allocator);
+            defer all_stmts.deinit();
 
             for (node.data.block.statements.items) |stmt_id| {
                 const stmt_result = try transformNode(context, stmt_id);
+                try all_stmts.append(stmt_result);
 
                 const stmt_node = context.ast_arena.getNodeConst(stmt_id) orelse {
                     try reportIrError(context.errors, .invalid_expression, "Invalid statement reference", ast.SourceLoc.invalid());
@@ -471,20 +446,20 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                 if (stmt_node.data == .match_expr) {
                     // Collect match expressions
                     try match_stmts.append(stmt_result);
-                } else if (stmt_node.data == .var_decl) {
-                    // Variable declarations don't affect control flow
-                    // They are processed for their side effects
                 } else {
-                    // Other statements update control flow normally
+                    // All statements update control flow to ensure they get processed
                     last_result = stmt_result;
                     context.current_control = last_result;
                 }
             }
 
+            // Create a block IR node with all statements as inputs to ensure they get processed during C code generation
+            const block_node = try context.ir.createNode(.block, all_stmts.items, node.source_loc);
+
             // If we have match expressions, create a chain to ensure they all get processed
             if (match_stmts.items.len > 0) {
                 // Create a dependency chain: control -> match1 -> match2 -> ... -> matchN
-                var current = last_result;
+                var current = block_node;
                 for (match_stmts.items) |match_stmt| {
                     // Create a dummy operation that depends on both current and match_stmt
                     // This ensures both get processed during C code generation
@@ -495,7 +470,7 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                 return current;
             }
 
-            return last_result;
+            return block_node;
         },
         .function_decl => {
             const func_decl = node.data.function_decl;
@@ -771,6 +746,18 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
             const call_id = try context.ir.createCall(function_name, call_inputs, node.source_loc);
             stampOutputTypeFromAst(context, call_id, node_id);
             return call_id;
+        },
+        .index_expr => |index_expr| {
+            // Array indexing: object[index]
+            const object_ir = try transformNode(context, index_expr.object);
+            const index_ir = try transformNode(context, index_expr.index);
+
+            // For now, create a simple load operation
+            // In a full implementation, this would need to handle different array types
+            const load_inputs = [_]IrNodeId{ object_ir, index_ir };
+            const load_id = try context.ir.createNode(.load, &load_inputs, node.source_loc);
+            stampOutputTypeFromAst(context, load_id, node_id);
+            return load_id;
         },
 
         .return_stmt => {
@@ -1187,17 +1174,6 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                 return alloc_node_id;
             }
         },
-        .index_expr => {
-            const index_expr = node.data.index_expr;
-            const array_value = try transformNode(context, index_expr.object);
-            const index_value = try transformNode(context, index_expr.index);
-
-            // Create load operation: array[index]
-            const load_inputs = [_]IrNodeId{ array_value, index_value };
-            const nid = try context.ir.createNode(.load, &load_inputs, node.source_loc);
-            stampOutputTypeFromAst(context, nid, node_id);
-            return nid;
-        },
         .import_decl => {
             // Import declarations should create namespace IR nodes
             // The semantic analyzer has already processed the import and created symbols
@@ -1221,6 +1197,55 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
 
             // If we can't find the symbol, return current control (fallback)
             return context.current_control;
+        },
+        .for_expr => {
+            // Create a special for_loop IR node that contains AST information
+            // This allows the C code generator to generate proper for loops
+            const for_loop_node = try context.ir.createNode(.for_loop, &.{}, node.source_loc);
+            if (context.ir.getNodeMut(for_loop_node)) |ir_node| {
+                ir_node.data = IrNodeData{ .for_loop = .{
+                    .ast_node_id = node_id,
+                    .ast_arena = context.ast_arena,
+                } };
+            }
+            return for_loop_node;
+        },
+        .range_expr => {
+            const range_expr = node.data.range_expr;
+
+            // For range expressions, create a range representation
+            // This could be enhanced to create proper range objects
+            if (range_expr.start != null and range_expr.end != null) {
+                // Bounded range like start..end or start..=end
+                const start_ir = try transformNode(context, range_expr.start.?);
+                const end_ir = try transformNode(context, range_expr.end.?);
+
+                // For now, return the end value as the range condition (when to stop)
+                // A full implementation would create range objects with start/end
+                _ = start_ir; // Suppress unused variable warning
+                return end_ir;
+            } else if (range_expr.start == null and range_expr.end != null) {
+                // Range like ..end or ..=end (starts from 0)
+                const end_ir = try transformNode(context, range_expr.end.?);
+                return end_ir;
+            } else {
+                // Unbounded or invalid range - return a default
+                const zero = try context.ir.createConstant(IrConstant{ .integer = 0 }, node.source_loc);
+                return zero;
+            }
+        },
+        .while_expr => {
+            // Create a special while_loop IR node that contains AST information
+            // This allows the C code generator to generate proper while loops
+            // Include current control as input to ensure proper ordering with variable declarations
+            const while_loop_node = try context.ir.createNode(.while_loop, &.{context.current_control}, node.source_loc);
+            if (context.ir.getNodeMut(while_loop_node)) |ir_node| {
+                ir_node.data = IrNodeData{ .while_loop = .{
+                    .ast_node_id = node_id,
+                    .ast_arena = context.ast_arena,
+                } };
+            }
+            return while_loop_node;
         },
         .struct_decl, .enum_decl => context.current_control,
         else => {

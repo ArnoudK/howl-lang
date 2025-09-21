@@ -66,21 +66,28 @@ main :: fn () !void {
     my_struct :: try createMyStructB(42, 3.14)
     std.debug.print("MyStruct: {{field1: {}, field2: {}}}\n", .{my_struct.field1, my_struct.field2}) // MyStruct: {{field1: 42, field2: 3.140000000000000}}
 
-    my_struct2 :: try createMyStructB(-1, 2.71) // This will exit the program with: "Error: 3" 
-    std.debug.print("MyStruct2: {{field1: {}, field2: {}}}\n", .{my_struct2.field1, my_struct2.field2})
 
     // GC array example - demonstrates $ prefix for heap allocation
-    simple_gc_array :: $[1, 2, 3]
+    simple_gc_array :: $[1, 2, 3]  // TODO: Implement GC arrays
     first_element :: simple_gc_array[0]
     std.debug.print("GC Array - First element: {}\n", .{first_element})
 
-    // GC struct array example - demonstrates $ prefix with struct initialization  
-    people :: $[
+    // GC struct array example - demonstrates $ prefix with struct initialization
+    people :: $[  // TODO: Implement GC struct arrays
         MyStructB{ .field1 = 1, .field2 = 1.1 },
         MyStructB{ .field1 = 2, .field2 = 2.2 },
     ]
     first_person :: people[0]
     std.debug.print("GC Struct Array - First person field1: {}\n", .{first_person.field1})
+
+
+    for (0..=5) |i| {
+        std.debug.print("Loop iteration: {}\n", .{i})
+    }
+
+
+    my_struct2 :: try createMyStructB(-1, 2.71) // This will exit the program with: "Error: 3" 
+    std.debug.print("MyStruct2: {{field1: {}, field2: {}}}\n", .{my_struct2.field1, my_struct2.field2})
 
     result2 :: try divide(10, 0)
     std.debug.print("This line will not be reached due to error.\n", .{})

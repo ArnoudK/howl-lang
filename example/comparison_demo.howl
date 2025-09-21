@@ -1,0 +1,30 @@
+// Demonstration of comparison operators in Howl
+std :: @import("std")
+
+main :: fn () void {
+    // Test less than
+    result1 :: if (5 < 10) "5 is less than 10" else "unexpected"
+    std.debug.print("{}\n", .{result1})
+
+    // Test greater than
+    result2 :: if (15 > 10) "15 is greater than 10" else "unexpected"
+    std.debug.print("{}\n", .{result2})
+
+    // Test less than or equal
+    result3 :: if (10 <= 10) "10 is less than or equal to 10" else "unexpected"
+    std.debug.print("{}\n", .{result3})
+
+    // Test greater than or equal
+    result4 :: if (10 >= 5) "10 is greater than or equal to 5" else "unexpected"
+    std.debug.print("{}\n", .{result4})
+
+    // Test equality
+    result5 :: if (5 == 5) "5 equals 5" else "unexpected"
+    std.debug.print("{}\n", .{result5})
+
+    // Test inequality
+    result6 :: if (5 != 10) "5 does not equal 10" else "unexpected"
+    std.debug.print("{}\n", .{result6})
+
+    std.debug.print("All comparison operators working correctly!\n")
+}

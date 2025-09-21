@@ -1,12 +1,26 @@
 std :: @import("std")
 
-MyError :: error { DivisionByZero }
+MathError :: error { 
+    DivisionByZero,
+    MustBeNegative,
+}
 
-divide :: fn (a: i32, b: i32) MyError!i32 {
-    return if (b == 0) MyError.DivisionByZero else (a / b)
+divide :: fn (a: i32, b: i32) MathError!i32 {
+    return if (b == 0) MathError.DivisionByZero else (a / b)
+}
+
+plus_must_be_negative :: fn (a: i32, b: i32) MathError!i32 {
+    res :: a + b
+    return if (res > 0) MathError.MustBeNegative else (res)
 }
 
 main :: fn () !void {
+    d :: -20
+    ok :: try plus_must_be_negative(10, d)
+    std.debug.print("Ok: {}\n", .{ok})
+
+    plus_result :: try plus_must_be_negative(10, 20)
+    std.debug.print("Plus result: {}\n", .{plus_result})
     result :: try divide(10, 2)
     std.debug.print("Result of division: {}\n", .{result})
     result2 :: try divide(10, 0)

@@ -1,0 +1,9 @@
+std :: @import("std")
+
+main :: fn () !void {
+    i := 0
+    while (i < 3) {
+        std.debug.print("i = {}\n", .{i})
+        i = i + 1
+    }
+}

@@ -15,8 +15,12 @@ pub const IrOp = enum {
     // Control flow nodes
     start, // Entry point of the program/function
     region, // Merge point for control flow
+    block, // Block of statements
     if_, // Conditional branch
     loop, // Loop header
+    loop_end, // Loop completion
+    for_loop, // For loop construct
+    while_loop, // While loop construct
     return_, // Function return
     unreachable_, // Unreachable code marker
 
@@ -24,6 +28,7 @@ pub const IrOp = enum {
     constant, // Compile-time constant
     parameter, // Function parameter
     identifier, // Variable or module identifier reference
+    var_decl, // Variable declaration
     phi, // SSA phi node for merging values
 
     // Arithmetic operations
@@ -90,13 +95,18 @@ pub const IrOp = enum {
         return switch (self) {
             .start => "Start",
             .region => "Region",
+            .block => "Block",
             .if_ => "If",
             .loop => "Loop",
+            .loop_end => "LoopEnd",
+            .for_loop => "ForLoop",
+            .while_loop => "WhileLoop",
             .return_ => "Return",
             .unreachable_ => "Unreachable",
             .constant => "Constant",
             .parameter => "Parameter",
             .identifier => "Identifier",
+            .var_decl => "VarDecl",
             .phi => "Phi",
             .add => "Add",
             .sub => "Sub",
@@ -141,14 +151,14 @@ pub const IrOp = enum {
 
     pub fn isControl(self: IrOp) bool {
         return switch (self) {
-            .start, .region, .if_, .loop, .return_, .unreachable_ => true,
+            .start, .region, .block, .if_, .loop, .loop_end, .for_loop, .return_, .unreachable_ => true,
             else => false,
         };
     }
 
     pub fn isData(self: IrOp) bool {
         return switch (self) {
-            .constant, .parameter, .phi, .add, .sub, .mul, .div, .mod, .eq, .ne, .lt, .le, .gt, .ge, .logical_and, .logical_or, .logical_not, .select, .load, .cast, .type_check, .try_, .error_union_ok, .error_union_err, .error_union_unwrap, .member_access, .struct_init, .struct_literal, .heap_alloc, .match_start, .match_branch, .match_end, .namespace, .namespace_member => true,
+            .constant, .parameter, .var_decl, .phi, .add, .sub, .mul, .div, .mod, .eq, .ne, .lt, .le, .gt, .ge, .logical_and, .logical_or, .logical_not, .select, .load, .cast, .type_check, .try_, .error_union_ok, .error_union_err, .error_union_unwrap, .member_access, .struct_init, .struct_literal, .heap_alloc, .match_start, .match_branch, .match_end, .namespace, .namespace_member => true,
             else => false,
         };
     }
@@ -270,6 +280,10 @@ pub const IrNodeData = union(enum) {
     identifier: struct {
         name: []const u8,
     },
+    var_decl: struct {
+        name: []const u8,
+        initializer: ?IrNodeId,
+    },
     phi: struct {
         region_inputs: []IrNodeId, // Control inputs for phi merge
     },
@@ -300,6 +314,21 @@ pub const IrNodeData = union(enum) {
     },
     match_end: struct {
         result_type: ast.Type, // Type of the match result
+    },
+    loop: struct {
+        condition: IrNodeId, // Loop condition
+        body: IrNodeId, // Loop body to execute
+    },
+    loop_end: struct {
+        result_type: ast.Type, // Type of the loop result
+    },
+    for_loop: struct {
+        ast_node_id: ast.NodeId, // The AST for_expr node
+        ast_arena: *const ast.AstArena, // Reference to AST arena
+    },
+    while_loop: struct {
+        ast_node_id: ast.NodeId, // The AST while_expr node
+        ast_arena: *const ast.AstArena, // Reference to AST arena
     },
     struct_literal: struct {
         field_names: [][]const u8, // Names of fields in declaration order
@@ -500,6 +529,16 @@ pub const SeaOfNodes = struct {
         return node_id;
     }
 
+    /// Create a variable declaration node
+    pub fn createVarDecl(self: *SeaOfNodes, name: []const u8, initializer: ?IrNodeId, source_loc: ast.SourceLoc) !IrNodeId {
+        const inputs = if (initializer) |init_id| &[_]IrNodeId{init_id} else &[_]IrNodeId{};
+        const node_id = try self.createNode(.var_decl, inputs, source_loc);
+        if (self.getNodeMut(node_id)) |node| {
+            node.data = IrNodeData{ .var_decl = .{ .name = name, .initializer = initializer } };
+        }
+        return node_id;
+    }
+
     /// Create a call node with function name
     pub fn createCall(self: *SeaOfNodes, function_name: []const u8, inputs: []const IrNodeId, source_loc: ast.SourceLoc) !IrNodeId {
         const node_id = try self.createNode(.call, inputs, source_loc);
@@ -579,6 +618,35 @@ pub const SeaOfNodes = struct {
         const node_id = try self.createNode(.match_end, branches, source_loc);
         if (self.getNodeMut(node_id)) |node| {
             node.data = IrNodeData{ .match_end = .{
+                .result_type = result_type,
+            } };
+            node.output_type = result_type;
+        }
+        return node_id;
+    }
+
+    /// Create a loop start operation
+    pub fn createLoopStart(self: *SeaOfNodes, initial_condition: IrNodeId, source_loc: ast.SourceLoc) !IrNodeId {
+        return self.createNode(.loop, &.{initial_condition}, source_loc);
+    }
+
+    /// Create a loop body operation
+    pub fn createLoopBody(self: *SeaOfNodes, loop_start: IrNodeId, condition: IrNodeId, body: IrNodeId, source_loc: ast.SourceLoc) !IrNodeId {
+        const node_id = try self.createNode(.loop, &.{ loop_start, condition, body }, source_loc);
+        if (self.getNodeMut(node_id)) |node| {
+            node.data = IrNodeData{ .loop = .{
+                .condition = condition,
+                .body = body,
+            } };
+        }
+        return node_id;
+    }
+
+    /// Create a loop end operation
+    pub fn createLoopEnd(self: *SeaOfNodes, loop_body: IrNodeId, result_type: ast.Type, source_loc: ast.SourceLoc) !IrNodeId {
+        const node_id = try self.createNode(.loop, &.{loop_body}, source_loc);
+        if (self.getNodeMut(node_id)) |node| {
+            node.data = IrNodeData{ .loop_end = .{
                 .result_type = result_type,
             } };
             node.output_type = result_type;

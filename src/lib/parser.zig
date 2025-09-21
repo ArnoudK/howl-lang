@@ -1281,6 +1281,12 @@ pub const Parser = struct {
             return self.parseForStatement();
         }
 
+        // Handle while statements
+        if (self.check(.While)) {
+            self.debugPrint("Found while statement, parsing while loop", .{});
+            return self.parseWhileStatement();
+        }
+
         // Try to parse Howl-style declarations with whitespace enforcement
         // Check for: [pub] identifier ::
         if (self.check(.Identifier) or self.check(.Pub)) {
@@ -1712,18 +1718,6 @@ pub const Parser = struct {
         } }, source_loc));
     }
 
-    fn parseWhileStatement(self: *Parser) !ast.NodeId {
-        const source_loc = self.getCurrentSourceLoc();
-
-        const condition = try self.parseExpression();
-        const body = try self.parseStatement();
-
-        return self.arena.createNode(ast.AstNode.init(.{ .while_expr = .{
-            .condition = condition,
-            .body = body,
-        } }, source_loc));
-    }
-
     fn parseForStatement(self: *Parser) !ast.NodeId {
         const source_loc = self.getCurrentSourceLoc();
 
@@ -1883,6 +1877,58 @@ pub const Parser = struct {
         return self.arena.createNode(ast.AstNode.init(.{ .for_expr = .{
             .iterable = iterable,
             .captures = captures,
+            .body = body,
+        } }, source_loc));
+    }
+
+    fn parseWhileStatement(self: *Parser) !ast.NodeId {
+        const source_loc = self.getCurrentSourceLoc();
+
+        // Consume the 'while' token
+        _ = try self.consume(.While, .unexpected_token, "Expected 'while'");
+
+        // Require space after 'while'
+        if (!self.isAtEnd() and !self.check(.Whitespace) and !self.check(.Newline)) {
+            try self.reportError(.missing_space_after_keyword, "Missing space after 'while'", self.getCurrentSourceLoc());
+        }
+
+        // Skip whitespace after while
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+
+        // Expect opening parenthesis
+        _ = try self.consume(.LeftParen, .unexpected_token, "Expected '(' after 'while'");
+
+        // Skip whitespace after (
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+
+        // Parse the condition expression
+        const condition = try self.parseExpression();
+
+        // Skip whitespace before )
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+
+        // Expect closing parenthesis
+        _ = try self.consume(.RightParen, .missing_closing_paren, "Expected ')' after while condition");
+
+        // Skip whitespace before body
+        while (self.check(.Whitespace)) {
+            _ = self.advance();
+        }
+
+        // Consume opening brace
+        _ = try self.consume(.LeftBrace, .missing_closing_brace, "Expected '{' to start while loop body");
+
+        // Parse the body
+        const body = try self.parseBlockStatement();
+
+        return self.arena.createNode(ast.AstNode.init(.{ .while_expr = .{
+            .condition = condition,
             .body = body,
         } }, source_loc));
     }
