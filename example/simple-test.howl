@@ -1,0 +1,15 @@
+// Test with match expression
+std :: @import("std")
+
+testMatch :: fn (a: i32) i32 {
+    match a {
+    | 1 => 10
+    | 2 => 20
+    | _ => 0
+    }
+}
+
+main :: fn () void {
+    result := testMatch(1)
+    std.debug.print("Result: {}\n", .{result})
+}

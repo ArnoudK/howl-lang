@@ -1,0 +1,15 @@
+// Test with match expression with guards
+std :: @import("std")
+
+testMatchWithGuard :: fn (a: i32) i32 {
+    match a {
+    | x if x > 0 => 10
+    | x if x < 0 => -10
+    | _ => 0
+    }
+}
+
+main :: fn () void {
+    result := testMatchWithGuard(5)
+    std.debug.print("Result: {}\n", .{result})
+}

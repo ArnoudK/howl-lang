@@ -12,5 +12,8 @@ pub const CompileError = error{
     NodeHasUsers,
     CyclicGraph,
     InvalidTransformation,
+    InvalidNode,
+    UnsupportedType,
+    NodeValueNotFound,
 } || std.fs.Dir.MakeError || std.fs.File.ReadError || std.fs.File.WriteError || std.fs.File.WriteFileError || std.fs.File.OpenError ||
     std.process.Child.RunError;

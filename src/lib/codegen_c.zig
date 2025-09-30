@@ -1,6 +1,8 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const SemanticAnalyzer = @import("semantic_analyzer.zig");
+const ErrorSystem = @import("error_system.zig");
+const ErrorCollector = ErrorSystem.ErrorCollector;
 
 // Import split codegen modules
 const expressions = @import("codegen_c_expressions.zig");
@@ -12,7 +14,6 @@ const std_lib = @import("codegen_c_std.zig");
 const formatting = @import("codegen_c_formatting.zig");
 
 // Re-export types from split modules
-pub const CCodegenError = utils.CCodegenError;
 pub const Writer = utils.Writer;
 pub const TypeCollection = types.TypeCollection;
 pub const FunctionCollection = functions.FunctionCollection;
@@ -31,16 +32,18 @@ pub const CCodegen = struct {
     allocator: std.mem.Allocator,
     arena: *const ast.AstArena,
     semantic_analyzer: *const SemanticAnalyzer.SemanticAnalyzer,
+    errors: *ErrorCollector,
     type_collection: TypeCollection,
     function_collection: FunctionCollection,
     current_function_is_main: bool = false, // Track if we're generating main function
     current_function_error_union_name: ?[]const u8 = null, // Track current function's error union type
 
-    pub fn init(allocator: std.mem.Allocator, arena: *const ast.AstArena, semantic_analyzer: *const SemanticAnalyzer.SemanticAnalyzer) CCodegen {
+    pub fn init(allocator: std.mem.Allocator, arena: *const ast.AstArena, semantic_analyzer: *const SemanticAnalyzer.SemanticAnalyzer, errors: *ErrorCollector) CCodegen {
         return CCodegen{
             .allocator = allocator,
             .arena = arena,
             .semantic_analyzer = semantic_analyzer,
+            .errors = errors,
             .type_collection = TypeCollection.init(allocator),
             .function_collection = FunctionCollection.init(allocator),
             .current_function_is_main = false,
@@ -938,22 +941,22 @@ pub const CCodegen = struct {
     // End of Centralized Type Mapping System
     // ============================================================================
 
-    fn generateMainBody(self: *CCodegen, writer: Writer, node_id: ast.NodeId, indent_level: u32) !void {
+    fn generateMainBody(self: *CCodegen, writer: Writer, node_id: ast.NodeId, indent_level: u32, errors: *ErrorCollector) void {
         _ = indent_level;
         self.current_function_is_main = true; // Set flag when generating main
         defer self.current_function_is_main = false; // Reset flag when done
         try writer.writeAll("int main(void) {\n");
-        try self.generateCFromAST(writer, node_id, 1);
+        self.generateCFromAST(writer, node_id, 1, errors);
         try writer.writeAll("}\n");
     }
 
-    pub fn generateCFromAST(self: *CCodegen, writer: Writer, node_id: ast.NodeId, indent_level: u32) CCodegenError!void {
+    pub fn generateCFromAST(self: *CCodegen, writer: Writer, node_id: ast.NodeId, indent_level: u32, errors: *ErrorCollector) void {
         const node = self.arena.getNodeConst(node_id) orelse return;
 
         switch (node.data) {
             .block => |block| {
                 for (block.statements.items) |stmt_id| {
-                    try self.generateCFromAST(writer, stmt_id, indent_level);
+                    self.generateCFromAST(writer, stmt_id, indent_level, errors);
                 }
             },
             .var_decl => |var_decl| {
@@ -962,7 +965,7 @@ pub const CCodegen = struct {
                     // Don't generate C code for import assignments like `std :: @import("std")`
                     return;
                 }
-                try self.generateCVariableDeclaration(writer, var_decl, indent_level);
+                self.generateCVariableDeclaration(writer, var_decl, indent_level, errors);
             },
             .import_decl => {
                 // Skip import declarations - they're compile-time only
@@ -972,17 +975,17 @@ pub const CCodegen = struct {
                 // Skip function declarations in main body (already handled separately)
                 if (std.mem.eql(u8, func_decl.name, "main")) {
                     // Generate main function body content
-                    try self.generateCFromAST(writer, func_decl.body, indent_level);
+                    self.generateCFromAST(writer, func_decl.body, indent_level, errors);
                 }
             },
             .call_expr => |call_expr| {
-                try self.generateCCallExpression(writer, call_expr, indent_level);
+                self.generateCCallExpression(writer, call_expr, indent_level, errors);
             },
             .return_stmt => |return_stmt| {
-                try self.generateCReturnStatement(writer, return_stmt, indent_level);
+                self.generateCReturnStatement(writer, return_stmt, indent_level, errors);
             },
             .for_expr => |for_expr| {
-                try self.generateCForLoop(writer, for_expr, indent_level);
+                self.generateCForLoop(writer, for_expr, indent_level, errors);
             },
             // Skip literal nodes when they're not part of an expression
             .literal => {
@@ -1000,20 +1003,20 @@ pub const CCodegen = struct {
                     if (arm.target == .c) {
                         // TODO: implement evaluateComptimeAST
                         // try self.evaluateComptimeAST(writer, arm.body, indent_level);
-                        try self.generateCFromAST(writer, arm.body, indent_level);
+                        self.generateCFromAST(writer, arm.body, indent_level, errors);
                         break;
                     }
                 }
             },
             .match_expr => |match_expr| {
-                try self.generateCMatchExpression(writer, match_expr, indent_level);
+                self.generateCMatchExpression(writer, match_expr, indent_level, errors);
             },
 
             .catch_expr => |catch_expr| {
-                try self.generateCCatchExpression(writer, catch_expr, indent_level);
+                self.generateCCatchExpression(writer, catch_expr, indent_level, errors);
             },
             .if_expr => |if_expr| {
-                try self.generateCIfExpression(writer, if_expr, indent_level);
+                self.generateCIfExpression(writer, if_expr, indent_level, errors);
             },
             .error_union_type => {
                 // Error union types don't generate code by themselves
@@ -1041,7 +1044,7 @@ pub const CCodegen = struct {
         }
     }
 
-    fn generateCTryExpression(self: *CCodegen, writer: Writer, try_expr: anytype, indent_level: u32) !void {
+    fn generateCTryExpression(self: *CCodegen, writer: Writer, try_expr: anytype, indent_level: u32, errors: *ErrorCollector) void {
         // Generate try expression as error union unwrapping with proper main function handling
         try self.writeIndent(writer, indent_level);
 
@@ -1054,7 +1057,7 @@ pub const CCodegen = struct {
             // Determine the error union struct name from the expression being tried
             const error_union_name = self.inferErrorUnionTypeFromExpression(try_expr.expression);
             try writer.print("{s} _try_result = ", .{error_union_name});
-            try self.generateCExpression(writer, try_expr.expression);
+            self.generateCExpression(writer, try_expr.expression, errors);
             try writer.writeAll(";\n");
 
             try self.writeIndent(writer, indent_level + 1);
@@ -1103,7 +1106,7 @@ pub const CCodegen = struct {
         }
     }
 
-    fn generateCCatchExpression(self: *CCodegen, writer: Writer, catch_expr: anytype, indent_level: u32) !void {
+    fn generateCCatchExpression(self: *CCodegen, writer: Writer, catch_expr: anytype, indent_level: u32, errors: *ErrorCollector) void {
         // Generate the expression being caught (not necessarily a try expression)
         try self.writeIndent(writer, indent_level);
         try writer.writeAll("{\n");
@@ -1126,7 +1129,7 @@ pub const CCodegen = struct {
         if (catch_expr.catch_body) |body| {
             try self.writeIndent(writer, indent_level + 2);
             try writer.writeAll("// Catch body\n");
-            try self.generateCFromAST(writer, body, indent_level + 2);
+            self.generateCFromAST(writer, body, indent_level + 2, errors);
         } else if (catch_expr.fallback_value) |fallback| {
             try self.writeIndent(writer, indent_level + 2);
             try writer.writeAll("// Fallback value\n");
@@ -1141,7 +1144,7 @@ pub const CCodegen = struct {
         try writer.writeAll("}\n");
     }
 
-    fn generateCIfExpression(self: *CCodegen, writer: Writer, if_expr: anytype, indent_level: u32) !void {
+    fn generateCIfExpression(self: *CCodegen, writer: Writer, if_expr: anytype, indent_level: u32, errors: *ErrorCollector) void {
         // Generate if expression as a statement (not within another expression)
         try self.writeIndent(writer, indent_level);
         try writer.writeAll("if (");
@@ -1149,20 +1152,20 @@ pub const CCodegen = struct {
         try writer.writeAll(") {\n");
 
         // Generate then branch
-        try self.generateCFromAST(writer, if_expr.then_branch, indent_level + 1);
+        self.generateCFromAST(writer, if_expr.then_branch, indent_level + 1, errors);
 
         // Generate else branch if present
         if (if_expr.else_branch) |else_branch| {
             try self.writeIndent(writer, indent_level);
             try writer.writeAll("} else {\n");
-            try self.generateCFromAST(writer, else_branch, indent_level + 1);
+            self.generateCFromAST(writer, else_branch, indent_level + 1, errors);
         }
 
         try self.writeIndent(writer, indent_level);
         try writer.writeAll("}\n");
     }
 
-    fn generateCMatchExpression(self: *CCodegen, writer: Writer, match_expr: anytype, indent_level: u32) !void {
+    fn generateCMatchExpression(self: *CCodegen, writer: Writer, match_expr: anytype, indent_level: u32, errors: *ErrorCollector) void {
         // Generate a match expression as a series of if-else statements
         // This is currently for runtime matches (not compile-time)
 
@@ -1179,11 +1182,11 @@ pub const CCodegen = struct {
             }
 
             // Generate the pattern matching condition
-            try self.generateCMatchPatternCondition(writer, arm.pattern, match_expr.expression);
+            self.generateCMatchPatternCondition(writer, arm.pattern, match_expr.expression, errors);
             try writer.writeAll(") {\n");
 
             // Generate the arm body
-            try self.generateCFromAST(writer, arm.body, indent_level + 1);
+            self.generateCFromAST(writer, arm.body, indent_level + 1, errors);
 
             try self.writeIndent(writer, indent_level);
             try writer.writeAll("}");
@@ -1192,7 +1195,8 @@ pub const CCodegen = struct {
         try writer.writeAll("\n");
     }
 
-    fn generateCMatchPatternCondition(self: *CCodegen, writer: Writer, pattern: ast.MatchPattern, match_expr_id: ast.NodeId) !void {
+    fn generateCMatchPatternCondition(self: *CCodegen, writer: Writer, pattern: ast.MatchPattern, match_expr_id: ast.NodeId, errors: *ErrorCollector) void {
+        _ = errors; // May be used in future for error reporting
         switch (pattern) {
             .wildcard => {
                 // Wildcard always matches
@@ -1268,8 +1272,15 @@ pub const CCodegen = struct {
         }
     }
 
-    fn generateCVariableDeclaration(self: *CCodegen, writer: Writer, var_decl: anytype, indent_level: u32) !void {
-        try self.writeIndent(writer, indent_level);
+    fn generateCVariableDeclaration(self: *CCodegen, writer: Writer, var_decl: anytype, indent_level: u32, errors: *ErrorCollector) void {
+        self.writeIndent(writer, indent_level) catch |err| {
+            errors.addError(.{
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                .source_loc = .{}, // TODO: Add proper source location
+            });
+            return;
+        };
 
         // Determine the type using our centralized type inference system
         const c_type = self.inferVariableCType(var_decl);
@@ -1280,12 +1291,40 @@ pub const CCodegen = struct {
             if (init_node) |n| {
                 // Handle std.List.init() calls by variable name for now
                 if (std.mem.eql(u8, var_decl.name, "h")) {
-                    try self.writeIndent(writer, indent_level);
-                    try writer.print("HowlList_i32 {s} = HowlList_i32_init();\n", .{var_decl.name});
+                    self.writeIndent(writer, indent_level) catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    writer.print("HowlList_i32 {s} = HowlList_i32_init();\n", .{var_decl.name}) catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write variable declaration: {}", .{err}) catch "Failed to write variable declaration",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
                     return;
                 } else if (std.mem.eql(u8, var_decl.name, "l")) {
-                    try self.writeIndent(writer, indent_level);
-                    try writer.print("HowlList_f32 {s} = HowlList_f32_init();\n", .{var_decl.name});
+                    self.writeIndent(writer, indent_level) catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    writer.print("HowlList_f32 {s} = HowlList_f32_init();\n", .{var_decl.name}) catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write variable declaration: {}", .{err}) catch "Failed to write variable declaration",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
                     return;
                 }
 
@@ -1312,8 +1351,22 @@ pub const CCodegen = struct {
                                                     std.mem.eql(u8, member_expr.field, "init"))
                                                 {
                                                     // This is std.List(Type).init()
-                                                    try self.writeIndent(writer, indent_level);
-                                                    try writer.print("HowlList_i32 {s} = HowlList_i32_init();\n", .{var_decl.name});
+                                                    self.writeIndent(writer, indent_level) catch |err| {
+                                                        errors.addError(.{
+                                                            .severity = .@"error",
+                                                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                                                            .source_loc = .{},
+                                                        });
+                                                        return;
+                                                    };
+                                                    writer.print("HowlList_i32 {s} = HowlList_i32_init();\n", .{var_decl.name}) catch |err| {
+                                                        errors.addError(.{
+                                                            .severity = .@"error",
+                                                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write variable declaration: {}", .{err}) catch "Failed to write variable declaration",
+                                                            .source_loc = .{},
+                                                        });
+                                                        return;
+                                                    };
                                                     return;
                                                 }
                                             }
@@ -1327,68 +1380,189 @@ pub const CCodegen = struct {
                     const array_init = n.data.array_init;
                     if (array_init.use_gc) {
                         // GC arrays are pointers to malloc'd memory
-                        try writer.print("{s} *{s}", .{ c_type, var_decl.name });
-                        try writer.writeAll(" = ");
-                        try self.generateCExpression(writer, init_node_id);
-                        try writer.writeAll(";\n");
+                        writer.print("{s} *{s}", .{ c_type, var_decl.name }) catch |err| {
+                            errors.addError(.{
+                                .severity = .@"error",
+                                .message = std.fmt.allocPrint(errors.allocator, "Failed to write array declaration: {}", .{err}) catch "Failed to write array declaration",
+                                .source_loc = .{},
+                            });
+                            return;
+                        };
+                        writer.writeAll(" = ") catch |err| {
+                            errors.addError(.{
+                                .severity = .@"error",
+                                .message = std.fmt.allocPrint(errors.allocator, "Failed to write assignment: {}", .{err}) catch "Failed to write assignment",
+                                .source_loc = .{},
+                            });
+                            return;
+                        };
+                        self.generateCExpression(writer, init_node_id, errors);
+                        writer.writeAll(";\n") catch |err| {
+                            errors.addError(.{
+                                .severity = .@"error",
+                                .message = std.fmt.allocPrint(errors.allocator, "Failed to write semicolon: {}", .{err}) catch "Failed to write semicolon",
+                                .source_loc = .{},
+                            });
+                            return;
+                        };
                     } else {
                         // Regular arrays are stack allocated
-                        try writer.print("{s} {s}[{d}]", .{ c_type, var_decl.name, array_init.elements.items.len });
-                        try writer.writeAll(" = ");
-                        try self.generateCExpression(writer, init_node_id);
-                        try writer.writeAll(";\n");
+                        writer.print("{s} {s}[{d}]", .{ c_type, var_decl.name, array_init.elements.items.len }) catch |err| {
+                            errors.addError(.{
+                                .severity = .@"error",
+                                .message = std.fmt.allocPrint(errors.allocator, "Failed to write array declaration: {}", .{err}) catch "Failed to write array declaration",
+                                .source_loc = .{},
+                            });
+                            return;
+                        };
+                        writer.writeAll(" = ") catch |err| {
+                            errors.addError(.{
+                                .severity = .@"error",
+                                .message = std.fmt.allocPrint(errors.allocator, "Failed to write assignment: {}", .{err}) catch "Failed to write assignment",
+                                .source_loc = .{},
+                            });
+                            return;
+                        };
+                        self.generateCExpression(writer, init_node_id, errors);
+                        writer.writeAll(";\n") catch |err| {
+                            errors.addError(.{
+                                .severity = .@"error",
+                                .message = std.fmt.allocPrint(errors.allocator, "Failed to write semicolon: {}", .{err}) catch "Failed to write semicolon",
+                                .source_loc = .{},
+                            });
+                            return;
+                        };
                     }
                     return;
                 }
             }
         }
 
-        try writer.print("{s} {s}", .{ c_type, var_decl.name });
+        writer.print("{s} {s}", .{ c_type, var_decl.name }) catch |err| {
+            errors.addError(.{
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(errors.allocator, "Failed to write variable declaration: {}", .{err}) catch "Failed to write variable declaration",
+                .source_loc = .{},
+            });
+            return;
+        };
 
         if (var_decl.initializer) |init_node_id| {
-            try writer.writeAll(" = ");
-            try self.generateCExpression(writer, init_node_id);
+            writer.writeAll(" = ") catch |err| {
+                errors.addError(.{
+                    .severity = .@"error",
+                    .message = std.fmt.allocPrint(errors.allocator, "Failed to write assignment: {}", .{err}) catch "Failed to write assignment",
+                    .source_loc = .{},
+                });
+                return;
+            };
+            self.generateCExpression(writer, init_node_id, errors);
         }
 
-        try writer.writeAll(";\n");
+        writer.writeAll(";\n") catch |err| {
+            errors.addError(.{
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(errors.allocator, "Failed to write semicolon: {}", .{err}) catch "Failed to write semicolon",
+                .source_loc = .{},
+            });
+            return;
+        };
     }
 
-    fn generateCCallExpression(self: *CCodegen, writer: Writer, call_expr: anytype, indent_level: u32) !void {
-        try self.writeIndent(writer, indent_level);
+    fn generateCCallExpression(self: *CCodegen, writer: Writer, call_expr: anytype, indent_level: u32, errors: *ErrorCollector) void {
+        self.writeIndent(writer, indent_level) catch |err| {
+            errors.addError(.{
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                .source_loc = .{},
+            });
+            return;
+        };
 
         // Check if this is a stdlib function call
-        if (try self.isStdlibFunctionCall(call_expr)) {
-            try self.generateCStdlibCall(writer, call_expr);
+        if (self.isStdlibFunctionCall(call_expr) catch |err| {
+            errors.addError(.{
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(errors.allocator, "Failed to check stdlib function call: {}", .{err}) catch "Failed to check stdlib function call",
+                .source_loc = .{},
+            });
+            return;
+        }) {
+            self.generateCStdlibCall(writer, call_expr, errors);
         } else {
             // Check if this is a member method call
             const callee_node = self.arena.getNodeConst(call_expr.callee);
             if (callee_node) |callee| {
                 if (callee.data == .member_expr) {
                     const member_expr = callee.data.member_expr;
-                    try self.generateCMemberMethodCall(writer, member_expr, call_expr.args.items);
+                    self.generateCMemberMethodCall(writer, member_expr, call_expr.args.items, errors);
                 } else {
                     // Generate regular function call
-                    try self.generateCExpression(writer, call_expr.callee);
-                    try writer.writeAll("(");
+                    self.generateCExpression(writer, call_expr.callee, errors);
+                    writer.writeAll("(") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write opening parenthesis: {}", .{err}) catch "Failed to write opening parenthesis",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
 
                     // Generate arguments
                     for (call_expr.args.items, 0..) |arg_id, i| {
-                        if (i > 0) try writer.writeAll(", ");
-                        try self.generateCExpression(writer, arg_id);
+                        if (i > 0) {
+                            writer.writeAll(", ") catch |err| {
+                                errors.addError(.{
+                                    .severity = .@"error",
+                                    .message = std.fmt.allocPrint(errors.allocator, "Failed to write comma: {}", .{err}) catch "Failed to write comma",
+                                    .source_loc = .{},
+                                });
+                                return;
+                            };
+                        }
+                        self.generateCExpression(writer, arg_id, errors);
                     }
 
-                    try writer.writeAll(")");
+                    writer.writeAll(")") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write closing parenthesis: {}", .{err}) catch "Failed to write closing parenthesis",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
                 }
             } else {
-                try writer.writeAll("/* unknown call */");
+                writer.writeAll("/* unknown call */") catch |err| {
+                    errors.addError(.{
+                        .severity = .@"error",
+                        .message = std.fmt.allocPrint(errors.allocator, "Failed to write unknown call comment: {}", .{err}) catch "Failed to write unknown call comment",
+                        .source_loc = .{},
+                    });
+                    return;
+                };
             }
         }
 
-        try writer.writeAll(";\n");
+        writer.writeAll(";\n") catch |err| {
+            errors.addError(.{
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(errors.allocator, "Failed to write semicolon: {}", .{err}) catch "Failed to write semicolon",
+                .source_loc = .{},
+            });
+            return;
+        };
     }
 
-    fn generateCReturnStatement(self: *CCodegen, writer: Writer, return_stmt: anytype, indent_level: u32) !void {
-        try self.writeIndent(writer, indent_level);
+    fn generateCReturnStatement(self: *CCodegen, writer: Writer, return_stmt: anytype, indent_level: u32, errors: *ErrorCollector) void {
+        self.writeIndent(writer, indent_level) catch |err| {
+            errors.addError(.{
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                .source_loc = .{},
+            });
+            return;
+        };
 
         if (return_stmt.value) |value_id| {
             const value_node = self.arena.getNodeConst(value_id);
@@ -1417,33 +1591,180 @@ pub const CCodegen = struct {
                     defer self.allocator.free(error_union_struct);
 
                     // Generate error union return pattern
-                    try writer.writeAll("{\n");
-                    try self.writeIndent(writer, indent_level + 1);
-                    try writer.writeAll("if (");
-                    try self.generateCExpression(writer, if_expr.condition);
-                    try writer.writeAll(") {\n");
-                    try self.writeIndent(writer, indent_level + 2);
-                    try writer.print("{s} result = {{.error_code = ", .{error_union_struct});
-                    try self.generateCExpression(writer, if_expr.then_branch);
-                    try writer.writeAll(", .payload = 0};\n");
-                    try self.writeIndent(writer, indent_level + 2);
-                    try writer.writeAll("return result;\n");
-                    try self.writeIndent(writer, indent_level + 1);
-                    try writer.writeAll("} else {\n");
-                    try self.writeIndent(writer, indent_level + 2);
-                    try writer.print("{s} result = {{.error_code = 0, .payload = ", .{error_union_struct});
+                    writer.writeAll("{\n") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write opening brace: {}", .{err}) catch "Failed to write opening brace",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    self.writeIndent(writer, indent_level + 1) catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    writer.writeAll("if (") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write if statement: {}", .{err}) catch "Failed to write if statement",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    self.generateCExpression(writer, if_expr.condition, errors);
+                    writer.writeAll(") {\n") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write closing parenthesis: {}", .{err}) catch "Failed to write closing parenthesis",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    self.writeIndent(writer, indent_level + 2) catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    writer.print("{s} result = {{.error_code = ", .{error_union_struct}) catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write result declaration: {}", .{err}) catch "Failed to write result declaration",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    self.generateCExpression(writer, if_expr.then_branch, errors);
+                    writer.writeAll(", .payload = 0};\n") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write payload assignment: {}", .{err}) catch "Failed to write payload assignment",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    self.writeIndent(writer, indent_level + 2) catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    writer.writeAll("return result;\n") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write return statement: {}", .{err}) catch "Failed to write return statement",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    self.writeIndent(writer, indent_level + 1) catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    writer.writeAll("} else {\n") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write else statement: {}", .{err}) catch "Failed to write else statement",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    self.writeIndent(writer, indent_level + 2) catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    writer.print("{s} result = {{.error_code = 0, .payload = ", .{error_union_struct}) catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write result declaration: {}", .{err}) catch "Failed to write result declaration",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
                     if (if_expr.else_branch) |else_branch| {
-                        try self.generateCExpression(writer, else_branch);
+                        self.generateCExpression(writer, else_branch, errors);
                     } else {
-                        try writer.writeAll("0");
+                        writer.writeAll("0") catch |err| {
+                            errors.addError(.{
+                                .severity = .@"error",
+                                .message = std.fmt.allocPrint(errors.allocator, "Failed to write default value: {}", .{err}) catch "Failed to write default value",
+                                .source_loc = .{},
+                            });
+                            return;
+                        };
                     }
-                    try writer.writeAll("};\n");
-                    try self.writeIndent(writer, indent_level + 2);
-                    try writer.writeAll("return result;\n");
-                    try self.writeIndent(writer, indent_level + 1);
-                    try writer.writeAll("}\n");
-                    try self.writeIndent(writer, indent_level);
-                    try writer.writeAll("}\n");
+                    writer.writeAll("};\n") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write semicolon: {}", .{err}) catch "Failed to write semicolon",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    self.writeIndent(writer, indent_level + 2) catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    writer.writeAll("return result;\n") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write return statement: {}", .{err}) catch "Failed to write return statement",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    self.writeIndent(writer, indent_level + 1) catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    writer.writeAll("}\n") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write closing brace: {}", .{err}) catch "Failed to write closing brace",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    self.writeIndent(writer, indent_level) catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
+                    writer.writeAll("}\n") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write closing brace: {}", .{err}) catch "Failed to write closing brace",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
                     return;
                 }
             }
@@ -1533,12 +1854,47 @@ pub const CCodegen = struct {
                         const current_error_union = self.getCurrentErrorUnionStructName();
                         // Check if this is an optional error union (contains "Optional" in name)
                         if (std.mem.indexOf(u8, current_error_union, "Optional") != null) {
-                            try writer.writeAll("return (");
-                            try writer.writeAll(current_error_union);
-                            try writer.writeAll("){.error_code = MyError_SUCCESS, .payload = ");
+                            writer.writeAll("return (") catch |err| {
+                                errors.addError(.{
+                                    .severity = .@"error",
+                                    .message = std.fmt.allocPrint(errors.allocator, "Failed to write return statement: {}", .{err}) catch "Failed to write return statement",
+                                    .source_loc = .{},
+                                });
+                                return;
+                            };
+                            writer.writeAll(current_error_union) catch |err| {
+                                errors.addError(.{
+                                    .severity = .@"error",
+                                    .message = std.fmt.allocPrint(errors.allocator, "Failed to write error union type: {}", .{err}) catch "Failed to write error union type",
+                                    .source_loc = .{},
+                                });
+                                return;
+                            };
+                            writer.writeAll("){.error_code = MyError_SUCCESS, .payload = ") catch |err| {
+                                errors.addError(.{
+                                    .severity = .@"error",
+                                    .message = std.fmt.allocPrint(errors.allocator, "Failed to write error union initialization: {}", .{err}) catch "Failed to write error union initialization",
+                                    .source_loc = .{},
+                                });
+                                return;
+                            };
                             // Use generic optional function call
-                            try writer.writeAll("Optional_Generic_t_none()");
-                            try writer.writeAll("};\n");
+                            writer.writeAll("Optional_Generic_t_none()") catch |err| {
+                                errors.addError(.{
+                                    .severity = .@"error",
+                                    .message = std.fmt.allocPrint(errors.allocator, "Failed to write none literal: {}", .{err}) catch "Failed to write none literal",
+                                    .source_loc = .{},
+                                });
+                                return;
+                            };
+                            writer.writeAll("};\n") catch |err| {
+                                errors.addError(.{
+                                    .severity = .@"error",
+                                    .message = std.fmt.allocPrint(errors.allocator, "Failed to write semicolon: {}", .{err}) catch "Failed to write semicolon",
+                                    .source_loc = .{},
+                                });
+                                return;
+                            };
                             return;
                         }
                     }
@@ -1546,17 +1902,38 @@ pub const CCodegen = struct {
             }
 
             // Regular return
-            try writer.writeAll("return ");
-            try self.generateCExpression(writer, value_id);
+            writer.writeAll("return ") catch |err| {
+                errors.addError(.{
+                    .severity = .@"error",
+                    .message = std.fmt.allocPrint(errors.allocator, "Failed to write return keyword: {}", .{err}) catch "Failed to write return keyword",
+                    .source_loc = .{},
+                });
+                return;
+            };
+            self.generateCExpression(writer, value_id, errors);
         } else {
             // Empty return - for main functions, return 0
-            try writer.writeAll("return 0");
+            writer.writeAll("return 0") catch |err| {
+                errors.addError(.{
+                    .severity = .@"error",
+                    .message = std.fmt.allocPrint(errors.allocator, "Failed to write return 0: {}", .{err}) catch "Failed to write return 0",
+                    .source_loc = .{},
+                });
+                return;
+            };
         }
 
-        try writer.writeAll(";\n");
+        writer.writeAll(";\n") catch |err| {
+            errors.addError(.{
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(errors.allocator, "Failed to write semicolon: {}", .{err}) catch "Failed to write semicolon",
+                .source_loc = .{},
+            });
+            return;
+        };
     }
 
-    fn generateCForLoop(self: *CCodegen, writer: Writer, for_expr: anytype, indent_level: u32) !void {
+    fn generateCForLoop(self: *CCodegen, writer: Writer, for_expr: anytype, indent_level: u32, errors: *ErrorCollector) void {
         const iterable_node = self.arena.getNodeConst(for_expr.iterable) orelse return;
 
         // Check if this is a range expression
@@ -1568,37 +1945,107 @@ pub const CCodegen = struct {
                 const capture = for_expr.captures.items[0];
                 const capture_name = if (std.mem.eql(u8, capture.name, "_")) "i" else capture.name;
 
-                try self.writeIndent(writer, indent_level);
-                try writer.print("for (int32_t {s} = ", .{capture_name});
+                self.writeIndent(writer, indent_level) catch |err| {
+                    errors.addError(.{
+                        .severity = .@"error",
+                        .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                        .source_loc = .{},
+                    });
+                    return;
+                };
+                writer.print("for (int32_t {s} = ", .{capture_name}) catch |err| {
+                    errors.addError(.{
+                        .severity = .@"error",
+                        .message = std.fmt.allocPrint(errors.allocator, "Failed to write for loop header: {}", .{err}) catch "Failed to write for loop header",
+                        .source_loc = .{},
+                    });
+                    return;
+                };
 
                 // Start value
                 if (range_expr.start) |start_id| {
-                    try self.generateCExpressionRecursive(writer, start_id);
+                    self.generateCExpressionRecursive(writer, start_id, errors);
                 } else {
-                    try writer.writeAll("0"); // Default start for ..<end
+                    writer.writeAll("0") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write default start value: {}", .{err}) catch "Failed to write default start value",
+                            .source_loc = .{},
+                        });
+                        return;
+                    }; // Default start for ..<end
                 }
 
-                try writer.print("; {s} ", .{capture_name});
+                writer.print("; {s} ", .{capture_name}) catch |err| {
+                    errors.addError(.{
+                        .severity = .@"error",
+                        .message = std.fmt.allocPrint(errors.allocator, "Failed to write loop condition start: {}", .{err}) catch "Failed to write loop condition start",
+                        .source_loc = .{},
+                    });
+                    return;
+                };
 
                 // Condition
                 if (range_expr.inclusive) {
-                    try writer.writeAll("<= ");
+                    writer.writeAll("<= ") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write inclusive condition: {}", .{err}) catch "Failed to write inclusive condition",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
                 } else {
-                    try writer.writeAll("< ");
+                    writer.writeAll("< ") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write exclusive condition: {}", .{err}) catch "Failed to write exclusive condition",
+                            .source_loc = .{},
+                        });
+                        return;
+                    };
                 }
 
                 // End value
                 if (range_expr.end) |end_id| {
-                    try self.generateCExpressionRecursive(writer, end_id);
+                    self.generateCExpressionRecursive(writer, end_id, errors);
                 } else {
-                    try writer.writeAll("INT32_MAX"); // Unbounded range
+                    writer.writeAll("INT32_MAX") catch |err| {
+                        errors.addError(.{
+                            .severity = .@"error",
+                            .message = std.fmt.allocPrint(errors.allocator, "Failed to write unbounded range end: {}", .{err}) catch "Failed to write unbounded range end",
+                            .source_loc = .{},
+                        });
+                        return;
+                    }; // Unbounded range
                 }
 
-                try writer.print("; {s}++) {{\n", .{capture_name});
+                writer.print("; {s}++) {{\n", .{capture_name}) catch |err| {
+                    errors.addError(.{
+                        .severity = .@"error",
+                        .message = std.fmt.allocPrint(errors.allocator, "Failed to write loop increment: {}", .{err}) catch "Failed to write loop increment",
+                        .source_loc = .{},
+                    });
+                    return;
+                };
             } else {
                 // Multiple captures not supported for ranges
-                try self.writeIndent(writer, indent_level);
-                try writer.writeAll("/* Range for loop with multiple captures not supported */\n");
+                self.writeIndent(writer, indent_level) catch |err| {
+                    errors.addError(.{
+                        .severity = .@"error",
+                        .message = std.fmt.allocPrint(errors.allocator, "Failed to write indentation: {}", .{err}) catch "Failed to write indentation",
+                        .source_loc = .{},
+                    });
+                    return;
+                };
+                writer.writeAll("/* Range for loop with multiple captures not supported */\n") catch |err| {
+                    errors.addError(.{
+                        .severity = .@"error",
+                        .message = std.fmt.allocPrint(errors.allocator, "Failed to write unsupported feature comment: {}", .{err}) catch "Failed to write unsupported feature comment",
+                        .source_loc = .{},
+                    });
+                    return;
+                };
                 return;
             }
         }
@@ -1700,7 +2147,7 @@ pub const CCodegen = struct {
                                 },
                                 .call_expr => |call_expr| {
                                     // Handle function calls in loop body (like std.debug.print)
-                                    try self.generateCCallExpression(writer, call_expr, indent_level + 1);
+                                    self.generateCCallExpression(writer, call_expr, indent_level + 1, errors);
                                 },
                                 else => {
                                     try self.writeIndent(writer, indent_level + 1);
@@ -1721,12 +2168,12 @@ pub const CCodegen = struct {
         try writer.writeAll("}\n");
     }
 
-    fn generateCExpression(self: *CCodegen, writer: Writer, node_id: ast.NodeId) !void {
-        try expressions.generateCExpression(self, writer, node_id);
+    fn generateCExpression(self: *CCodegen, writer: Writer, node_id: ast.NodeId, errors: *ErrorCollector) void {
+        expressions.generateCExpression(self, writer, node_id, errors);
     }
 
-    fn generateCExpressionRecursive(self: *CCodegen, writer: Writer, node_id: ast.NodeId) !void {
-        try expressions.generateCExpressionRecursive(self, writer, node_id);
+    fn generateCExpressionRecursive(self: *CCodegen, writer: Writer, node_id: ast.NodeId, errors: *ErrorCollector) void {
+        expressions.generateCExpressionRecursive(self, writer, node_id, errors);
     }
 
     fn generateCLiteral(self: *CCodegen, writer: Writer, literal: ast.Literal) !void {
@@ -1744,7 +2191,8 @@ pub const CCodegen = struct {
         try writer.writeAll(")");
     }
 
-    fn generateCMemberMethodCall(self: *CCodegen, writer: Writer, member_expr: anytype, args: []const ast.NodeId) !void {
+    fn generateCMemberMethodCall(self: *CCodegen, writer: Writer, member_expr: anytype, args: []const ast.NodeId, errors: *ErrorCollector) void {
+        _ = errors; // May be used in future for error reporting
         const object_node = self.arena.getNodeConst(member_expr.object) orelse return;
 
         // Handle @compile.print special case - this is a compile-time function
@@ -1885,7 +2333,8 @@ pub const CCodegen = struct {
         return error.UnsupportedExpression;
     }
 
-    fn generateCMemberExpression(self: *CCodegen, writer: Writer, member_expr: anytype) !void {
+    fn generateCMemberExpression(self: *CCodegen, writer: Writer, member_expr: anytype, errors: *ErrorCollector) void {
+        _ = errors; // May be used in future for error reporting
         const object_node = self.arena.getNodeConst(member_expr.object) orelse return;
 
         // Handle error set member access (e.g., MyError.DivisionByZero)
@@ -1992,7 +2441,8 @@ pub const CCodegen = struct {
         return false;
     }
 
-    pub fn generateCStdlibCall(self: *CCodegen, writer: Writer, call_expr: anytype) CCodegenError!void {
+    pub fn generateCStdlibCall(self: *CCodegen, writer: Writer, call_expr: anytype, errors: *ErrorCollector) void {
+        _ = errors; // May be used in future for error reporting
         const callee_node = self.arena.getNodeConst(call_expr.callee) orelse return;
 
         if (callee_node.data == .member_expr) {

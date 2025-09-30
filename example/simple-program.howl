@@ -41,7 +41,7 @@ createMyStructBMaybe :: fn (i: i32, b: f64, c : bool) MyErrorA!?MyStructB {
     | false => {
         match i {
         | < 0 => {
-                return  .InvalidValue
+                return  MyErrorA.InvalidValue
                 }
         | _ => {
                 return MyStructB{ .field1 = i, .field2 = b }

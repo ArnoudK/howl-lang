@@ -247,7 +247,7 @@ pub fn transformAstToIr(
             if (symbol.declared_type) |decl_type| {
                 if (decl_type.data == .namespace) {
                     // Create a namespace IR node for this module
-                    const ns_ir = try context.ir.createNamespace(decl_type.data.namespace.name);
+                    const ns_ir = try context.ir.createNamespace(decl_type.data.namespace.name, ast.SourceLoc.invalid());
                     try context.global_scope.declare(symbol_name, ns_ir);
 
                     // Note: Namespace members will be populated lazily during member access
@@ -342,7 +342,7 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                 if (symbol.declared_type) |decl_type| {
                     if (decl_type.data == .namespace) {
                         // Create namespace IR node
-                        const ns_ir = try context.ir.createNamespace(decl_type.data.namespace.name);
+                        const ns_ir = try context.ir.createNamespace(decl_type.data.namespace.name, node.source_loc);
                         try context.global_scope.declare(ident_name, ns_ir);
                         return ns_ir;
                     } else {
@@ -456,20 +456,7 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
             // Create a block IR node with all statements as inputs to ensure they get processed during C code generation
             const block_node = try context.ir.createNode(.block, all_stmts.items, node.source_loc);
 
-            // If we have match expressions, create a chain to ensure they all get processed
-            if (match_stmts.items.len > 0) {
-                // Create a dependency chain: control -> match1 -> match2 -> ... -> matchN
-                var current = block_node;
-                for (match_stmts.items) |match_stmt| {
-                    // Create a dummy operation that depends on both current and match_stmt
-                    // This ensures both get processed during C code generation
-                    const dummy_inputs = [_]IrNodeId{ current, match_stmt };
-                    current = try context.ir.createNode(.logical_and, &dummy_inputs, node.source_loc);
-                    // This is a control-chain dummy; no meaningful output type
-                }
-                return current;
-            }
-
+            // Match expressions are already inputs to the block, so they will be processed
             return block_node;
         },
         .function_decl => {
@@ -501,6 +488,8 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                                 param_type = ast.Type.initPrimitive(.{ .f64 = {} }, type_ast_node.source_loc);
                             } else if (std.mem.eql(u8, type_ast_node.data.identifier.name, "bool")) {
                                 param_type = ast.Type.initPrimitive(.{ .bool = {} }, type_ast_node.source_loc);
+                            } else if (std.mem.eql(u8, type_ast_node.data.identifier.name, "str")) {
+                                param_type = ast.Type.initPrimitive(.{ .str = {} }, type_ast_node.source_loc);
                             }
                         }
                     }
@@ -544,6 +533,8 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                                     payload_type = ast.Type.initPrimitive(.{ .f64 = {} }, payload_node.source_loc);
                                 } else if (std.mem.eql(u8, type_name, "bool")) {
                                     payload_type = ast.Type.initPrimitive(.{ .bool = {} }, payload_node.source_loc);
+                                } else if (std.mem.eql(u8, type_name, "str")) {
+                                    payload_type = ast.Type.initPrimitive(.{ .str = {} }, payload_node.source_loc);
                                 } else if (std.mem.eql(u8, type_name, "void")) {
                                     payload_type = ast.Type.initPrimitive(.{ .void = {} }, payload_node.source_loc);
                                 } else {
@@ -570,6 +561,8 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                                             inner_type = ast.Type.initPrimitive(.{ .f64 = {} }, inner.source_loc);
                                         } else if (std.mem.eql(u8, inner_type_name, "bool")) {
                                             inner_type = ast.Type.initPrimitive(.{ .bool = {} }, inner.source_loc);
+                                        } else if (std.mem.eql(u8, inner_type_name, "str")) {
+                                            inner_type = ast.Type.initPrimitive(.{ .str = {} }, inner.source_loc);
                                         } else {
                                             // Assume it's a custom struct type
                                             inner_type = ast.Type.initCustomStruct(inner_type_name, &[_]ast.Field{}, false, inner.source_loc);
@@ -793,7 +786,7 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                                 if (symbol.declared_type) |decl_type| {
                                     if (decl_type.data == .namespace) {
                                         // Create namespace IR node
-                                        const ns_ir = try context.ir.createNamespace(decl_type.data.namespace.name);
+                                        const ns_ir = try context.ir.createNamespace(decl_type.data.namespace.name, node.source_loc);
                                         try context.global_scope.declare(type_decl.name, ns_ir);
                                         return ns_ir;
                                     }
@@ -811,7 +804,7 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                     if (symbol.declared_type) |decl_type| {
                         if (decl_type.data == .namespace) {
                             // Create namespace IR node
-                            const ns_ir = try context.ir.createNamespace(decl_type.data.namespace.name);
+                            const ns_ir = try context.ir.createNamespace(decl_type.data.namespace.name, node.source_loc);
                             try context.global_scope.declare("std", ns_ir);
                             return ns_ir;
                         }
@@ -1079,9 +1072,13 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                 try branch_nodes.append(branch);
             }
 
-            // For statement match expressions, create the match end operation
-            const void_type = ast.Type.initPrimitive(.{ .void = {} }, node.source_loc);
-            const match_end = try context.ir.createMatchEnd(branch_nodes.items, void_type, node.source_loc);
+            // For match expressions, determine the result type from the first arm
+            var result_type = ast.Type.initPrimitive(.{ .void = {} }, node.source_loc);
+            if (match_expr.arms.items.len > 0) {
+                const first_arm = match_expr.arms.items[0];
+                result_type = (context.semantic_analyzer.inferType(first_arm.body) catch null) orelse ast.Type.initPrimitive(.{ .i64 = {} }, node.source_loc);
+            }
+            const match_end = try context.ir.createMatchEnd(branch_nodes.items, result_type, node.source_loc);
 
             // Return the match_end node so it gets processed during C code generation
             return match_end;
@@ -1188,7 +1185,7 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                 if (symbol.declared_type) |decl_type| {
                     if (decl_type.data == .namespace) {
                         // Create namespace IR node
-                        const ns_ir = try context.ir.createNamespace(decl_type.data.namespace.name);
+                        const ns_ir = try context.ir.createNamespace(decl_type.data.namespace.name, node.source_loc);
                         try context.global_scope.declare(module_name, ns_ir);
                         return ns_ir;
                     }
@@ -1246,6 +1243,16 @@ fn transformNode(context: *AstToIrContext, node_id: ast.NodeId) IrError!IrNodeId
                 } };
             }
             return while_loop_node;
+        },
+        .catch_expr => |catch_expr| {
+            // Transform the expression that may return an error union
+            const expr_ir = try transformNode(context, catch_expr.expression);
+
+            // Create error_union_unwrap node to extract payload and handle errors
+            // For now, treat catch the same as try - proper catch with fallback support needs more work
+            const unwrap_node = try context.ir.createNode(.error_union_unwrap, &.{expr_ir}, node.source_loc);
+            stampOutputTypeFromAst(context, unwrap_node, node_id);
+            return unwrap_node;
         },
         .struct_decl, .enum_decl => context.current_control,
         else => {

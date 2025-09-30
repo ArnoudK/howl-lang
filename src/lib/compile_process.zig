@@ -9,6 +9,7 @@ const Token = @import("token.zig").Token;
 const SemanticAnalyzer = @import("semantic_analyzer.zig").SemanticAnalyzer;
 const JSCodegen = @import("codegen_js.zig");
 const CCodegen = @import("codegen_c.zig");
+// const CCodegenEnhanced = @import("codegen_c_enhanced.zig");
 
 // Sea-of-nodes IR imports
 const SeaOfNodes = @import("sea_of_nodes_ir.zig").SeaOfNodes;
@@ -270,7 +271,7 @@ pub const Compiler = struct {
 
                 switch (self.options.target) {
                     .c => {
-                        // Use the C backend with IR
+                        // Use the old C backend with IR for now
                         std.debug.print("DEBUG: About to call generateCExecutableFromIr, analyzer has {d} imported modules\n", .{analyzer.imported_modules.items.len});
                         const executable_result = try self.generateCExecutableFromIr(ir, analyzer, &result.errors);
                         result.generated_code = executable_result;
@@ -471,7 +472,7 @@ pub const Compiler = struct {
             var module_c_builder = std.ArrayList(u8).init(self.allocator);
             defer module_c_builder.deinit();
 
-            const base_c_code = try CIrCodegen.generateCFromIr(self.allocator, module_ir, analyzer);
+            const base_c_code = try CIrCodegen.generateCFromIr(self.allocator, module_ir, analyzer, errors);
             defer self.allocator.free(base_c_code);
 
             try module_c_builder.appendSlice(base_c_code);
@@ -597,6 +598,7 @@ pub const Compiler = struct {
             self.allocator,
             ir,
             analyzer,
+            errors,
         ) catch |err| {
             switch (err) {
                 error.OutOfMemory => return err,
@@ -615,8 +617,36 @@ pub const Compiler = struct {
                     return err;
                 },
                 else => {
-                    // TODO: Report codegen errors properly
-                    return try self.allocator.dupe(u8, "/* C IR code generation failed */");
+                    // Check if detailed errors were already reported by the codegen
+                    std.debug.print("DEBUG: Error collector has {d} errors before checking\n", .{errors.errors.items.len});
+                    if (errors.errors.items.len == 0) {
+                        // No detailed errors reported, add a generic one
+                        const error_msg = try std.fmt.allocPrint(self.allocator, "C code generation from IR failed: {} (file: {s})", .{ err, self.options.file_path });
+                        defer self.allocator.free(error_msg);
+
+                        std.debug.print("C IR code generation failed: {} for file {s}\n", .{ err, self.options.file_path });
+
+                        // Create a source span for the entire file since we don't have specific node location
+                        const span = ErrorSystem.SourceSpan{
+                            .file_path = self.options.file_path,
+                            .start_pos = 0,
+                            .end_pos = 0,
+                            .line = 1,
+                            .column = 1,
+                        };
+
+                        _ = try errors.createAndAddError(
+                            .target_specific_error,
+                            .codegen,
+                            .fatal,
+                            error_msg,
+                            span,
+                        );
+                    } else {
+                        // Detailed errors were already reported, just log
+                        std.debug.print("C IR code generation failed: {} for file {s} (detailed errors already reported, count: {d})\n", .{ err, self.options.file_path, errors.errors.items.len });
+                    }
+                    return error.CCompilationFailed;
                 },
             }
         };

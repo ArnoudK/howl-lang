@@ -487,8 +487,8 @@ pub const SeaOfNodes = struct {
     }
 
     /// Create a namespace node
-    pub fn createNamespace(self: *SeaOfNodes, name: []const u8) !IrNodeId {
-        const node_id = try self.createNode(.namespace, &.{}, ast.SourceLoc.invalid());
+    pub fn createNamespace(self: *SeaOfNodes, name: []const u8, source_loc: ast.SourceLoc) !IrNodeId {
+        const node_id = try self.createNode(.namespace, &.{}, source_loc);
         if (self.getNodeMut(node_id)) |node| {
             node.data = IrNodeData{ .namespace = .{
                 .name = try self.allocator.dupe(u8, name),
