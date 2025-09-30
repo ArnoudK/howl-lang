@@ -175,8 +175,6 @@ const CIrCodegen = struct {
 
         const func_data = func_node.data.function_def;
 
-        try self.writeLine("start function_def");
-
         // Set current function name and return type first
         self.current_function_name = func_data.name;
         self.current_function_return_type = func_data.return_type;
@@ -238,7 +236,6 @@ const CIrCodegen = struct {
         try self.generateNodeRecursive(ir, func_data.body);
 
         // Check if the function body produces a value that should be returned
-        try self.writeLine("after body");
         if (self.node_values.get(func_data.body)) |body_value| {
             // Return the body's value
             try self.writeLineFormatted("return {s};", .{body_value});
@@ -1467,10 +1464,13 @@ const CIrCodegen = struct {
                 // Get the result type from the match_end data
                 const result_type = if (node.data == .match_end) node.data.match_end.result_type else ast.Type.initPrimitive(.{ .void = {} }, node.source_loc);
 
-                // Create a result variable
-                const result_var = try self.generateVariableName();
+                // Create a result variable (skip if void type)
                 const c_type = try self.getTypeString(result_type);
-                try self.writeLineFormatted("{s} {s};", .{ c_type, result_var });
+                const result_var: ?[]const u8 = if (std.mem.eql(u8, c_type, "void")) null else blk: {
+                    const var_name = try self.generateVariableName();
+                    try self.writeLineFormatted("{s} {s};", .{ c_type, var_name });
+                    break :blk var_name;
+                };
 
                 // First, collect all arm body nodes to mark them as processed
                 for (node.inputs) |branch_id| {
@@ -1559,8 +1559,10 @@ const CIrCodegen = struct {
                     }
                 }
 
-                // Store the result variable for use in expressions
-                try self.node_values.put(node_id, try self.allocator.dupe(u8, result_var));
+                // Store the result variable for use in expressions (if not void)
+                if (result_var) |var_name| {
+                    try self.node_values.put(node_id, try self.allocator.dupe(u8, var_name));
+                }
             },
             .namespace => {
                 // Namespace nodes don't generate code - they're just references
